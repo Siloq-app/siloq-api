@@ -74,9 +74,22 @@ class PageSyncSerializer(serializers.Serializer):
     status = serializers.CharField(default='publish')
     published_at = serializers.DateTimeField(required=False, allow_null=True)
     modified_at = serializers.DateTimeField(required=False, allow_null=True)
-    slug = serializers.SlugField(max_length=500, required=False)
+    slug = serializers.CharField(max_length=500, required=False, allow_blank=True)
     parent_id = serializers.IntegerField(required=False, allow_null=True)
     menu_order = serializers.IntegerField(default=0)
     yoast_title = serializers.CharField(required=False, allow_blank=True)
     yoast_description = serializers.CharField(required=False, allow_blank=True)
     featured_image = serializers.URLField(required=False, allow_blank=True)
+
+    def to_internal_value(self, data):
+        """Flatten nested meta.yoast_title, meta.yoast_description, meta.featured_image if present."""
+        if isinstance(data, dict) and 'meta' in data and isinstance(data['meta'], dict):
+            meta = data['meta']
+            data = dict(data)
+            if 'yoast_title' not in data and meta.get('yoast_title') is not None:
+                data['yoast_title'] = meta['yoast_title']
+            if 'yoast_description' not in data and meta.get('yoast_description') is not None:
+                data['yoast_description'] = meta['yoast_description']
+            if 'featured_image' not in data and meta.get('featured_image') is not None:
+                data['featured_image'] = meta['featured_image']
+        return super().to_internal_value(data)

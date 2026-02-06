@@ -1,6 +1,7 @@
 """
 Views for WordPress plugin integration endpoints.
 """
+import re
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.response import Response
@@ -43,7 +44,17 @@ def verify_api_key(request):
     }, status=status.HTTP_200_OK)
 
 
+def _sanitize_slug(s):
+    """Ensure slug is valid for SlugField (alphanumeric, hyphens, underscores)."""
+    if not s or not isinstance(s, str):
+        return 'page'
+    s = s.strip().lower()
+    s = re.sub(r'[^a-z0-9_-]+', '-', s)
+    return s[:500] or 'page'
+
+
 @api_view(['POST'])
+@authentication_classes([APIKeyAuthentication])
 @permission_classes([IsAPIKeyAuthenticated])
 def sync_page(request):
     """
@@ -61,17 +72,20 @@ def sync_page(request):
     if not serializer.is_valid():
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
+    data = dict(serializer.validated_data)
+    data['slug'] = _sanitize_slug(data.get('slug') or '')
+    
     # Get or create page
-    wp_post_id = serializer.validated_data['wp_post_id']
+    wp_post_id = data['wp_post_id']
     page, created = Page.objects.get_or_create(
         site=site,
         wp_post_id=wp_post_id,
-        defaults=serializer.validated_data
+        defaults=data
     )
     
     if not created:
         # Update existing page
-        for key, value in serializer.validated_data.items():
+        for key, value in data.items():
             setattr(page, key, value)
         page.save()
     
