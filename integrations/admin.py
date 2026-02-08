@@ -4,7 +4,7 @@ from .models import Scan
 
 @admin.register(Scan)
 class ScanAdmin(admin.ModelAdmin):
-    list_display = ('id', 'url', 'site', 'status', 'score', 'pages_analyzed', 'created_at')
-    list_filter = ('status', 'scan_type', 'created_at')
+    list_display = ('id', 'url', 'site', 'status', 'score', 'pages_analyzed', 'started_at')
+    list_filter = ('status', 'scan_type', 'started_at')
     search_fields = ('url', 'site__name')
-    readonly_fields = ('created_at', 'started_at', 'completed_at')
+    readonly_fields = ('started_at', 'completed_at')

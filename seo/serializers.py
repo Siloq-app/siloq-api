@@ -28,7 +28,7 @@ class PageSerializer(serializers.ModelSerializer):
     """Serializer for Page model."""
     site = SiteSerializer(read_only=True)
     seo_data = SEODataSerializer(read_only=True)
-    
+
     class Meta:
         model = Page
         fields = (
@@ -45,23 +45,43 @@ class PageListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for page lists."""
     seo_score = serializers.SerializerMethodField()
     issue_count = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Page
         fields = (
             'id', 'url', 'title', 'status', 'published_at',
             'last_synced_at', 'seo_score', 'issue_count'
         )
-    
+
     def get_seo_score(self, obj):
         """Get SEO score from related SEOData."""
-        seo_data = obj.seo_data.first()
-        return seo_data.seo_score if seo_data else None
-    
+        # Access prefetched seo_data if available, otherwise use direct access
+        if hasattr(obj, '_prefetched_objects_cache') and 'seo_data' in obj._prefetched_objects_cache:
+            seo_data_list = obj._prefetched_objects_cache['seo_data']
+            if seo_data_list:
+                return seo_data_list[0].seo_score
+            return None
+        # For OneToOneField, try direct access
+        try:
+            if hasattr(obj, 'seo_data') and obj.seo_data:
+                return obj.seo_data.seo_score
+        except SEOData.DoesNotExist:
+            pass
+        return None
+
     def get_issue_count(self, obj):
         """Get issue count from related SEOData."""
-        seo_data = obj.seo_data.first()
-        return len(seo_data.issues) if seo_data and seo_data.issues else 0
+        if hasattr(obj, '_prefetched_objects_cache') and 'seo_data' in obj._prefetched_objects_cache:
+            seo_data_list = obj._prefetched_objects_cache['seo_data']
+            if seo_data_list and seo_data_list[0].issues:
+                return len(seo_data_list[0].issues)
+            return 0
+        try:
+            if hasattr(obj, 'seo_data') and obj.seo_data and obj.seo_data.issues:
+                return len(obj.seo_data.issues)
+        except SEOData.DoesNotExist:
+            pass
+        return 0
 
 
 class PageSyncSerializer(serializers.Serializer):

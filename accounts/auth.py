@@ -1,15 +1,23 @@
 """
 Authentication views for dashboard users.
+Handles login, register, logout, and user profile.
 """
-from rest_framework import status, generics
+import logging
+import os
+
+from dotenv import load_dotenv
+from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
+
 from .serializers import LoginSerializer, RegisterSerializer, UserSerializer
 
+load_dotenv()
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 @api_view(['POST'])
@@ -88,7 +96,8 @@ def logout(request):
             token.blacklist()
         return Response({'message': 'Logged out successfully'}, status=status.HTTP_200_OK)
     except Exception as e:
-        return Response({'message': 'Logout failed'}, status=status.HTTP_400_BAD_REQUEST)
+        logger.warning(f"Logout failed: {str(e)}")
+        return Response({'error': 'Logout failed'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['GET'])

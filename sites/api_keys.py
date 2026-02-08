@@ -1,74 +1,19 @@
 """
-Views for Site and APIKey management.
+API Key management views.
+Handles CRUD operations for site-specific API keys.
 """
+import logging
+
 from rest_framework import viewsets, status
-from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
+
 from .models import Site, APIKey
-from .serializers import SiteSerializer, APIKeySerializer, APIKeyCreateSerializer
-from .permissions import IsSiteOwner, IsAPIKeyOwner
+from .serializers import APIKeySerializer, APIKeyCreateSerializer
+from .permissions import IsAPIKeyOwner
 
-
-class SiteViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet for managing sites.
-    
-    list: GET /api/v1/sites/ - List all sites for current user
-    create: POST /api/v1/sites/ - Create a new site
-    retrieve: GET /api/v1/sites/{id}/ - Get site details
-    update: PUT /api/v1/sites/{id}/ - Update site
-    destroy: DELETE /api/v1/sites/{id}/ - Delete site
-    overview: GET /api/v1/sites/{id}/overview/ - Get site overview (health score, stats)
-    """
-    serializer_class = SiteSerializer
-    permission_classes = [IsAuthenticated, IsSiteOwner]
-
-    def get_queryset(self):
-        """Return only sites owned by the current user."""
-        return Site.objects.filter(user=self.request.user)
-
-    def perform_create(self, serializer):
-        """Set the user when creating a site."""
-        serializer.save(user=self.request.user)
-
-    @action(detail=True, methods=['get'])
-    def overview(self, request, pk=None):
-        """
-        Get site overview with health score and aggregated stats.
-        
-        GET /api/v1/sites/{id}/overview/
-        """
-        site = self.get_object()
-        
-        # Calculate health score (simplified - can be enhanced)
-        pages = site.pages.all()
-        total_pages = pages.count()
-        
-        # Calculate SEO health score based on issues
-        seo_data_list = [page.seo_data.first() for page in pages if page.seo_data.exists()]
-        total_issues = sum(
-            len(seo_data.issues) if seo_data and seo_data.issues else 0
-            for seo_data in seo_data_list
-        )
-        
-        # Simple health score calculation (0-100)
-        # Lower issues = higher score
-        if total_pages > 0:
-            avg_issues_per_page = total_issues / total_pages
-            health_score = max(0, min(100, 100 - (avg_issues_per_page * 10)))
-        else:
-            health_score = 0
-        
-        return Response({
-            'site_id': site.id,
-            'site_name': site.name,
-            'health_score': round(health_score, 1),
-            'total_pages': total_pages,
-            'total_issues': total_issues,
-            'last_synced_at': site.last_synced_at,
-        })
+logger = logging.getLogger(__name__)
 
 
 class APIKeyViewSet(viewsets.ModelViewSet):

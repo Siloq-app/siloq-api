@@ -3,8 +3,10 @@ API URL routing for siloq_backend.
 All API endpoints are prefixed with /api/v1/
 """
 from django.urls import path, include
-from integrations.views import verify_api_key
-from siloq_backend.views import health_check
+# Lazy import wrapper to avoid AppRegistryNotReady
+def verify_api_key_view(request):
+    from integrations.sync import verify_api_key
+    return verify_api_key(request)
 
 urlpatterns = [
     # Health check (no auth) - GET /api/v1/health/
@@ -12,7 +14,7 @@ urlpatterns = [
     # Dashboard authentication
     path('auth/', include('accounts.urls')),
     # WordPress plugin: POST /api/v1/auth/verify with Bearer <api_key>
-    path('auth/verify', verify_api_key),
+    path('auth/verify', verify_api_key_view),
     # API key management
     path('api-keys/', include('sites.api_key_urls')),
     # Site management

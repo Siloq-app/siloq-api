@@ -25,12 +25,13 @@ class PageViewSet(viewsets.ReadOnlyModelViewSet):
         """Return pages for sites owned by the current user."""
         user_sites = Site.objects.filter(user=self.request.user)
         queryset = Page.objects.filter(site__in=user_sites)
-        
+
         # Filter by site_id if provided
         site_id = self.request.query_params.get('site_id')
         if site_id:
             queryset = queryset.filter(site_id=site_id)
-        
+
+        # Prefetch related seo_data for list efficiency (OneToOne relation)
         return queryset.select_related('site', 'seo_data')
 
     def get_serializer_class(self):

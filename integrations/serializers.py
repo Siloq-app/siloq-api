@@ -52,16 +52,16 @@ class ScanCreateSerializer(serializers.Serializer):
 
 class ScanSerializer(serializers.ModelSerializer):
     """Serializer for Scan model."""
-    
+
     class Meta:
         model = Scan
         fields = (
             'id', 'url', 'scan_type', 'status', 'score',
             'pages_analyzed', 'scan_duration_seconds', 'results',
-            'error_message', 'started_at', 'completed_at', 'created_at'
+            'error_message', 'started_at', 'completed_at'
         )
         read_only_fields = (
             'id', 'status', 'score', 'pages_analyzed',
             'scan_duration_seconds', 'results', 'error_message',
-            'started_at', 'completed_at', 'created_at'
+            'started_at', 'completed_at'
         )

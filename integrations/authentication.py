@@ -2,7 +2,6 @@
 Custom authentication for API key-based requests from WordPress plugin.
 """
 from rest_framework import authentication, exceptions
-from sites.models import APIKey
 from django.utils import timezone
 
 
@@ -16,6 +15,9 @@ class APIKeyAuthentication(authentication.BaseAuthentication):
     """
     
     def authenticate(self, request):
+        # Lazy import to avoid AppRegistryNotReady
+        from sites.models import APIKey
+        
         api_key = None
         
         # Check Authorization header first
