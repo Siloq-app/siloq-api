@@ -51,7 +51,23 @@ DB_USER=postgres
 DB_PASSWORD=postgres
 DB_HOST=localhost
 DB_PORT=5432
+
+# Google OAuth (required for Google login)
+GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:8000/api/v1/auth/google/callback/
+FRONTEND_URL=http://localhost:3000
 ```
+
+### Google OAuth Setup
+
+1. Go to https://console.cloud.google.com/apis/credentials
+2. Create a new project or select existing one
+3. Click "Create Credentials" > "OAuth client ID"
+4. Configure consent screen (External type for testing)
+5. Application type: Web application
+6. Add authorized redirect URI: `http://localhost:8000/api/v1/auth/google/callback/`
+7. Copy Client ID and Client Secret to your `.env` file
 
 ## API Endpoints
 

@@ -2,35 +2,35 @@
 URL routing for accounts app.
 """
 from django.urls import path
-from django.views.decorators.http import require_http_methods
+from django.views.decorators.csrf import csrf_exempt
 
 # Lazy view imports to avoid AppRegistryNotReady
-@require_http_methods(["POST"])
+@csrf_exempt
 def login_view(request):
     from .auth import login
     return login(request)
 
-@require_http_methods(["POST"])
+@csrf_exempt
 def register_view(request):
     from .auth import register
     return register(request)
 
-@require_http_methods(["POST"])
+@csrf_exempt
 def logout_view(request):
     from .auth import logout
     return logout(request)
 
-@require_http_methods(["GET"])
+@csrf_exempt
 def me_view(request):
     from .auth import me
     return me(request)
 
-@require_http_methods(["GET"])
+@csrf_exempt
 def google_login_view(request):
     from .oauth import google_login
     return google_login(request)
 
-@require_http_methods(["GET"])
+@csrf_exempt
 def google_callback_view(request):
     from .oauth import google_callback
     return google_callback(request)
