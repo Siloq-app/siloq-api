@@ -41,6 +41,7 @@ INSTALLED_APPS = [
     'sites',
     'seo',
     'integrations',
+    'billing',
 ]
 
 MIDDLEWARE = [
