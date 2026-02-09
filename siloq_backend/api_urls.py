@@ -4,6 +4,7 @@ All API endpoints are prefixed with /api/v1/
 """
 from django.urls import path, include
 from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 
 
 def health_check(request):
@@ -12,6 +13,8 @@ def health_check(request):
 
 
 # Lazy import wrapper to avoid AppRegistryNotReady
+# Must be csrf_exempt because it's called from WordPress plugin (external API client)
+@csrf_exempt
 def verify_api_key_view(request):
     from integrations.sync import verify_api_key
     return verify_api_key(request)
