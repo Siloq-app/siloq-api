@@ -31,22 +31,27 @@ def login(request):
     
     Returns: { "token": "...", "user": {...} }
     """
-    serializer = LoginSerializer(data=request.data)
-    
-    if serializer.is_valid():
-        user = serializer.validated_data['user']
+    try:
+        serializer = LoginSerializer(data=request.data)
         
-        # Generate JWT tokens
-        refresh = RefreshToken.for_user(user)
-        access_token = str(refresh.access_token)
+        if serializer.is_valid():
+            user = serializer.validated_data['user']
+            
+            # Generate JWT tokens
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            
+            return Response({
+                'message': 'Login successful',
+                'token': access_token,
+                'user': UserSerializer(user).data
+            }, status=status.HTTP_200_OK)
         
-        return Response({
-            'message': 'Login successful',
-            'token': access_token,
-            'user': UserSerializer(user).data
-        }, status=status.HTTP_200_OK)
-    
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        import traceback
+        logger.error(f"Login error: {str(e)}\n{traceback.format_exc()}")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])
@@ -60,22 +65,27 @@ def register(request):
 
     Returns: { "message": "...", "token": "...", "user": {...} }
     """
-    serializer = RegisterSerializer(data=request.data)
+    try:
+        serializer = RegisterSerializer(data=request.data)
 
-    if serializer.is_valid():
-        user = serializer.save()
+        if serializer.is_valid():
+            user = serializer.save()
 
-        # Generate JWT token so frontend can log in immediately
-        refresh = RefreshToken.for_user(user)
-        access_token = str(refresh.access_token)
+            # Generate JWT token so frontend can log in immediately
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
 
-        return Response({
-            'message': 'Registration successful',
-            'token': access_token,
-            'user': UserSerializer(user).data
-        }, status=status.HTTP_201_CREATED)
+            return Response({
+                'message': 'Registration successful',
+                'token': access_token,
+                'user': UserSerializer(user).data
+            }, status=status.HTTP_201_CREATED)
 
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        import traceback
+        logger.error(f"Register error: {str(e)}\n{traceback.format_exc()}")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])
