@@ -37,7 +37,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
+          cache: pip
 
       - name: Install dependencies
         run: |
@@ -46,7 +46,12 @@ jobs:
 
       - name: Run tests
         env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/test_db
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: test_db
+          DB_USER: postgres
+          DB_PASSWORD: postgres
+          DB_SSLMODE: disable
           DJANGO_SETTINGS_MODULE: siloq_backend.settings
           SECRET_KEY: test-secret-key-for-ci
           DEBUG: "False"
@@ -66,7 +71,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
+          cache: pip
 
       - name: Install linters
         run: |
@@ -89,7 +94,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
+          cache: pip
 
       - name: Install dependencies
         run: |
@@ -104,3 +109,4 @@ jobs:
       - name: Run Bandit security scan
         run: bandit -r . -x ./tests,./venv,./.venv -ll
         continue-on-error: true
+
