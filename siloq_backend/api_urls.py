@@ -3,6 +3,12 @@ API URL routing for siloq_backend.
 All API endpoints are prefixed with /api/v1/
 """
 from django.urls import path, include
+from django.http import JsonResponse
+
+# Health check endpoint
+def health_check(request):
+    return JsonResponse({"status": "healthy"})
+
 # Lazy import wrapper to avoid AppRegistryNotReady
 def verify_api_key_view(request):
     from integrations.sync import verify_api_key
