@@ -172,6 +172,8 @@ SIMPLE_JWT = {
 
 # CORS Settings
 CORS_ALLOWED_ORIGINS = [
+    "https://app.siloq.ai",
+    "https://siloq-dashboard-vcoj8.ondigitalocean.app",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
@@ -194,4 +196,3 @@ STRIPE_PRICE_EMPIRE = os.getenv('STRIPE_PRICE_EMPIRE', '')
 
 # Frontend URL for redirects
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://app.siloq.ai')
-
