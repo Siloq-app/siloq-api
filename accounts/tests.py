@@ -41,51 +41,64 @@ class TestAuthentication:
     
     def test_login_success(self, api_client, create_user):
         user = create_user()
-        response = api_client.post('/api/v1/auth/login/', {
-            'email': user.email,
-            'password': 'testpass123'
-        })
+        response = api_client.post(
+            '/api/v1/auth/login/',
+            data={'email': user.email, 'password': 'testpass123'},
+            format='json'
+        )
         assert response.status_code == 200
         assert 'token' in response.data
+        assert response.data['token']
         assert 'user' in response.data
     
     def test_login_invalid_credentials(self, api_client, create_user):
         create_user()
-        response = api_client.post('/api/v1/auth/login/', {
-            'email': 'test@example.com',
-            'password': 'wrongpassword'
-        })
+        response = api_client.post(
+            '/api/v1/auth/login/',
+            data={'email': 'test@example.com', 'password': 'wrongpassword'},
+            format='json'
+        )
         assert response.status_code == 400
     
     def test_login_missing_fields(self, api_client):
-        response = api_client.post('/api/v1/auth/login/', {
-            'email': 'test@example.com'
-        })
+        response = api_client.post(
+            '/api/v1/auth/login/',
+            data={'email': 'test@example.com'},
+            format='json'
+        )
         assert response.status_code == 400
     
     def test_register_success(self, api_client):
-        response = api_client.post('/api/v1/auth/register/', {
-            'email': 'newuser@example.com',
-            'password': 'securepass123',
-            'name': 'New User'
-        })
+        response = api_client.post(
+            '/api/v1/auth/register/',
+            data={
+                'email': 'newuser@example.com',
+                'password': 'securepass123',
+                'name': 'New User'
+            },
+            format='json'
+        )
         assert response.status_code == 201
         assert 'token' in response.data
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
         assert User.objects.filter(email='newuser@example.com').exists()
     
     def test_register_duplicate_email(self, api_client, create_user):
         user = create_user(email='duplicate@example.com')
-        response = api_client.post('/api/v1/auth/register/', {
-            'email': user.email,
-            'password': 'securepass123'
-        })
+        response = api_client.post(
+            '/api/v1/auth/register/',
+            data={'email': user.email, 'password': 'securepass123'},
+            format='json'
+        )
         assert response.status_code == 400
     
     def test_register_short_password(self, api_client):
-        response = api_client.post('/api/v1/auth/register/', {
-            'email': 'test@example.com',
-            'password': 'short'
-        })
+        response = api_client.post(
+            '/api/v1/auth/register/',
+            data={'email': 'test@example.com', 'password': 'short'},
+            format='json'
+        )
         assert response.status_code == 400
     
     def test_me_endpoint_authenticated(self, authenticated_client):
@@ -101,7 +114,9 @@ class TestAuthentication:
     def test_logout_success(self, authenticated_client):
         client, user = authenticated_client
         refresh = RefreshToken.for_user(user)
-        response = client.post('/api/v1/auth/logout/', {
-            'refresh_token': str(refresh)
-        })
+        response = client.post(
+            '/api/v1/auth/logout/',
+            data={'refresh_token': str(refresh)},
+            format='json'
+        )
         assert response.status_code == 200

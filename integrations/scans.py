@@ -5,7 +5,7 @@ Handles scan creation, status retrieval, and report generation.
 import logging
 
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.response import Response
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
@@ -14,11 +14,13 @@ from sites.models import Site
 from .models import Scan
 from .serializers import ScanCreateSerializer, ScanSerializer
 from .permissions import IsAPIKeyAuthenticated
+from .authentication import APIKeyAuthentication
 
 logger = logging.getLogger(__name__)
 
 
 @api_view(['POST'])
+@authentication_classes([APIKeyAuthentication])
 @permission_classes([IsAPIKeyAuthenticated])
 def create_scan(request):
     """
@@ -71,6 +73,7 @@ def create_scan(request):
 
 
 @api_view(['GET'])
+@authentication_classes([APIKeyAuthentication])
 @permission_classes([IsAPIKeyAuthenticated])
 def get_scan(request, scan_id):
     """
@@ -88,6 +91,7 @@ def get_scan(request, scan_id):
 
 
 @api_view(['GET'])
+@authentication_classes([APIKeyAuthentication])
 @permission_classes([IsAPIKeyAuthenticated])
 def get_scan_report(request, scan_id):
     """

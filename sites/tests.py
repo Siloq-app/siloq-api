@@ -62,10 +62,11 @@ class TestSiteManagement:
         from sites.models import Site
         client, user = authenticated_client
         
-        response = client.post('/api/v1/sites/', {
-            'name': 'New Site',
-            'url': 'https://newsite.com'
-        })
+        response = client.post(
+            '/api/v1/sites/',
+            data={'name': 'New Site', 'url': 'https://newsite.com'},
+            format='json'
+        )
         assert response.status_code == 201
         assert Site.objects.filter(name='New Site').exists()
     
@@ -73,10 +74,11 @@ class TestSiteManagement:
         client, user = authenticated_client
         create_site(user=user, url='https://duplicate.com')
         
-        response = client.post('/api/v1/sites/', {
-            'name': 'Another Site',
-            'url': 'https://duplicate.com'
-        })
+        response = client.post(
+            '/api/v1/sites/',
+            data={'name': 'Another Site', 'url': 'https://duplicate.com'},
+            format='json'
+        )
         assert response.status_code == 400
     
     def test_get_site_detail(self, authenticated_client, create_site):
@@ -91,10 +93,11 @@ class TestSiteManagement:
         client, user = authenticated_client
         site = create_site(user=user)
         
-        response = client.put(f'/api/v1/sites/{site.id}/', {
-            'name': 'Updated Site',
-            'url': site.url
-        })
+        response = client.put(
+            f'/api/v1/sites/{site.id}/',
+            data={'name': 'Updated Site', 'url': site.url},
+            format='json'
+        )
         assert response.status_code == 200
         site.refresh_from_db()
         assert site.name == 'Updated Site'
@@ -153,10 +156,11 @@ class TestAPIKeyManagement:
         client, user = authenticated_client
         site = create_site(user=user)
         
-        response = client.post('/api/v1/api-keys/', {
-            'name': 'New API Key',
-            'site_id': site.id
-        })
+        response = client.post(
+            '/api/v1/api-keys/',
+            data={'name': 'New API Key', 'site_id': site.id},
+            format='json'
+        )
         assert response.status_code == 201
         assert 'key' in response.data
         assert APIKey.objects.filter(site=site).exists()
@@ -164,9 +168,11 @@ class TestAPIKeyManagement:
     def test_create_api_key_missing_site_id(self, authenticated_client):
         client, _ = authenticated_client
         
-        response = client.post('/api/v1/api-keys/', {
-            'name': 'New API Key'
-        })
+        response = client.post(
+            '/api/v1/api-keys/',
+            data={'name': 'New API Key'},
+            format='json'
+        )
         assert response.status_code == 400
     
     def test_create_api_key_other_user_site(self, authenticated_client, create_user):
@@ -175,10 +181,11 @@ class TestAPIKeyManagement:
         other_site = Site.objects.create(user=other_user, name='Other Site', url='https://other.com')
         
         client, _ = authenticated_client
-        response = client.post('/api/v1/api-keys/', {
-            'name': 'New API Key',
-            'site_id': other_site.id
-        })
+        response = client.post(
+            '/api/v1/api-keys/',
+            data={'name': 'New API Key', 'site_id': other_site.id},
+            format='json'
+        )
         assert response.status_code == 404
     
     def test_revoke_api_key(self, authenticated_client, create_site):

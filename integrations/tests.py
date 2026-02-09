@@ -86,14 +86,18 @@ class TestPageSync:
         from seo.models import Page
         client, api_key = api_key_client
         
-        response = client.post('/api/v1/pages/sync/', {
-            'wp_post_id': 123,
-            'url': 'https://example.com/test-page',
-            'title': 'Test Page',
-            'content': 'Test content',
-            'status': 'publish',
-            'slug': 'test-page'
-        })
+        response = client.post(
+            '/api/v1/pages/sync/',
+            data={
+                'wp_post_id': 123,
+                'url': 'https://example.com/test-page',
+                'title': 'Test Page',
+                'content': 'Test content',
+                'status': 'publish',
+                'slug': 'test-page'
+            },
+            format='json'
+        )
         assert response.status_code == 201
         assert response.data['created'] is True
         assert Page.objects.filter(wp_post_id=123).exists()
@@ -111,13 +115,17 @@ class TestPageSync:
             slug='test-page'
         )
         
-        response = client.post('/api/v1/pages/sync/', {
-            'wp_post_id': 123,
-            'url': 'https://example.com/test-page',
-            'title': 'Updated Title',
-            'status': 'publish',
-            'slug': 'test-page'
-        })
+        response = client.post(
+            '/api/v1/pages/sync/',
+            data={
+                'wp_post_id': 123,
+                'url': 'https://example.com/test-page',
+                'title': 'Updated Title',
+                'status': 'publish',
+                'slug': 'test-page'
+            },
+            format='json'
+        )
         assert response.status_code == 200
         assert response.data['created'] is False
         page.refresh_from_db()
@@ -126,18 +134,24 @@ class TestPageSync:
     def test_sync_page_missing_required_fields(self, api_key_client):
         client, api_key = api_key_client
         
-        response = client.post('/api/v1/pages/sync/', {
-            'title': 'Test Page'
-        })
+        response = client.post(
+            '/api/v1/pages/sync/',
+            data={'title': 'Test Page'},
+            format='json'
+        )
         assert response.status_code == 400
     
     def test_sync_page_unauthorized(self, api_client):
-        response = api_client.post('/api/v1/pages/sync/', {
-            'wp_post_id': 123,
-            'url': 'https://example.com/test-page',
-            'title': 'Test Page',
-            'slug': 'test-page'
-        })
+        response = api_client.post(
+            '/api/v1/pages/sync/',
+            data={
+                'wp_post_id': 123,
+                'url': 'https://example.com/test-page',
+                'title': 'Test Page',
+                'slug': 'test-page'
+            },
+            format='json'
+        )
         assert response.status_code == 401
 
 
@@ -156,14 +170,18 @@ class TestSEODataSync:
             slug='test-page'
         )
         
-        response = client.post(f'/api/v1/pages/{page.id}/seo-data/', {
-            'meta_title': 'SEO Title',
-            'meta_description': 'SEO Description',
-            'h1_count': 1,
-            'h1_text': 'Main Heading',
-            'seo_score': 85,
-            'issues': [{'type': 'missing_meta', 'severity': 'high'}]
-        })
+        response = client.post(
+            f'/api/v1/pages/{page.id}/seo-data/',
+            data={
+                'meta_title': 'SEO Title',
+                'meta_description': 'SEO Description',
+                'h1_count': 1,
+                'h1_text': 'Main Heading',
+                'seo_score': 85,
+                'issues': [{'type': 'missing_meta', 'severity': 'high'}]
+            },
+            format='json'
+        )
         assert response.status_code == 201
         assert response.data['created'] is True
         assert SEOData.objects.filter(page=page).exists()
@@ -186,10 +204,11 @@ class TestSEODataSync:
             seo_score=70
         )
         
-        response = client.post(f'/api/v1/pages/{page.id}/seo-data/', {
-            'meta_title': 'New Title',
-            'seo_score': 90
-        })
+        response = client.post(
+            f'/api/v1/pages/{page.id}/seo-data/',
+            data={'meta_title': 'New Title', 'seo_score': 90},
+            format='json'
+        )
         assert response.status_code == 200
         assert response.data['created'] is False
         page.seo_data.refresh_from_db()
@@ -199,9 +218,11 @@ class TestSEODataSync:
     def test_sync_seo_data_page_not_found(self, api_key_client):
         client, api_key = api_key_client
         
-        response = client.post('/api/v1/pages/999/seo-data/', {
-            'seo_score': 85
-        })
+        response = client.post(
+            '/api/v1/pages/999/seo-data/',
+            data={'seo_score': 85},
+            format='json'
+        )
         assert response.status_code == 404
     
     def test_sync_seo_data_other_site_page(self, api_key_client, create_site, create_user):
@@ -219,9 +240,11 @@ class TestSEODataSync:
             slug='other-page'
         )
         
-        response = client.post(f'/api/v1/pages/{other_page.id}/seo-data/', {
-            'seo_score': 85
-        })
+        response = client.post(
+            f'/api/v1/pages/{other_page.id}/seo-data/',
+            data={'seo_score': 85},
+            format='json'
+        )
         assert response.status_code == 404
 
 
@@ -232,10 +255,11 @@ class TestScanEndpoints:
         from integrations.models import Scan
         client, api_key = api_key_client
         
-        response = client.post('/api/v1/scans/', {
-            'url': 'https://example.com',
-            'scan_type': 'full'
-        })
+        response = client.post(
+            '/api/v1/scans/',
+            data={'url': 'https://example.com', 'scan_type': 'full'},
+            format='json'
+        )
         assert response.status_code == 201
         assert response.data['status'] == 'completed'
         assert Scan.objects.filter(site=api_key.site).exists()
@@ -243,9 +267,11 @@ class TestScanEndpoints:
     def test_create_scan_default_type(self, api_key_client):
         client, api_key = api_key_client
         
-        response = client.post('/api/v1/scans/', {
-            'url': 'https://example.com'
-        })
+        response = client.post(
+            '/api/v1/scans/',
+            data={'url': 'https://example.com'},
+            format='json'
+        )
         assert response.status_code == 201
         assert response.data['scan_type'] == 'full'
     
