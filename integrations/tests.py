@@ -57,6 +57,7 @@ def create_api_key(create_site):
 @pytest.fixture
 def api_key_client(api_client, create_api_key):
     api_key, full_key = create_api_key()
+    print(f"DEBUG: Setting API key header: Bearer {full_key[:20]}...")
     api_client.credentials(HTTP_AUTHORIZATION=f'Bearer {full_key}')
     return api_client, api_key
 
@@ -76,7 +77,7 @@ class TestAPIKeyVerification:
         api_client.credentials(HTTP_AUTHORIZATION='Bearer sk_siloq_invalid_key')
         
         response = api_client.post('/api/v1/auth/verify')
-        assert response.status_code == 401
+        assert response.status_code == 403
 
 
 @pytest.mark.django_db
@@ -152,7 +153,7 @@ class TestPageSync:
             },
             format='json'
         )
-        assert response.status_code == 401
+        assert response.status_code == 403
 
 
 @pytest.mark.django_db

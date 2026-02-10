@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.db.models import Prefetch
+from django.db import IntegrityError
 
 from seo.models import SEOData
 from .models import Site
@@ -40,6 +41,22 @@ class SiteViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Set the user when creating a site."""
         serializer.save(user=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        """Create a site with duplicate URL handling."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        try:
+            self.perform_create(serializer)
+        except IntegrityError:
+            return Response(
+                {'error': 'A site with this URL already exists for your account'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     @action(detail=True, methods=['get'])
     def overview(self, request, pk=None):

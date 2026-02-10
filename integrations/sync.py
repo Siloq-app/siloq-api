@@ -61,13 +61,8 @@ def verify_api_key(request):
 def sync_page(request):
     """
     Sync a page from WordPress to Django backend.
-    
-    POST /api/v1/pages/sync/
-    Headers: Authorization: Bearer <api_key>
-    Body: { "wp_post_id": 123, "url": "...", "title": "...", ... }
-    
-    Returns: { "page_id": 1, "message": "Page synced successfully" }
     """
+    logger.debug(f"sync_page called, user: {request.user}, auth: {request.auth}")
     site = request.auth['site']
     serializer = SEOPageSyncSerializer(data=request.data)
     
