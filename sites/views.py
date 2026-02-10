@@ -252,6 +252,131 @@ class SiteViewSet(viewsets.ModelViewSet):
             'is_synced': page_count > 0,
         })
 
+    @action(detail=True, methods=['get'])
+    def silos(self, request, pk=None):
+        """
+        Get all silos (content clusters) for a site.
+        
+        GET /api/v1/sites/{id}/silos/
+        
+        Returns:
+        {
+            "silos": [
+                {
+                    "id": 1,
+                    "name": "Kitchen Remodeling",
+                    "target_page": { "id": 1, "url": "...", "title": "...", "slug": "...", "status": "publish" },
+                    "topic_cluster": { "id": 1, "name": "Home Renovation" } | null,
+                    "supporting_pages": [...],
+                    "supporting_count": 5,
+                    "linked_count": 3,
+                    "created_at": "2026-02-01T..."
+                }
+            ],
+            "total": 2
+        }
+        
+        Note: This currently auto-generates silos from money pages.
+        Full silo management coming in V2.
+        """
+        site = self.get_object()
+        pages = site.pages.all()
+        money_pages = pages.filter(is_money_page=True)
+        
+        silos = []
+        for i, money_page in enumerate(money_pages):
+            # For now, create a virtual silo from each money page
+            # In V2, this will come from actual Silo model
+            silos.append({
+                'id': money_page.id,
+                'name': money_page.title or f'Silo {i + 1}',
+                'target_page': {
+                    'id': money_page.id,
+                    'url': money_page.url,
+                    'title': money_page.title,
+                    'slug': money_page.slug,
+                    'status': money_page.status,
+                },
+                'topic_cluster': None,  # V2 feature
+                'supporting_pages': [],  # V2: pages linked to this money page
+                'supporting_count': 0,
+                'linked_count': 0,
+                'created_at': money_page.created_at.isoformat() if money_page.created_at else None,
+            })
+        
+        return Response({
+            'silos': silos,
+            'total': len(silos),
+        })
+
+    @action(detail=True, methods=['get'], url_path='pending-approvals')
+    def pending_approvals(self, request, pk=None):
+        """
+        Get pending approval actions for a site.
+        
+        GET /api/v1/sites/{id}/pending-approvals/
+        
+        Returns:
+        {
+            "actions": [
+                {
+                    "id": 1,
+                    "action_type": "consolidate",
+                    "description": "Merge 3 pages about 'kitchen remodeling'",
+                    "risk": "moderate",
+                    "status": "pending",
+                    "impact": "High - affects 3 pages",
+                    "doctrine": "Siloq Doctrine: Consolidate competing pages...",
+                    "is_destructive": false,
+                    "related_issue": {...} | null,
+                    "related_silo": 1 | null,
+                    "created_at": "2026-02-01T...",
+                    "rollback_expires_at": null
+                }
+            ],
+            "total": 5
+        }
+        
+        Note: This currently generates pending actions from cannibalization issues.
+        Full approval workflow coming in V2.
+        """
+        site = self.get_object()
+        pages = site.pages.all()
+        
+        # Generate pending actions from cannibalization issues
+        issues = detect_cannibalization(pages)
+        
+        actions = []
+        for i, issue in enumerate(issues):
+            # Create a pending action for each cannibalization issue
+            action_type = issue['recommendation_type'] or 'review'
+            is_destructive = action_type in ['consolidate', 'redirect']
+            risk = 'high' if is_destructive else 'moderate' if len(issue['competing_pages']) > 3 else 'safe'
+            
+            actions.append({
+                'id': i + 1,
+                'action_type': action_type,
+                'description': f"{action_type.capitalize()} {len(issue['competing_pages'])} pages competing for '{issue['keyword']}'",
+                'risk': risk,
+                'status': 'pending',
+                'impact': f"Affects {len(issue['competing_pages'])} pages with {issue['total_impressions']} monthly impressions",
+                'doctrine': f"Siloq Doctrine: {action_type.capitalize()} pages that compete for the same keyword to consolidate ranking signals.",
+                'is_destructive': is_destructive,
+                'related_issue': {
+                    'id': i + 1,
+                    'keyword': issue['keyword'],
+                    'severity': issue['severity'],
+                },
+                'related_silo': None,
+                'created_at': timezone.now().isoformat(),
+                'rollback_expires_at': None,
+            })
+        
+        return Response({
+            'actions': actions,
+            'total': len(actions),
+        })
+
 
 class APIKeyViewSet(viewsets.ModelViewSet):
     """
