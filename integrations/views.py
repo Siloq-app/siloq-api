@@ -1,5 +1,6 @@
 """
 Views for WordPress plugin integration endpoints.
+All views must be csrf_exempt because they're called from WordPress plugin (external API client).
 """
 import re
 from rest_framework import status
@@ -8,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
+from django.views.decorators.csrf import csrf_exempt
 from sites.models import Site, APIKey
 from seo.models import Page, SEOData
 from seo.serializers import PageSyncSerializer as SEOPageSyncSerializer
@@ -20,6 +22,7 @@ from .permissions import IsAPIKeyAuthenticated, IsJWTOrAPIKeyAuthenticated
 from .authentication import APIKeyAuthentication
 
 
+@csrf_exempt
 @api_view(['POST'])
 @authentication_classes([APIKeyAuthentication])
 @permission_classes([IsAPIKeyAuthenticated])
@@ -53,6 +56,7 @@ def _sanitize_slug(s):
     return s[:500] or 'page'
 
 
+@csrf_exempt
 @api_view(['POST'])
 @authentication_classes([APIKeyAuthentication])
 @permission_classes([IsAPIKeyAuthenticated])
@@ -100,6 +104,7 @@ def sync_page(request):
     }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
+@csrf_exempt
 @api_view(['POST'])
 @permission_classes([IsAPIKeyAuthenticated])
 def sync_seo_data(request, page_id=None):
@@ -146,6 +151,7 @@ def sync_seo_data(request, page_id=None):
     }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
 
+@csrf_exempt
 @api_view(['POST'])
 @permission_classes([IsAPIKeyAuthenticated])
 def create_scan(request):
@@ -198,6 +204,7 @@ def create_scan(request):
     return Response(ScanSerializer(scan).data, status=status.HTTP_201_CREATED)
 
 
+@csrf_exempt
 @api_view(['GET'])
 @permission_classes([IsAPIKeyAuthenticated])
 def get_scan(request, scan_id):
@@ -215,6 +222,7 @@ def get_scan(request, scan_id):
     return Response(ScanSerializer(scan).data)
 
 
+@csrf_exempt
 @api_view(['GET'])
 @permission_classes([IsAPIKeyAuthenticated])
 def get_scan_report(request, scan_id):
