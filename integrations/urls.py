@@ -7,11 +7,11 @@ from . import views
 
 urlpatterns = [
     # (auth/verify is mounted at api_urls via path('auth/verify', include(...)); remainder is '')
-    # WordPress page sync
-    path('pages/sync', views.sync_page, name='sync-page'),
+    # WordPress page sync - trailing slashes to avoid redirects that lose CSRF exemption
+    path('pages/sync/', views.sync_page, name='sync-page'),
     path('pages/<int:page_id>/seo-data/', views.sync_seo_data, name='sync-seo-data'),
     # WordPress scanner endpoints
-    path('scans', views.create_scan, name='create-scan'),
-    path('scans/<int:scan_id>', views.get_scan, name='get-scan'),
-    path('scans/<int:scan_id>/report', views.get_scan_report, name='get-scan-report'),
+    path('scans/', views.create_scan, name='create-scan'),
+    path('scans/<int:scan_id>/', views.get_scan, name='get-scan'),
+    path('scans/<int:scan_id>/report/', views.get_scan_report, name='get-scan-report'),
 ]
