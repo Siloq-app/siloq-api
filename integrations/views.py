@@ -275,8 +275,16 @@ def debug_page_count(request):
     sites = Site.objects.annotate(page_count=Count('pages')).values(
         'id', 'name', 'url', 'page_count', 'user_id', 'user__email', 'last_synced_at'
     ).order_by('id')
+    
+    # Optional: check pages for a specific site
+    site_id = request.query_params.get('site_id')
+    pages_sample = []
+    if site_id:
+        pages_sample = list(Page.objects.filter(site_id=site_id).values('id', 'title', 'url')[:5])
+    
     return Response({
         'sites': list(sites),
         'total_pages': Page.objects.count(),
-        'total_sites': Site.objects.count()
+        'total_sites': Site.objects.count(),
+        'pages_sample': pages_sample
     })
