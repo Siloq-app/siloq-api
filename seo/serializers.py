@@ -86,6 +86,7 @@ class PageSyncSerializer(serializers.Serializer):
     yoast_description = serializers.CharField(required=False, allow_blank=True)
     featured_image = serializers.URLField(required=False, allow_blank=True)
     is_noindex = serializers.BooleanField(required=False, default=False)
+    is_homepage = serializers.BooleanField(required=False, default=False)
 
     def to_internal_value(self, data):
         """Flatten nested meta fields if present (yoast_title, yoast_description, featured_image, is_noindex)."""

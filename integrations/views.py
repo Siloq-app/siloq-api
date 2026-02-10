@@ -93,6 +93,10 @@ def sync_page(request):
             setattr(page, key, value)
         page.save()
     
+    # If this page is marked as homepage, clear homepage flag from other pages
+    if data.get('is_homepage', False):
+        Page.objects.filter(site=site, is_homepage=True).exclude(id=page.id).update(is_homepage=False)
+    
     # Update site's last_synced_at
     site.last_synced_at = timezone.now()
     site.save(update_fields=['last_synced_at'])
