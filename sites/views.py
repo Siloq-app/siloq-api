@@ -546,6 +546,22 @@ class SiteViewSet(viewsets.ModelViewSet):
             'page_title': page.title,
         })
 
+    @action(detail=True, methods=['get'], url_path='content-suggestions')
+    def content_suggestions(self, request, pk=None):
+        """
+        Get content suggestions for target pages.
+        
+        GET /api/v1/sites/{id}/content-suggestions/
+        
+        Returns suggested supporting content topics for each target page.
+        """
+        from seo.link_analysis import generate_content_suggestions
+        
+        site = self.get_object()
+        suggestions = generate_content_suggestions(site)
+        
+        return Response(suggestions)
+
 
 class APIKeyViewSet(viewsets.ModelViewSet):
     """

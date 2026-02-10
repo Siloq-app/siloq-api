@@ -644,3 +644,187 @@ def analyze_internal_links(site) -> Dict[str, Any]:
         'structure': structure,
         'recommendations': recommendations,
     }
+
+
+def generate_content_suggestions(site) -> Dict[str, Any]:
+    """
+    Generate content suggestions for a site based on target pages.
+    
+    For each target (money) page, suggests supporting content topics.
+    Uses keyword analysis and content gap detection.
+    """
+    from .models import Page
+    
+    pages = Page.objects.filter(site=site)
+    target_pages = pages.filter(is_money_page=True)
+    supporting_pages = pages.filter(parent_silo__isnull=False)
+    
+    suggestions = []
+    
+    for target in target_pages:
+        # Extract keywords from target
+        keywords = extract_keywords_from_title(target.title)
+        primary_keyword = keywords[0] if keywords else target.title.lower()
+        
+        # Get existing supporting pages for this target
+        existing_supporting = supporting_pages.filter(parent_silo=target)
+        existing_titles = [p.title.lower() for p in existing_supporting]
+        
+        # Generate topic suggestions
+        topic_ideas = []
+        
+        # 1. Question-based content
+        question_templates = [
+            f"What is {primary_keyword}",
+            f"How to {primary_keyword}",
+            f"Why {primary_keyword} matters",
+            f"Benefits of {primary_keyword}",
+            f"{primary_keyword.title()} guide for beginners",
+            f"Common {primary_keyword} mistakes to avoid",
+            f"{primary_keyword.title()} best practices",
+            f"How much does {primary_keyword} cost",
+        ]
+        
+        # 2. Comparison/alternative content
+        comparison_templates = [
+            f"{primary_keyword.title()} vs alternatives",
+            f"Types of {primary_keyword}",
+            f"Best {primary_keyword} options",
+            f"{primary_keyword.title()} comparison",
+        ]
+        
+        # 3. Local/specific variations (if applicable)
+        local_templates = [
+            f"{primary_keyword.title()} near me",
+            f"Local {primary_keyword} services",
+            f"{primary_keyword.title()} in [city]",
+        ]
+        
+        # 4. Process/step content
+        process_templates = [
+            f"{primary_keyword.title()} process explained",
+            f"Step-by-step {primary_keyword}",
+            f"What to expect from {primary_keyword}",
+            f"Preparing for {primary_keyword}",
+        ]
+        
+        all_templates = (
+            question_templates[:4] +  # Top 4 questions
+            comparison_templates[:2] +  # Top 2 comparisons
+            process_templates[:2]  # Top 2 process
+        )
+        
+        for template in all_templates:
+            # Check if similar content already exists
+            template_lower = template.lower()
+            already_exists = any(
+                similar_content(template_lower, existing) 
+                for existing in existing_titles
+            )
+            
+            if not already_exists:
+                topic_ideas.append({
+                    'title': template,
+                    'type': categorize_content_type(template),
+                    'target_keyword': primary_keyword,
+                    'priority': calculate_content_priority(template, primary_keyword),
+                })
+        
+        # Sort by priority
+        topic_ideas.sort(key=lambda x: -x['priority'])
+        
+        suggestions.append({
+            'target_page': {
+                'id': target.id,
+                'title': target.title,
+                'url': target.url,
+            },
+            'existing_supporting_count': existing_supporting.count(),
+            'suggested_topics': topic_ideas[:6],  # Top 6 suggestions
+            'gap_analysis': {
+                'has_how_to': any('how to' in t.lower() for t in existing_titles),
+                'has_comparison': any('vs' in t.lower() or 'comparison' in t.lower() for t in existing_titles),
+                'has_guide': any('guide' in t.lower() for t in existing_titles),
+                'has_faq': any('faq' in t.lower() or 'question' in t.lower() for t in existing_titles),
+            }
+        })
+    
+    return {
+        'suggestions': suggestions,
+        'total_targets': len(suggestions),
+        'total_suggested_topics': sum(len(s['suggested_topics']) for s in suggestions),
+    }
+
+
+def similar_content(title1: str, title2: str) -> bool:
+    """Check if two titles are similar enough to be considered duplicates."""
+    # Simple word overlap check
+    words1 = set(title1.lower().split())
+    words2 = set(title2.lower().split())
+    
+    # Remove common stop words
+    stop_words = {'the', 'a', 'an', 'is', 'are', 'to', 'for', 'of', 'and', 'in', 'on', 'with'}
+    words1 = words1 - stop_words
+    words2 = words2 - stop_words
+    
+    if not words1 or not words2:
+        return False
+    
+    # Calculate Jaccard similarity
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    similarity = intersection / union if union > 0 else 0
+    
+    return similarity > 0.5  # 50% word overlap
+
+
+def categorize_content_type(title: str) -> str:
+    """Categorize content suggestion by type."""
+    title_lower = title.lower()
+    
+    if any(q in title_lower for q in ['what is', 'why', 'how much', 'when']):
+        return 'educational'
+    elif any(q in title_lower for q in ['how to', 'guide', 'step']):
+        return 'how-to'
+    elif any(q in title_lower for q in ['vs', 'comparison', 'alternative', 'best']):
+        return 'comparison'
+    elif any(q in title_lower for q in ['mistake', 'avoid', 'tip', 'practice']):
+        return 'tips'
+    elif any(q in title_lower for q in ['cost', 'price', 'budget']):
+        return 'commercial'
+    elif any(q in title_lower for q in ['near me', 'local', 'in [']):
+        return 'local'
+    else:
+        return 'general'
+
+
+def calculate_content_priority(title: str, keyword: str) -> int:
+    """Calculate priority score for content suggestion."""
+    score = 50  # Base score
+    title_lower = title.lower()
+    
+    # Boost for how-to content (high search intent)
+    if 'how to' in title_lower:
+        score += 20
+    
+    # Boost for beginner content (broad appeal)
+    if 'beginner' in title_lower or 'guide' in title_lower:
+        score += 15
+    
+    # Boost for cost/price content (commercial intent)
+    if 'cost' in title_lower or 'price' in title_lower:
+        score += 25
+    
+    # Boost for comparison content (decision stage)
+    if 'vs' in title_lower or 'comparison' in title_lower:
+        score += 20
+    
+    # Boost for mistake/avoid content (problem-aware)
+    if 'mistake' in title_lower or 'avoid' in title_lower:
+        score += 10
+    
+    # Boost for best/top content
+    if 'best' in title_lower:
+        score += 15
+    
+    return score
