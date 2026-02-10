@@ -644,3 +644,96 @@ def analyze_internal_links(site) -> Dict[str, Any]:
         'structure': structure,
         'recommendations': recommendations,
     }
+
+
+def get_anchor_text_overview(site) -> Dict[str, Any]:
+    """
+    Get comprehensive anchor text usage overview for a site.
+    
+    Returns:
+    - All unique anchors with usage stats
+    - Grouped by target page
+    - Flags for issues (conflicts, etc.)
+    """
+    from collections import defaultdict
+    
+    links = InternalLink.objects.filter(
+        site=site,
+        target_page__isnull=False,
+        is_valid=True
+    ).select_related('source_page', 'target_page')
+    
+    # Group anchors by normalized text
+    anchor_groups = defaultdict(lambda: {
+        'anchor_text': '',
+        'targets': {},  # page_id -> page info
+        'sources': {},  # page_id -> page info
+        'total_uses': 0,
+        'has_conflict': False,
+    })
+    
+    for link in links:
+        normalized = link.anchor_text_normalized or link.anchor_text.lower().strip()
+        if not normalized:
+            continue
+        
+        group = anchor_groups[normalized]
+        group['anchor_text'] = link.anchor_text
+        group['total_uses'] += 1
+        
+        # Track target pages
+        target_id = link.target_page.id
+        if target_id not in group['targets']:
+            group['targets'][target_id] = {
+                'id': target_id,
+                'title': link.target_page.title,
+                'url': link.target_page.url,
+                'is_money_page': link.target_page.is_money_page,
+                'link_count': 0,
+            }
+        group['targets'][target_id]['link_count'] += 1
+        
+        # Track source pages
+        source_id = link.source_page.id
+        if source_id not in group['sources']:
+            group['sources'][source_id] = {
+                'id': source_id,
+                'title': link.source_page.title,
+                'url': link.source_page.url,
+            }
+        
+        # Flag if same anchor points to multiple targets
+        if len(group['targets']) > 1:
+            group['has_conflict'] = True
+    
+    # Convert to list and sort by usage
+    anchors = []
+    for normalized, data in anchor_groups.items():
+        anchors.append({
+            'anchor_text': data['anchor_text'],
+            'normalized': normalized,
+            'total_uses': data['total_uses'],
+            'target_count': len(data['targets']),
+            'targets': list(data['targets'].values()),
+            'source_count': len(data['sources']),
+            'sources': list(data['sources'].values()),
+            'has_conflict': data['has_conflict'],
+        })
+    
+    # Sort: conflicts first, then by usage
+    anchors.sort(key=lambda x: (-x['has_conflict'], -x['total_uses']))
+    
+    # Calculate stats
+    total_anchors = len(anchors)
+    conflict_count = sum(1 for a in anchors if a['has_conflict'])
+    unique_to_one_target = sum(1 for a in anchors if a['target_count'] == 1)
+    
+    return {
+        'anchors': anchors,
+        'stats': {
+            'total_anchors': total_anchors,
+            'conflict_count': conflict_count,
+            'clean_count': unique_to_one_target,
+            'health_percentage': round((unique_to_one_target / total_anchors * 100) if total_anchors > 0 else 100, 1),
+        }
+    }
