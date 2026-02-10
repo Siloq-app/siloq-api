@@ -20,7 +20,7 @@ class PageViewSet(viewsets.ModelViewSet):
     retrieve: GET /api/v1/pages/{id}/ - Get page details with SEO data
     """
     permission_classes = [IsAuthenticated]
-    http_method_names = ['get', 'patch', 'head', 'options']  # Only allow GET and PATCH
+    http_method_names = ['get', 'post', 'patch', 'head', 'options']  # GET, POST (for actions), PATCH
 
     def get_queryset(self):
         """Return pages for sites owned by the current user."""
