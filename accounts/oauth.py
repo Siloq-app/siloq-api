@@ -55,13 +55,38 @@ def google_login(request):
     """
     # Get Google OAuth credentials from environment
     client_id = os.getenv('GOOGLE_CLIENT_ID', '')
-    redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:8000/api/v1/auth/google/callback/')
+    redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', '')
+    
+    # Better default detection for production
+    if not redirect_uri:
+        # Try to detect if we're in production by checking common prod domains
+        allowed_production_hosts = ['siloq.ai', 'siloq-backend.onrender.com', 'api.siloq.ai']
+        host = request.get_host()
+        
+        if any(prod_host in host for prod_host in allowed_production_hosts):
+            # Use HTTPS for production
+            redirect_uri = f"https://{host}/api/v1/auth/google/callback/"
+            logger.info(f"Auto-detected production redirect_uri: {redirect_uri}")
+        else:
+            # Development fallback
+            redirect_uri = 'http://localhost:8000/api/v1/auth/google/callback/'
+            logger.warning(f"Using development redirect_uri: {redirect_uri}")
     
     if not client_id:
+        logger.error("GOOGLE_CLIENT_ID not configured")
         return Response(
             {'error': 'Google OAuth not configured'},
             status=status.HTTP_503_SERVICE_UNAVAILABLE
         )
+    
+    if not redirect_uri:
+        logger.error("GOOGLE_REDIRECT_URI not configured and could not be auto-detected")
+        return Response(
+            {'error': 'Google OAuth redirect URI not configured'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+    
+    logger.info(f"Initiating Google OAuth with redirect_uri: {redirect_uri}")
     
     # Build Google OAuth URL with proper URL encoding
     google_auth_url = 'https://accounts.google.com/o/oauth2/v2/auth'
@@ -109,9 +134,22 @@ def google_callback(request):
     # Exchange code for tokens
     client_id = os.getenv('GOOGLE_CLIENT_ID', '')
     client_secret = os.getenv('GOOGLE_CLIENT_SECRET', '')
-    redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', 'http://localhost:8000/api/v1/auth/google/callback/')
+    redirect_uri = os.getenv('GOOGLE_REDIRECT_URI', '')
+    
+    # Better default detection for production (same logic as google_login)
+    if not redirect_uri:
+        allowed_production_hosts = ['siloq.ai', 'siloq-backend.onrender.com', 'api.siloq.ai']
+        host = request.get_host()
+        
+        if any(prod_host in host for prod_host in allowed_production_hosts):
+            redirect_uri = f"https://{host}/api/v1/auth/google/callback/"
+            logger.info(f"Auto-detected production redirect_uri in callback: {redirect_uri}")
+        else:
+            redirect_uri = 'http://localhost:8000/api/v1/auth/google/callback/'
+            logger.warning(f"Using development redirect_uri in callback: {redirect_uri}")
     
     if not client_id or not client_secret:
+        logger.error("GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET not configured")
         return Response(
             {'error': 'Google OAuth not configured on server'},
             status=status.HTTP_503_SERVICE_UNAVAILABLE
