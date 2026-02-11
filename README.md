@@ -1,4 +1,4 @@
-# Siloq Backend
+# Siloq API
 
 Django REST API powering Siloq — a WordPress SEO dashboard for site management, SEO analytics, and WordPress plugin integration.
 
