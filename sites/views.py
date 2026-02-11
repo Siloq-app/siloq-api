@@ -447,6 +447,26 @@ class SiteViewSet(viewsets.ModelViewSet):
             'total': len(conflicts),
         })
 
+    @action(detail=True, methods=['get'], url_path='anchor-text-overview')
+    def anchor_text_overview(self, request, pk=None):
+        """
+        Get comprehensive anchor text usage overview.
+        
+        GET /api/v1/sites/{id}/anchor-text-overview/
+        
+        Returns all anchor texts with:
+        - Usage count
+        - Target pages
+        - Source pages
+        - Conflict flags
+        """
+        from seo.link_analysis import get_anchor_text_overview
+        
+        site = self.get_object()
+        overview = get_anchor_text_overview(site)
+        
+        return Response(overview)
+
     @action(detail=True, methods=['post'], url_path='sync-links')
     def sync_links(self, request, pk=None):
         """
