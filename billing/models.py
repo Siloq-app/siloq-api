@@ -3,7 +3,7 @@ Billing and subscription models.
 Handles Stripe subscriptions, payments, and user billing information.
 """
 from django.db import models
-from django.contrib.auth.models import User
+from django.conf import settings
 from django.utils import timezone
 
 
@@ -28,7 +28,7 @@ class Subscription(models.Model):
     ]
     
     user = models.OneToOneField(
-        User,
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='subscription'
     )
@@ -94,7 +94,7 @@ class Payment(models.Model):
     ]
     
     user = models.ForeignKey(
-        User,
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='payments'
     )
@@ -130,7 +130,7 @@ class Usage(models.Model):
     ]
     
     user = models.ForeignKey(
-        User,
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name='usage_records'
     )

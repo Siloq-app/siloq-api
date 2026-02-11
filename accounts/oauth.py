@@ -26,6 +26,8 @@ def _is_valid_frontend_url(url):
     allowed_hosts = [
         'localhost',
         '127.0.0.1',
+        'app.siloq.ai',
+        'siloq.ai',
     ]
     try:
         parsed = urllib.parse.urlparse(url)
