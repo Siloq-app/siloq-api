@@ -115,3 +115,39 @@ class Payment(models.Model):
     
     def __str__(self):
         return f"{self.user.username} - ${self.amount} ({self.status})"
+
+
+class Usage(models.Model):
+    """
+    Track feature usage for billing and trial limits.
+    """
+    FEATURE_CHOICES = [
+        ('pages', 'Pages Analyzed'),
+        ('scans', 'SEO Scans'),
+        ('cannibalization', 'Cannibalization Analysis'),
+        ('silo_analysis', 'Silo Analysis'),
+        ('api_calls', 'API Calls'),
+    ]
+    
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='usage_records'
+    )
+    feature = models.CharField(max_length=30, choices=FEATURE_CHOICES)
+    count = models.PositiveIntegerField(default=0)
+    
+    # Billing period tracking
+    period_start = models.DateTimeField()
+    period_end = models.DateTimeField()
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'usage'
+        ordering = ['-created_at']
+        unique_together = ['user', 'feature', 'period_start']
+    
+    def __str__(self):
+        return f"{self.user.username} - {self.feature}: {self.count}"
