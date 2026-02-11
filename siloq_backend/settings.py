@@ -180,6 +180,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://app.siloq.ai",
     "https://app.siloq.ai",
+    "https://siloq.ai",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
