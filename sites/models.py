@@ -13,6 +13,15 @@ class Site(models.Model):
     Represents a WordPress website connected to Siloq.
     One user can have multiple sites.
     """
+    # Business type choices
+    BUSINESS_TYPE_CHOICES = [
+        ('local_service', 'Local/Service Business'),
+        ('ecommerce', 'E-Commerce'),
+        ('content_blog', 'Content/Blog'),
+        ('saas', 'SaaS/Software'),
+        ('other', 'Other'),
+    ]
+    
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -28,8 +37,40 @@ class Site(models.Model):
     )
     is_active = models.BooleanField(default=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
+    sync_requested_at = models.DateTimeField(null=True, blank=True, help_text="When user requested a sync from dashboard")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    
+    # Business Profile (Onboarding Wizard)
+    business_type = models.CharField(
+        max_length=50,
+        choices=BUSINESS_TYPE_CHOICES,
+        blank=True,
+        null=True,
+        help_text="Type of business"
+    )
+    primary_services = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of main services/products the business offers"
+    )
+    service_areas = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="List of geographic areas served (for local businesses)"
+    )
+    target_audience = models.TextField(
+        blank=True,
+        help_text="Description of target audience/customers"
+    )
+    business_description = models.TextField(
+        blank=True,
+        help_text="Brief description of the business"
+    )
+    onboarding_complete = models.BooleanField(
+        default=False,
+        help_text="Whether the business onboarding wizard has been completed"
+    )
 
     class Meta:
         db_table = 'sites'
@@ -38,6 +79,11 @@ class Site(models.Model):
 
     def __str__(self):
         return f"{self.name} ({self.url})"
+    
+    @property
+    def needs_onboarding(self):
+        """Check if site needs to complete onboarding."""
+        return not self.onboarding_complete
 
 
 class APIKey(models.Model):

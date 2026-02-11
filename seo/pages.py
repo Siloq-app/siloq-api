@@ -2,8 +2,10 @@
 Page management views.
 Handles listing and retrieving pages with SEO data.
 """
-from rest_framework import viewsets
+from rest_framework import viewsets, status
+from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 from .models import Page
 from .serializers import PageSerializer, PageListSerializer
 from sites.models import Site
@@ -36,3 +38,36 @@ class PageViewSet(viewsets.ReadOnlyModelViewSet):
         if self.action == 'list':
             return PageListSerializer
         return PageSerializer
+
+    @action(detail=True, methods=['post'])
+    def toggle_money_page(self, request, pk=None):
+        """
+        Toggle the is_money_page status for a page.
+        POST /api/v1/pages/{id}/toggle_money_page/
+        """
+        try:
+            # Get the page, ensuring it belongs to the user's sites
+            user_sites = Site.objects.filter(user=request.user)
+            page = Page.objects.get(pk=pk, site__in=user_sites)
+            
+            # Toggle the field
+            page.is_money_page = not page.is_money_page
+            page.save(update_fields=['is_money_page'])
+            
+            return Response({
+                'success': True,
+                'id': page.id,
+                'is_money_page': page.is_money_page,
+                'message': f'Page "{page.title}" is now {"a money page" if page.is_money_page else "a regular page"}.'
+            }, status=status.HTTP_200_OK)
+            
+        except Page.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Page not found or you do not have permission to modify it.'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

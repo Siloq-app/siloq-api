@@ -7,6 +7,8 @@ python-dotenv==1.0.0
 Pillow==10.2.0
 requests==2.31.0
 gunicorn==21.2.0
+whitenoise==6.6.0
+stripe==7.10.0
+beautifulsoup4==4.12.3
 pytest==7.4.4
 pytest-django==4.7.0
-

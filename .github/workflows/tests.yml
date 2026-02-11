@@ -1,0 +1,53 @@
+name: Django Tests
+
+on:
+  push:
+    branches: [ main, develop, refactor/python-modules ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: siloq_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run tests
+      env:
+        DJANGO_SETTINGS_MODULE: siloq_backend.test_settings
+        DATABASE_URL: postgres://postgres:postgres@localhost:5432/siloq_test
+      run: |
+        python manage.py migrate
+        pytest -v --tb=short
+
+    - name: Run Django system check
+      env:
+        DJANGO_SETTINGS_MODULE: siloq_backend.test_settings
+      run: |
+        python manage.py check

@@ -9,15 +9,20 @@ class SiteSerializer(serializers.ModelSerializer):
     """Serializer for Site model."""
     page_count = serializers.SerializerMethodField()
     api_key_count = serializers.SerializerMethodField()
+    needs_onboarding = serializers.BooleanField(read_only=True)
     
     class Meta:
         model = Site
         fields = (
             'id', 'name', 'url', 'wp_site_id', 'is_active',
             'last_synced_at', 'created_at', 'updated_at',
-            'page_count', 'api_key_count'
+            'page_count', 'api_key_count',
+            # Business profile fields
+            'business_type', 'primary_services', 'service_areas',
+            'target_audience', 'business_description', 'onboarding_complete',
+            'needs_onboarding'
         )
-        read_only_fields = ('id', 'created_at', 'updated_at', 'last_synced_at')
+        read_only_fields = ('id', 'created_at', 'updated_at', 'last_synced_at', 'needs_onboarding')
 
     def get_page_count(self, obj):
         """Get count of pages for this site."""
@@ -26,6 +31,48 @@ class SiteSerializer(serializers.ModelSerializer):
     def get_api_key_count(self, obj):
         """Get count of active API keys for this site."""
         return obj.api_keys.filter(is_active=True).count()
+
+
+class BusinessProfileSerializer(serializers.ModelSerializer):
+    """Serializer for business profile (onboarding wizard)."""
+    
+    class Meta:
+        model = Site
+        fields = (
+            'business_type',
+            'primary_services',
+            'service_areas',
+            'target_audience',
+            'business_description',
+            'onboarding_complete',
+        )
+    
+    def validate_primary_services(self, value):
+        """Ensure primary_services is a list of strings."""
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Must be a list of services")
+        if len(value) > 20:
+            raise serializers.ValidationError("Maximum 20 services allowed")
+        return [str(s).strip() for s in value if s]
+    
+    def validate_service_areas(self, value):
+        """Ensure service_areas is a list of strings."""
+        if not isinstance(value, list):
+            raise serializers.ValidationError("Must be a list of areas")
+        if len(value) > 50:
+            raise serializers.ValidationError("Maximum 50 service areas allowed")
+        return [str(a).strip() for a in value if a]
+    
+    def update(self, instance, validated_data):
+        """Update profile and mark onboarding as complete if all required fields filled."""
+        instance = super().update(instance, validated_data)
+        
+        # Auto-mark onboarding complete if business_type and primary_services are set
+        if instance.business_type and instance.primary_services:
+            instance.onboarding_complete = True
+            instance.save(update_fields=['onboarding_complete'])
+        
+        return instance
 
 
 class APIKeySerializer(serializers.ModelSerializer):

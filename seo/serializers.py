@@ -35,7 +35,7 @@ class PageSerializer(serializers.ModelSerializer):
             'id', 'site', 'wp_post_id', 'url', 'title', 'slug',
             'content', 'excerpt', 'status', 'published_at', 'modified_at',
             'parent_id', 'menu_order', 'yoast_title', 'yoast_description',
-            'featured_image', 'siloq_page_id', 'last_synced_at',
+            'featured_image', 'siloq_page_id', 'is_money_page', 'last_synced_at',
             'created_at', 'updated_at', 'seo_data'
         )
         read_only_fields = ('id', 'created_at', 'updated_at', 'last_synced_at')
@@ -50,38 +50,23 @@ class PageListSerializer(serializers.ModelSerializer):
         model = Page
         fields = (
             'id', 'url', 'title', 'status', 'published_at',
-            'last_synced_at', 'seo_score', 'issue_count'
+            'last_synced_at', 'seo_score', 'issue_count', 'is_money_page', 'is_noindex'
         )
 
     def get_seo_score(self, obj):
-        """Get SEO score from related SEOData."""
-        # Access prefetched seo_data if available, otherwise use direct access
-        if hasattr(obj, '_prefetched_objects_cache') and 'seo_data' in obj._prefetched_objects_cache:
-            seo_data_list = obj._prefetched_objects_cache['seo_data']
-            if seo_data_list:
-                return seo_data_list[0].seo_score
-            return None
-        # For OneToOneField, try direct access
+        """Get SEO score from related SEOData (OneToOneField)."""
         try:
-            if hasattr(obj, 'seo_data') and obj.seo_data:
-                return obj.seo_data.seo_score
+            return obj.seo_data.seo_score
         except SEOData.DoesNotExist:
-            pass
-        return None
+            return None
 
     def get_issue_count(self, obj):
-        """Get issue count from related SEOData."""
-        if hasattr(obj, '_prefetched_objects_cache') and 'seo_data' in obj._prefetched_objects_cache:
-            seo_data_list = obj._prefetched_objects_cache['seo_data']
-            if seo_data_list and seo_data_list[0].issues:
-                return len(seo_data_list[0].issues)
-            return 0
+        """Get issue count from related SEOData (OneToOneField)."""
         try:
-            if hasattr(obj, 'seo_data') and obj.seo_data and obj.seo_data.issues:
-                return len(obj.seo_data.issues)
+            seo_data = obj.seo_data
+            return len(seo_data.issues) if seo_data.issues else 0
         except SEOData.DoesNotExist:
-            pass
-        return 0
+            return 0
 
 
 class PageSyncSerializer(serializers.Serializer):
@@ -100,9 +85,11 @@ class PageSyncSerializer(serializers.Serializer):
     yoast_title = serializers.CharField(required=False, allow_blank=True)
     yoast_description = serializers.CharField(required=False, allow_blank=True)
     featured_image = serializers.URLField(required=False, allow_blank=True)
+    is_noindex = serializers.BooleanField(required=False, default=False)
+    is_homepage = serializers.BooleanField(required=False, default=False)
 
     def to_internal_value(self, data):
-        """Flatten nested meta.yoast_title, meta.yoast_description, meta.featured_image if present."""
+        """Flatten nested meta fields if present (yoast_title, yoast_description, featured_image, is_noindex)."""
         if isinstance(data, dict) and 'meta' in data and isinstance(data['meta'], dict):
             meta = data['meta']
             data = dict(data)
@@ -112,4 +99,9 @@ class PageSyncSerializer(serializers.Serializer):
                 data['yoast_description'] = meta['yoast_description']
             if 'featured_image' not in data and meta.get('featured_image') is not None:
                 data['featured_image'] = meta['featured_image']
+            # Check for noindex in meta (Yoast sends this as _yoast_wpseo_meta-robots-noindex)
+            if 'is_noindex' not in data:
+                noindex_val = meta.get('_yoast_wpseo_meta-robots-noindex') or meta.get('is_noindex')
+                if noindex_val:
+                    data['is_noindex'] = noindex_val in [True, '1', 1, 'true', 'yes']
         return super().to_internal_value(data)
