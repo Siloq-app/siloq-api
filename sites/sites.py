@@ -16,6 +16,7 @@ from seo.models import SEOData
 from .models import Site
 from .serializers import SiteSerializer
 from .permissions import IsSiteOwner
+from .analysis import detect_cannibalization, analyze_site, calculate_health_score
 
 logger = logging.getLogger(__name__)
 
@@ -146,4 +147,100 @@ class SiteViewSet(viewsets.ModelViewSet):
             'target_audience': site.target_audience or '',
             'business_description': site.business_description or '',
             'onboarding_complete': site.onboarding_complete,
+        })
+
+    @action(detail=True, methods=['get'], url_path='cannibalization-issues')
+    def cannibalization_issues(self, request, pk=None):
+        """
+        Get all cannibalization issues for a site.
+        
+        GET /api/v1/sites/{id}/cannibalization-issues/
+        """
+        site = self.get_object()
+        pages = site.pages.all().prefetch_related('seo_data')
+        
+        # Detect cannibalization
+        issues = detect_cannibalization(pages)
+        
+        # Format for API response
+        formatted_issues = []
+        for i, issue in enumerate(issues):
+            formatted_issues.append({
+                'id': i + 1,
+                'keyword': issue['keyword'],
+                'severity': issue['severity'],
+                'recommendation_type': issue['recommendation_type'],
+                'total_impressions': issue.get('total_impressions', 0),
+                'competing_pages': [
+                    {
+                        'id': p['id'],
+                        'url': p['url'],
+                        'title': p['title'],
+                    }
+                    for p in issue['competing_pages']
+                ],
+                'suggested_king': {
+                    'id': issue['suggested_king']['id'],
+                    'url': issue['suggested_king']['url'],
+                    'title': issue['suggested_king']['title'],
+                } if issue.get('suggested_king') else None,
+            })
+        
+        return Response({
+            'issues': formatted_issues,
+            'total': len(formatted_issues),
+        })
+
+    @action(detail=True, methods=['get'], url_path='health-summary')
+    def health_summary(self, request, pk=None):
+        """
+        Get detailed health summary for a site.
+        
+        GET /api/v1/sites/{id}/health-summary/
+        """
+        site = self.get_object()
+        health = calculate_health_score(site)
+        
+        return Response({
+            'site_id': site.id,
+            'health_score': health['health_score'],
+            'health_score_delta': health['health_score_delta'],
+            'breakdown': health['breakdown'],
+        })
+
+    @action(detail=True, methods=['post'])
+    def analyze(self, request, pk=None):
+        """
+        Run full analysis on a site.
+        
+        POST /api/v1/sites/{id}/analyze/
+        """
+        site = self.get_object()
+        results = analyze_site(site)
+        return Response(results)
+
+    @action(detail=True, methods=['get'], url_path='pending-approvals')
+    def pending_approvals(self, request, pk=None):
+        """
+        Get pending approval actions for a site.
+        
+        GET /api/v1/sites/{id}/pending-approvals/
+        """
+        # For now, return empty - will be populated by analysis
+        return Response({
+            'pending_approvals': [],
+            'total': 0,
+        })
+
+    @action(detail=True, methods=['get'])
+    def silos(self, request, pk=None):
+        """
+        Get content silos for a site.
+        
+        GET /api/v1/sites/{id}/silos/
+        """
+        # For now, return empty - silos need to be created first
+        return Response({
+            'silos': [],
+            'total': 0,
         })
