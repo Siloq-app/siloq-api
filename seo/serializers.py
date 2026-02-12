@@ -90,6 +90,7 @@ class PageSyncSerializer(serializers.Serializer):
     content = serializers.CharField(required=False, allow_blank=True)
     excerpt = serializers.CharField(required=False, allow_blank=True)
     status = serializers.CharField(default='publish')
+    post_type = serializers.CharField(required=False, default='page')  # page, post, product, product_cat
     published_at = FlexibleDateTimeField(required=False, allow_null=True)
     modified_at = FlexibleDateTimeField(required=False, allow_null=True)
     slug = serializers.CharField(max_length=500, required=False, allow_blank=True)

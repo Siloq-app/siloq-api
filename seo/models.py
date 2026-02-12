@@ -31,6 +31,11 @@ class Page(models.Model):
             ('private', 'Private'),
         ]
     )
+    post_type = models.CharField(
+        max_length=50,
+        default='page',
+        help_text="WordPress post type: page, post, product, product_cat"
+    )
     published_at = models.DateTimeField(null=True, blank=True)
     modified_at = models.DateTimeField(null=True, blank=True)
     parent_id = models.IntegerField(null=True, blank=True)
