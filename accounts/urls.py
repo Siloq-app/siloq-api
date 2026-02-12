@@ -35,6 +35,11 @@ def google_callback_view(request):
     from .oauth import google_callback
     return google_callback(request)
 
+@csrf_exempt
+def verify_view(request):
+    from .auth import verify
+    return verify(request)
+
 urlpatterns = [
     # Core authentication
     path('login/', login_view, name='login'),
@@ -44,4 +49,6 @@ urlpatterns = [
     # Google OAuth
     path('google/login/', google_login_view, name='google_login'),
     path('google/callback/', google_callback_view, name='google_callback'),
+    # API Key verification (for WordPress plugin)
+    path('verify/', verify_view, name='verify'),
 ]
