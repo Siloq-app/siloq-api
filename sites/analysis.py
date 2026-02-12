@@ -1,517 +1,605 @@
 """
-Intelligence Layer - Cannibalization Detection and Analysis
+SEO Cannibalization Detection Engine
 
-This module provides the core analysis logic for detecting keyword
-cannibalization and generating content recommendations.
+Based on validated rules from real GSC data analysis:
+- E-commerce patterns (Crystallized Couture)
+- Service business patterns (EMS Cleanup)
 
-Cannibalization Types Detected:
-1. URL Structure Cannibalization - Similar slugs, parent/child conflicts
-2. Keyword Cannibalization - Same keywords in titles/content
-3. Content Cannibalization - Same topic/intent overlap
-4. Category vs Product Conflicts - Category pages competing with their products
-5. Blog vs Money Page Conflicts - Informational content competing with commercial pages
+Key Principle: Two pages ranking for similar keywords is only a problem
+if they are trying to do the SAME JOB (Intent Hierarchy).
 """
 import re
 from collections import defaultdict
-from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional, Tuple, Set
 from urllib.parse import urlparse
-from django.db.models import Q
 from django.utils import timezone
 
 
-def extract_url_slug_keywords(url: str) -> List[str]:
+# =============================================================================
+# SYNONYM DICTIONARIES
+# =============================================================================
+
+ATTRIBUTE_SYNONYMS = {
+    'rhinestone': {'bling', 'crystal', 'sparkle', 'sequin', 'glitter', 'bedazzle'},
+    'bling': {'rhinestone', 'crystal', 'sparkle', 'sequin', 'glitter'},
+    'custom': {'personalized', 'customized', 'customizable', 'bespoke'},
+    'warm up': {'warmup', 'warm-up', 'tracksuit', 'track suit'},
+}
+
+LISTICLE_PATTERNS = [
+    r'top-?\d+', r'best-', r'\d+-best', r'-guide$', r'-review', 
+    r'-tips$', r'-ideas$', r'how-to-'
+]
+
+INTENT_MARKERS = {
+    'informational': ['how', 'what', 'why', 'guide', 'tips', 'ideas', 'tutorial'],
+    'commercial': ['buy', 'price', 'cost', 'near me', 'service', 'company', 'hire'],
+    'listicle': ['best', 'top', 'review', 'vs', 'compare', 'ranking'],
+    'navigational': ['login', 'contact', 'about', 'hours', 'location'],
+}
+
+
+# =============================================================================
+# PAGE TYPE CLASSIFICATION
+# =============================================================================
+
+def classify_page_type(url: str, post_type: str = None) -> str:
     """
-    Extract meaningful keywords from URL path/slug.
+    Classify a page by its structural type.
     
-    Example: /products/blue-sapphire-engagement-ring/ 
-    Returns: ['products', 'blue', 'sapphire', 'engagement', 'ring']
+    Returns: 'blog', 'product', 'category', 'service', 'location', 
+             'team', 'homepage', 'general'
     """
+    if not url:
+        return 'general'
+    
+    path = urlparse(url).path.lower()
+    
+    # Homepage check
+    if path in ['/', ''] or path.rstrip('/') == '':
+        return 'homepage'
+    
+    # Use post_type if available (from WordPress sync)
+    if post_type:
+        if post_type == 'product':
+            return 'product'
+        if post_type in ['product_cat', 'product_category']:
+            return 'category'
+        if post_type == 'post':
+            # Check if it's a listicle blog
+            if any(re.search(p, path) for p in LISTICLE_PATTERNS):
+                return 'listicle_blog'
+            return 'blog'
+    
+    # URL pattern matching
+    patterns = {
+        'listicle_blog': LISTICLE_PATTERNS,
+        'blog': [r'/blog/', r'/news/', r'/articles/', r'/post/', r'/posts/', r'\d{4}/\d{2}/'],
+        'product': [r'/product/', r'/products/', r'/item/', r'/p/', r'/shop/[^/]+/[^/]+'],
+        'category': [r'/product-category/', r'/category/', r'/collection/', r'/c/', r'/shop/$'],
+        'service': [r'/service/', r'/services/', r'/residential/', r'/commercial/', r'/solutions/'],
+        'location': [r'/location/', r'/locations/', r'/service-area/', r'/service-areas/', r'/city/', r'/cities/'],
+        'team': [r'/teams?/', r'/groups?/', r'/organizations?/'],
+    }
+    
+    for page_type, regexes in patterns.items():
+        for pattern in regexes:
+            if re.search(pattern, path):
+                return page_type
+    
+    return 'general'
+
+
+def is_listicle_url(url: str) -> bool:
+    """Check if URL indicates a listicle/best-of article."""
+    if not url:
+        return False
+    path = urlparse(url).path.lower()
+    return any(re.search(p, path) for p in LISTICLE_PATTERNS)
+
+
+def extract_url_keywords(url: str) -> Set[str]:
+    """Extract meaningful keywords from URL slug."""
+    if not url:
+        return set()
+    
     try:
-        parsed = urlparse(url)
-        path = parsed.path.strip('/')
+        path = urlparse(url).path.strip('/')
     except:
         path = url.strip('/')
     
-    # Split by / and - and _
+    # Split by / - _
     parts = re.split(r'[/\-_]', path.lower())
     
-    # Filter out common non-meaningful parts
+    # Filter out noise
     stop_slugs = {
-        'page', 'pages', 'post', 'posts', 'product', 'products', 
+        'page', 'pages', 'post', 'posts', 'product', 'products',
         'category', 'categories', 'tag', 'tags', 'shop', 'store',
         'blog', 'news', 'article', 'articles', 'index', 'home',
         'www', 'http', 'https', 'html', 'php', 'aspx', 'htm',
-        '2019', '2020', '2021', '2022', '2023', '2024', '2025', '2026',
+        'the', 'and', 'for', 'with', 'our', 'your',
     }
+    # Also filter years
+    stop_slugs.update(str(y) for y in range(2015, 2030))
     
-    keywords = []
-    for part in parts:
-        part = part.strip()
-        if part and len(part) > 2 and part not in stop_slugs and not part.isdigit():
-            keywords.append(part)
-    
-    return keywords
+    return {p for p in parts if p and len(p) > 2 and p not in stop_slugs and not p.isdigit()}
 
 
-def get_url_structure_type(url: str, post_type: str = None) -> str:
+def get_query_intent(query: str) -> str:
+    """Classify query intent."""
+    query = query.lower()
+    
+    # Check listicle first (most specific)
+    if any(w in query for w in INTENT_MARKERS['listicle']):
+        return 'listicle'
+    if any(w in query for w in INTENT_MARKERS['informational']):
+        return 'informational'
+    if any(w in query for w in INTENT_MARKERS['navigational']):
+        return 'navigational'
+    
+    # Default to transactional/commercial for product-related queries
+    return 'transactional'
+
+
+def is_plural_query(query: str) -> bool:
+    """Check if query appears to be plural (category intent)."""
+    words = query.lower().split()
+    if not words:
+        return False
+    # Check last significant word
+    last_word = words[-1]
+    # Simple heuristic: ends in 's' but not 'ss'
+    return last_word.endswith('s') and not last_word.endswith('ss')
+
+
+def are_synonyms(word1: str, word2: str) -> bool:
+    """Check if two words are synonyms based on our dictionary."""
+    w1, w2 = word1.lower(), word2.lower()
+    if w1 == w2:
+        return True
+    
+    for key, synonyms in ATTRIBUTE_SYNONYMS.items():
+        all_words = {key} | synonyms
+        if w1 in all_words and w2 in all_words:
+            return True
+    
+    return False
+
+
+def find_synonym_overlap(keywords1: Set[str], keywords2: Set[str]) -> List[Tuple[str, str]]:
+    """Find synonym pairs between two keyword sets."""
+    overlaps = []
+    for k1 in keywords1:
+        for k2 in keywords2:
+            if k1 != k2 and are_synonyms(k1, k2):
+                overlaps.append((k1, k2))
+    return overlaps
+
+
+# =============================================================================
+# STATIC ANALYSIS (Without GSC Data)
+# =============================================================================
+
+def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[Dict[str, Any]]:
     """
-    Classify URL by its structural type for conflict detection.
-    
-    Returns: 'category', 'product', 'blog', 'service', 'location', 'page', 'unknown'
-    """
-    path = urlparse(url).path.lower() if url else ''
-    
-    # Check post_type first if available
-    if post_type:
-        if post_type in ['product', 'product_cat']:
-            return 'product' if post_type == 'product' else 'category'
-        if post_type == 'post':
-            return 'blog'
-    
-    # Infer from URL structure
-    if any(x in path for x in ['/category/', '/categories/', '/product-category/', '/product_cat/']):
-        return 'category'
-    if any(x in path for x in ['/product/', '/products/', '/shop/', '/store/']):
-        return 'product'
-    if any(x in path for x in ['/blog/', '/news/', '/article/', '/post/', '/posts/']):
-        return 'blog'
-    if any(x in path for x in ['/service/', '/services/', '/solutions/']):
-        return 'service'
-    if any(x in path for x in ['/location/', '/locations/', '/areas/', '/cities/']):
-        return 'location'
-    
-    return 'page'
-
-
-def extract_keywords_from_content(content: str, title: str = '', meta_description: str = '') -> List[str]:
-    """
-    Extract potential target keywords from page content.
-    
-    Uses:
-    1. Words from title (high weight)
-    2. Words from meta description (medium weight)  
-    3. H1 tags from content
-    
-    Returns list of keyword phrases.
-    """
-    keywords = []
-    
-    def clean_text(text: str) -> str:
-        text = text.lower()
-        text = re.sub(r'[^\w\s]', ' ', text)
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip()
-    
-    stop_words = {
-        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-        'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
-        'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-        'should', 'may', 'might', 'must', 'can', 'this', 'that', 'these', 'those',
-        'i', 'you', 'he', 'she', 'it', 'we', 'they', 'what', 'which', 'who',
-        'when', 'where', 'why', 'how', 'all', 'each', 'every', 'both', 'few',
-        'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only',
-        'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also', 'now',
-        'your', 'our', 'their', 'its', 'my', 'his', 'her', 'about', 'into',
-    }
-    
-    def extract_phrases(text: str, min_words: int = 1, max_words: int = 4) -> List[str]:
-        """Extract meaningful phrases from text."""
-        words = clean_text(text).split()
-        words = [w for w in words if w not in stop_words and len(w) > 2]
-        
-        phrases = []
-        # Single words
-        for w in words:
-            if len(w) > 3:
-                phrases.append(w)
-        
-        # Multi-word phrases
-        for n in range(2, max_words + 1):
-            for i in range(len(words) - n + 1):
-                phrase = ' '.join(words[i:i+n])
-                phrases.append(phrase)
-        
-        return phrases
-    
-    # Extract from title (most important)
-    if title:
-        title_phrases = extract_phrases(title, 1, 4)
-        keywords.extend(title_phrases)
-    
-    # Extract from meta description
-    if meta_description:
-        meta_phrases = extract_phrases(meta_description, 2, 4)
-        keywords.extend(meta_phrases)
-    
-    # Extract from H1 if in content
-    if content:
-        h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', content, re.IGNORECASE | re.DOTALL)
-        if h1_match:
-            h1_text = re.sub(r'<[^>]+>', '', h1_match.group(1))  # Strip inner HTML
-            h1_phrases = extract_phrases(h1_text, 1, 4)
-            keywords.extend(h1_phrases)
-    
-    # Deduplicate
-    seen = set()
-    unique_keywords = []
-    for kw in keywords:
-        if kw not in seen and len(kw) > 3:
-            seen.add(kw)
-            unique_keywords.append(kw)
-    
-    return unique_keywords[:20]
-
-
-def calculate_url_similarity(url1: str, url2: str) -> float:
-    """
-    Calculate similarity between two URLs based on slug keywords.
-    Returns a score between 0 and 1.
-    """
-    kw1 = set(extract_url_slug_keywords(url1))
-    kw2 = set(extract_url_slug_keywords(url2))
-    
-    if not kw1 or not kw2:
-        return 0.0
-    
-    intersection = len(kw1 & kw2)
-    union = len(kw1 | kw2)
-    
-    return intersection / union if union > 0 else 0.0
-
-
-def calculate_keyword_similarity(kw1: str, kw2: str) -> float:
-    """
-    Calculate similarity between two keywords using word overlap.
-    Returns a score between 0 and 1.
-    """
-    words1 = set(kw1.lower().split())
-    words2 = set(kw2.lower().split())
-    
-    if not words1 or not words2:
-        return 0.0
-    
-    intersection = len(words1 & words2)
-    union = len(words1 | words2)
-    
-    return intersection / union if union > 0 else 0.0
-
-
-def detect_url_cannibalization(pages) -> List[Dict[str, Any]]:
-    """
-    Detect cannibalization based on URL structure patterns.
-    
-    Detects:
-    1. Similar URL slugs targeting same keywords
-    2. Category pages competing with their product pages
-    3. Blog posts competing with service/product pages
-    4. Multiple pages with nearly identical URL patterns
+    Detect potential cannibalization from URL/content analysis.
+    This is a PREDICTION - GSC data validates it.
     """
     issues = []
     page_list = list(pages)
     
-    # Build URL keyword index
-    url_keywords = {}
-    url_types = {}
+    if len(page_list) < 2:
+        return issues
+    
+    # Build indexes
+    page_data = {}
     for page in page_list:
-        url_keywords[page.id] = set(extract_url_slug_keywords(page.url or ''))
-        url_types[page.id] = get_url_structure_type(
-            page.url or '', 
-            getattr(page, 'post_type', None)
-        )
-    
-    # Group pages by shared URL keywords
-    keyword_to_pages = defaultdict(list)
-    for page in page_list:
-        for kw in url_keywords.get(page.id, []):
-            keyword_to_pages[kw].append(page)
-    
-    # Find URL-based conflicts
-    processed_pairs = set()
-    
-    for kw, kw_pages in keyword_to_pages.items():
-        if len(kw_pages) < 2:
-            continue
-        
-        # Check pairs for conflicts
-        for i, page_a in enumerate(kw_pages):
-            for page_b in kw_pages[i+1:]:
-                pair_key = tuple(sorted([page_a.id, page_b.id]))
-                if pair_key in processed_pairs:
-                    continue
-                processed_pairs.add(pair_key)
-                
-                # Calculate URL similarity
-                url_sim = calculate_url_similarity(page_a.url or '', page_b.url or '')
-                
-                if url_sim < 0.3:
-                    continue  # Not similar enough
-                
-                type_a = url_types[page_a.id]
-                type_b = url_types[page_b.id]
-                
-                # Determine conflict type and severity
-                conflict_type = None
-                severity = 'low'
-                recommendation = 'review'
-                
-                # Category vs Product conflict (HIGH severity)
-                if (type_a == 'category' and type_b == 'product') or \
-                   (type_a == 'product' and type_b == 'category'):
-                    conflict_type = 'category_product_conflict'
-                    severity = 'high'
-                    recommendation = 'differentiate'
-                
-                # Blog vs Service/Product conflict (HIGH severity)
-                elif (type_a == 'blog' and type_b in ['service', 'product']) or \
-                     (type_a in ['service', 'product'] and type_b == 'blog'):
-                    conflict_type = 'blog_money_page_conflict'
-                    severity = 'high'
-                    recommendation = 'consolidate'
-                
-                # Two products with similar URLs (MEDIUM)
-                elif type_a == 'product' and type_b == 'product' and url_sim > 0.5:
-                    conflict_type = 'product_similarity'
-                    severity = 'medium'
-                    recommendation = 'differentiate'
-                
-                # Two blog posts with similar URLs (MEDIUM)
-                elif type_a == 'blog' and type_b == 'blog' and url_sim > 0.5:
-                    conflict_type = 'blog_overlap'
-                    severity = 'medium'
-                    recommendation = 'consolidate'
-                
-                # Generic similar URLs
-                elif url_sim > 0.6:
-                    conflict_type = 'url_similarity'
-                    severity = 'medium'
-                    recommendation = 'review'
-                
-                if conflict_type:
-                    # Determine suggested king (prefer money page, then category, then higher traffic)
-                    suggested_king = page_a
-                    if type_b in ['product', 'service'] and type_a not in ['product', 'service']:
-                        suggested_king = page_b
-                    elif type_b == 'category' and type_a not in ['product', 'service', 'category']:
-                        suggested_king = page_b
-                    elif getattr(page_b, 'is_money_page', False) and not getattr(page_a, 'is_money_page', False):
-                        suggested_king = page_b
-                    
-                    issues.append({
-                        'type': 'url_structure',
-                        'conflict_type': conflict_type,
-                        'keyword': kw,
-                        'severity': severity,
-                        'recommendation_type': recommendation,
-                        'url_similarity': round(url_sim, 2),
-                        'competing_pages': [
-                            {
-                                'id': page_a.id,
-                                'url': page_a.url,
-                                'title': page_a.title,
-                                'page_type': type_a,
-                                'is_money_page': getattr(page_a, 'is_money_page', False),
-                            },
-                            {
-                                'id': page_b.id,
-                                'url': page_b.url,
-                                'title': page_b.title,
-                                'page_type': type_b,
-                                'is_money_page': getattr(page_b, 'is_money_page', False),
-                            }
-                        ],
-                        'suggested_king': {
-                            'id': suggested_king.id,
-                            'url': suggested_king.url,
-                            'title': suggested_king.title,
-                        },
-                        'explanation': _get_conflict_explanation(conflict_type, type_a, type_b, kw),
-                    })
-    
-    return issues
-
-
-def _get_conflict_explanation(conflict_type: str, type_a: str, type_b: str, keyword: str) -> str:
-    """Generate human-readable explanation for the conflict."""
-    explanations = {
-        'category_product_conflict': f"Category page and product page both contain '{keyword}' in URL. The category page may be competing with its own products for rankings.",
-        'blog_money_page_conflict': f"Blog post and {type_a if type_a in ['product', 'service'] else type_b} page both target '{keyword}'. Blog posts can steal rankings from higher-converting pages.",
-        'product_similarity': f"Multiple products have '{keyword}' in their URLs. Consider differentiating titles and descriptions to target distinct search intents.",
-        'blog_overlap': f"Multiple blog posts target '{keyword}'. Consider consolidating into one comprehensive article.",
-        'url_similarity': f"These pages have very similar URL structures around '{keyword}'. Review if they serve distinct user intents.",
-    }
-    return explanations.get(conflict_type, f"Pages compete for '{keyword}' based on URL structure.")
-
-
-def detect_keyword_cannibalization(pages, include_noindex: bool = False) -> List[Dict[str, Any]]:
-    """
-    Detect keyword cannibalization based on title/content keywords.
-    
-    A cannibalization issue occurs when multiple pages target the same
-    or very similar keywords, causing them to compete in search results.
-    """
-    keyword_pages = defaultdict(list)
-    
-    for page in pages:
         if not include_noindex and getattr(page, 'is_noindex', False):
             continue
+        
+        url = page.url or ''
+        page_data[page.id] = {
+            'page': page,
+            'url': url,
+            'title': page.title or '',
+            'type': classify_page_type(url, getattr(page, 'post_type', None)),
+            'keywords': extract_url_keywords(url),
+            'is_money_page': getattr(page, 'is_money_page', False),
+            'is_listicle': is_listicle_url(url),
+        }
+    
+    processed_pairs = set()
+    
+    # Check each pair
+    for id_a, data_a in page_data.items():
+        for id_b, data_b in page_data.items():
+            if id_a >= id_b:
+                continue
             
-        # Get keywords for this page
-        try:
-            seo_data = page.seo_data
-        except Exception:
-            seo_data = None
+            pair_key = (id_a, id_b)
+            if pair_key in processed_pairs:
+                continue
+            processed_pairs.add(pair_key)
+            
+            issue = _check_pair_conflict(data_a, data_b)
+            if issue:
+                issues.append(issue)
+    
+    # Sort by severity
+    severity_order = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
+    issues.sort(key=lambda x: severity_order.get(x['severity'], 3))
+    
+    return issues[:30]
+
+
+def _check_pair_conflict(data_a: Dict, data_b: Dict) -> Optional[Dict]:
+    """Check if two pages have a cannibalization conflict."""
+    type_a, type_b = data_a['type'], data_b['type']
+    url_a, url_b = data_a['url'], data_b['url']
+    kw_a, kw_b = data_a['keywords'], data_b['keywords']
+    
+    # Calculate keyword overlap
+    overlap = kw_a & kw_b
+    if not overlap:
+        return None
+    
+    overlap_ratio = len(overlap) / max(len(kw_a | kw_b), 1)
+    
+    # =========================================================================
+    # RULE 1: Listicle Blog vs Category (HIGH - E-commerce)
+    # =========================================================================
+    if (data_a['is_listicle'] and type_b == 'category') or \
+       (data_b['is_listicle'] and type_a == 'category'):
         
-        meta_title = seo_data.meta_title if seo_data else ''
-        meta_description = seo_data.meta_description if seo_data else ''
+        blog_data = data_a if data_a['is_listicle'] else data_b
+        cat_data = data_b if data_a['is_listicle'] else data_a
         
-        keywords = extract_keywords_from_content(
-            page.content or '',
-            page.title or meta_title or '',
-            meta_description or page.excerpt or ''
+        return {
+            'type': 'listicle_vs_category',
+            'severity': 'HIGH',
+            'keyword': ', '.join(overlap),
+            'explanation': f"Blog post '{blog_data['title']}' may steal rankings from category page for commercial keywords.",
+            'recommendation': "De-optimize blog title for commercial keywords. Add prominent link from blog → category.",
+            'competing_pages': [
+                {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+            ],
+            'suggested_king': {'id': cat_data['page'].id, 'url': cat_data['url'], 'title': cat_data['title']},
+        }
+    
+    # =========================================================================
+    # RULE 2: Multiple Listicle Blogs (HIGH - Merge)
+    # =========================================================================
+    if data_a['is_listicle'] and data_b['is_listicle'] and overlap_ratio > 0.3:
+        return {
+            'type': 'listicle_vs_listicle',
+            'severity': 'HIGH',
+            'keyword': ', '.join(overlap),
+            'explanation': f"Two 'Best/Top' articles competing: '{data_a['title']}' vs '{data_b['title']}'",
+            'recommendation': "MERGE into one comprehensive guide. 301 redirect the weaker article.",
+            'competing_pages': [
+                {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+            ],
+            'suggested_king': None,  # Needs click data to determine
+        }
+    
+    # =========================================================================
+    # RULE 3: Attribute Synonyms (MEDIUM - E-commerce)
+    # =========================================================================
+    synonym_pairs = find_synonym_overlap(kw_a, kw_b)
+    if synonym_pairs and type_a == type_b:
+        # Two pages of same type with synonym attributes
+        return {
+            'type': 'attribute_synonym',
+            'severity': 'MEDIUM',
+            'keyword': f"{synonym_pairs[0][0]} ≈ {synonym_pairs[0][1]}",
+            'explanation': f"Pages use synonymous attributes: {synonym_pairs[0][0]} vs {synonym_pairs[0][1]}",
+            'recommendation': "301 redirect the weaker page to the stronger. These target the same user intent.",
+            'competing_pages': [
+                {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+            ],
+            'suggested_king': None,  # Needs click data
+        }
+    
+    # =========================================================================
+    # RULE 4: Service Audience Split (HIGH - Service Business)
+    # =========================================================================
+    if ('residential' in url_a.lower() and 'commercial' in url_b.lower()) or \
+       ('commercial' in url_a.lower() and 'residential' in url_b.lower()):
+        return {
+            'type': 'audience_split',
+            'severity': 'HIGH',
+            'keyword': ', '.join(overlap),
+            'explanation': "Residential and Commercial pages for same service. Often 80%+ content overlap.",
+            'recommendation': "MERGE if content is similar. REWRITE with 70%+ unique content if keeping both.",
+            'competing_pages': [
+                {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+            ],
+            'suggested_king': None,
+        }
+    
+    # =========================================================================
+    # RULE 5: Blog vs Service Page (HIGH - Service Business)
+    # =========================================================================
+    if (type_a == 'blog' and type_b == 'service') or (type_a == 'service' and type_b == 'blog'):
+        blog_data = data_a if type_a == 'blog' else data_b
+        service_data = data_b if type_a == 'blog' else data_a
+        
+        if overlap_ratio > 0.3:
+            return {
+                'type': 'blog_vs_service',
+                'severity': 'HIGH',
+                'keyword': ', '.join(overlap),
+                'explanation': f"Blog may steal traffic from service page for commercial keywords.",
+                'recommendation': "Convert blog to case study that LINKS to service page. Remove commercial keyword targeting from blog.",
+                'competing_pages': [
+                    {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                    {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+                ],
+                'suggested_king': {'id': service_data['page'].id, 'url': service_data['url'], 'title': service_data['title']},
+            }
+    
+    # =========================================================================
+    # RULE 6: Location Boilerplate (MEDIUM - Service Business)
+    # =========================================================================
+    if type_a == 'location' and type_b == 'location' and overlap_ratio > 0.5:
+        return {
+            'type': 'location_boilerplate',
+            'severity': 'MEDIUM',
+            'keyword': ', '.join(overlap),
+            'explanation': "Location pages have significant URL overlap. Likely templated content.",
+            'recommendation': "Rewrite with LOCAL EVIDENCE: job photos, city-specific reviews, local landmarks.",
+            'competing_pages': [
+                {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+            ],
+            'suggested_king': None,
+        }
+    
+    # =========================================================================
+    # SAFE PATTERNS - DO NOT FLAG
+    # =========================================================================
+    
+    # Category + Product = SAFE (different intents)
+    if {type_a, type_b} == {'category', 'product'}:
+        return None
+    
+    # Team + Product = SAFE (parent-child)
+    if {type_a, type_b} == {'team', 'product'}:
+        return None
+    
+    # Service + Location = SAFE (should cross-link)
+    if {type_a, type_b} == {'service', 'location'}:
+        return None
+    
+    # =========================================================================
+    # FALLBACK: High overlap but unclassified
+    # =========================================================================
+    if overlap_ratio > 0.6:
+        return {
+            'type': 'url_overlap',
+            'severity': 'LOW',
+            'keyword': ', '.join(overlap),
+            'explanation': f"High URL keyword overlap ({int(overlap_ratio*100)}%) detected.",
+            'recommendation': "Review manually - may need differentiation or consolidation.",
+            'competing_pages': [
+                {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+            ],
+            'suggested_king': None,
+        }
+    
+    return None
+
+
+# =============================================================================
+# GSC DATA ANALYSIS (The "Ultimate Truth")
+# =============================================================================
+
+def analyze_gsc_data(gsc_data: List[Dict]) -> List[Dict[str, Any]]:
+    """
+    Analyze GSC data to find validated cannibalization.
+    
+    Input: List of dicts with keys: query, page_url, clicks, impressions, position
+    Output: List of confirmed conflicts
+    """
+    issues = []
+    
+    # Filter noise (< 20 impressions)
+    valid_data = [d for d in gsc_data if d.get('impressions', 0) >= 20]
+    
+    # Group by query
+    query_groups = defaultdict(list)
+    for row in valid_data:
+        query_groups[row['query'].lower()].append(row)
+    
+    for query, rows in query_groups.items():
+        if len(rows) < 2:
+            continue
+        
+        # Sort by impressions (highest first)
+        rows.sort(key=lambda x: x.get('impressions', 0), reverse=True)
+        
+        total_imps = sum(r.get('impressions', 0) for r in rows)
+        if total_imps == 0:
+            continue
+        
+        # Top 2 contenders
+        leader = rows[0]
+        challenger = rows[1]
+        
+        leader_share = leader.get('impressions', 0) / total_imps
+        challenger_share = challenger.get('impressions', 0) / total_imps
+        
+        # If leader has >90% share, Google has decided - skip
+        if leader_share > 0.9:
+            continue
+        
+        # Classify pages and query
+        leader_type = classify_page_type(leader.get('page_url', ''))
+        challenger_type = classify_page_type(challenger.get('page_url', ''))
+        query_intent = get_query_intent(query)
+        is_plural = is_plural_query(query)
+        
+        issue = _check_gsc_conflict(
+            query, query_intent, is_plural,
+            leader, leader_type, leader_share,
+            challenger, challenger_type, challenger_share
         )
         
-        # Also extract from URL
-        url_keywords = extract_url_slug_keywords(page.url or '')
-        keywords.extend(url_keywords)
+        if issue:
+            issues.append(issue)
+    
+    # Sort by severity
+    severity_order = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
+    issues.sort(key=lambda x: severity_order.get(x['severity'], 3))
+    
+    return issues[:50]
+
+
+def _check_gsc_conflict(
+    query: str, query_intent: str, is_plural: bool,
+    leader: Dict, leader_type: str, leader_share: float,
+    challenger: Dict, challenger_type: str, challenger_share: float
+) -> Optional[Dict]:
+    """Check GSC data for specific conflict patterns."""
+    
+    leader_url = leader.get('page_url', '')
+    challenger_url = challenger.get('page_url', '')
+    leader_clicks = leader.get('clicks', 0)
+    challenger_clicks = challenger.get('clicks', 0)
+    
+    split_str = f"{int(leader_share*100)}% / {int(challenger_share*100)}%"
+    
+    # =========================================================================
+    # GSC RULE 1: Blog vs Category for Commercial Query
+    # =========================================================================
+    if query_intent == 'transactional':
+        leader_is_blog = leader_type in ['blog', 'listicle_blog']
+        challenger_is_blog = challenger_type in ['blog', 'listicle_blog']
         
-        for keyword in set(keywords):
-            keyword_pages[keyword].append({
-                'id': page.id,
-                'url': page.url,
-                'title': page.title,
-                'is_money_page': getattr(page, 'is_money_page', False),
-                'page_type': get_url_structure_type(page.url or '', getattr(page, 'post_type', None)),
-            })
-    
-    # Find keywords with multiple competing pages
-    issues = []
-    processed_keywords = set()
-    
-    for keyword, page_list in keyword_pages.items():
-        if len(page_list) < 2:
-            continue
+        if (leader_is_blog and challenger_type == 'category') or \
+           (challenger_is_blog and leader_type == 'category'):
             
-        # Skip if we've already processed a very similar keyword
-        skip = False
-        for processed in processed_keywords:
-            if calculate_keyword_similarity(keyword, processed) > 0.8:
-                skip = True
-                break
-        
-        if skip:
-            continue
+            blog_url = leader_url if leader_is_blog else challenger_url
+            cat_url = challenger_url if leader_is_blog else leader_url
             
-        processed_keywords.add(keyword)
-        
-        # Calculate severity
-        num_pages = len(page_list)
-        has_money_page = any(p['is_money_page'] for p in page_list)
-        has_blog = any(p['page_type'] == 'blog' for p in page_list)
-        has_product = any(p['page_type'] in ['product', 'service'] for p in page_list)
-        
-        # Blog competing with product/service is HIGH severity
-        if has_blog and has_product:
-            severity = 'high'
-        elif num_pages >= 3:
-            severity = 'high'
-        elif num_pages == 2 and has_money_page:
-            severity = 'high'
-        elif num_pages == 2:
-            severity = 'medium'
-        else:
-            severity = 'low'
-        
-        # Find suggested king (prefer money page, then product/service, then first)
-        suggested_king = None
-        for p in page_list:
-            if p['is_money_page']:
-                suggested_king = p
-                break
-        if not suggested_king:
-            for p in page_list:
-                if p['page_type'] in ['product', 'service']:
-                    suggested_king = p
-                    break
-        if not suggested_king:
-            suggested_king = page_list[0]
-        
-        # Determine recommendation
-        if num_pages >= 3 or (has_blog and len([p for p in page_list if p['page_type'] == 'blog']) > 1):
-            recommendation = 'consolidate'
-        elif has_blog and has_product:
-            recommendation = 'redirect_or_differentiate'
-        elif has_money_page:
-            recommendation = 'differentiate'
-        else:
-            recommendation = 'consolidate'
-        
-        issues.append({
-            'type': 'keyword',
-            'keyword': keyword,
-            'severity': severity,
-            'recommendation_type': recommendation,
-            'competing_pages': page_list,
-            'suggested_king': suggested_king,
-            'total_impressions': None,  # Would come from GSC
-        })
+            return {
+                'type': 'gsc_blog_vs_category',
+                'severity': 'HIGH',
+                'query': query,
+                'explanation': f"Blog competing with Category for commercial query.",
+                'recommendation': "De-optimize blog for this keyword. Link blog → category.",
+                'impression_split': split_str,
+                'competing_pages': [
+                    {'url': leader_url, 'type': leader_type, 'clicks': leader_clicks, 'share': f"{int(leader_share*100)}%"},
+                    {'url': challenger_url, 'type': challenger_type, 'clicks': challenger_clicks, 'share': f"{int(challenger_share*100)}%"},
+                ],
+                'suggested_winner': cat_url,
+            }
     
-    return issues
+    # =========================================================================
+    # GSC RULE 2: Product Ranking for Plural Query (Wrong Page Type)
+    # =========================================================================
+    if is_plural and leader_type == 'product':
+        return {
+            'type': 'gsc_product_for_plural',
+            'severity': 'MEDIUM',
+            'query': query,
+            'explanation': f"Product page ranking for plural query '{query}' (category intent).",
+            'recommendation': "Strengthen Category page. Check if Product is over-optimized for generic terms.",
+            'impression_split': split_str,
+            'competing_pages': [
+                {'url': leader_url, 'type': leader_type, 'clicks': leader_clicks, 'share': f"{int(leader_share*100)}%"},
+                {'url': challenger_url, 'type': challenger_type, 'clicks': challenger_clicks, 'share': f"{int(challenger_share*100)}%"},
+            ],
+            'suggested_winner': challenger_url if challenger_type == 'category' else None,
+        }
+    
+    # =========================================================================
+    # GSC RULE 3: Audience Split (Res vs Comm)
+    # =========================================================================
+    if ('residential' in leader_url.lower() and 'commercial' in challenger_url.lower()) or \
+       ('commercial' in leader_url.lower() and 'residential' in challenger_url.lower()):
+        return {
+            'type': 'gsc_audience_split',
+            'severity': 'HIGH',
+            'query': query,
+            'explanation': f"Residential and Commercial pages splitting impressions 50/50.",
+            'recommendation': "MERGE pages if service is identical. REWRITE with 70%+ unique content if keeping both.",
+            'impression_split': split_str,
+            'competing_pages': [
+                {'url': leader_url, 'type': leader_type, 'clicks': leader_clicks, 'share': f"{int(leader_share*100)}%"},
+                {'url': challenger_url, 'type': challenger_type, 'clicks': challenger_clicks, 'share': f"{int(challenger_share*100)}%"},
+            ],
+            'suggested_winner': None,
+        }
+    
+    # =========================================================================
+    # GSC RULE 4: Homepage Cannibalization
+    # =========================================================================
+    if leader_type == 'homepage' and challenger_type == 'service':
+        return {
+            'type': 'gsc_homepage_hoarding',
+            'severity': 'MEDIUM',
+            'query': query,
+            'explanation': f"Homepage ranking instead of dedicated Service page.",
+            'recommendation': "Prune service content from homepage. Add clear link HP → Service page.",
+            'impression_split': split_str,
+            'competing_pages': [
+                {'url': leader_url, 'type': leader_type, 'clicks': leader_clicks, 'share': f"{int(leader_share*100)}%"},
+                {'url': challenger_url, 'type': challenger_type, 'clicks': challenger_clicks, 'share': f"{int(challenger_share*100)}%"},
+            ],
+            'suggested_winner': challenger_url,
+        }
+    
+    # =========================================================================
+    # GSC RULE 5: Near 50/50 Split (Direct Competition)
+    # =========================================================================
+    if challenger_share > 0.35 and leader_type == challenger_type:
+        return {
+            'type': 'gsc_direct_competition',
+            'severity': 'MEDIUM',
+            'query': query,
+            'explanation': f"Two {leader_type} pages splitting traffic nearly 50/50.",
+            'recommendation': "Consolidate or Canonicalize. Google can't decide which to rank.",
+            'impression_split': split_str,
+            'competing_pages': [
+                {'url': leader_url, 'type': leader_type, 'clicks': leader_clicks, 'share': f"{int(leader_share*100)}%"},
+                {'url': challenger_url, 'type': challenger_type, 'clicks': challenger_clicks, 'share': f"{int(challenger_share*100)}%"},
+            ],
+            'suggested_winner': leader_url if leader_clicks > challenger_clicks else challenger_url,
+        }
+    
+    # =========================================================================
+    # GSC RULE 6: Authority Dilution (High Imps, Zero Clicks on Blog)
+    # =========================================================================
+    if leader_type in ['blog', 'listicle_blog'] and leader_clicks == 0 and leader.get('impressions', 0) > 50:
+        return {
+            'type': 'gsc_authority_dilution',
+            'severity': 'LOW',
+            'query': query,
+            'explanation': f"Blog ranking for '{query}' but getting 0 clicks. May be wrong audience.",
+            'recommendation': "Re-optimize blog title to be more niche-specific. Remove generic keyword targeting.",
+            'impression_split': split_str,
+            'competing_pages': [
+                {'url': leader_url, 'type': leader_type, 'clicks': leader_clicks, 'share': f"{int(leader_share*100)}%"},
+            ],
+            'suggested_winner': None,
+        }
+    
+    return None
 
 
-def detect_cannibalization(pages, include_noindex: bool = False) -> List[Dict[str, Any]]:
-    """
-    Comprehensive cannibalization detection combining URL and keyword analysis.
-    
-    Returns combined issues sorted by severity.
-    """
-    page_list = list(pages)
-    
-    if not page_list:
-        return []
-    
-    # Run both detection methods
-    url_issues = detect_url_cannibalization(page_list)
-    keyword_issues = detect_keyword_cannibalization(pages, include_noindex)
-    
-    # Combine and deduplicate
-    all_issues = []
-    seen_page_pairs = set()
-    
-    # Add URL issues first (often higher signal)
-    for issue in url_issues:
-        page_ids = tuple(sorted([p['id'] for p in issue['competing_pages']]))
-        if page_ids not in seen_page_pairs:
-            seen_page_pairs.add(page_ids)
-            all_issues.append(issue)
-    
-    # Add keyword issues that don't duplicate URL issues
-    for issue in keyword_issues:
-        page_ids = tuple(sorted([p['id'] for p in issue['competing_pages']]))
-        if page_ids not in seen_page_pairs:
-            seen_page_pairs.add(page_ids)
-            all_issues.append(issue)
-    
-    # Sort by severity (high first) and number of competing pages
-    severity_order = {'high': 0, 'medium': 1, 'low': 2}
-    all_issues.sort(key=lambda x: (
-        severity_order.get(x['severity'], 3), 
-        -len(x['competing_pages'])
-    ))
-    
-    return all_issues[:30]  # Return top 30 issues
-
+# =============================================================================
+# HEALTH SCORE CALCULATION
+# =============================================================================
 
 def calculate_health_score(site) -> Dict[str, Any]:
-    """
-    Calculate overall site health score.
-    
-    Factors:
-    - Cannibalization issues (-10 per high, -5 per medium, -2 per low)
-    - Missing SEO data (-5 per page without)
-    - Content organization bonus (+10 if silos exist)
-    - Money pages defined bonus (+5)
-    """
+    """Calculate site SEO health score."""
     pages = site.pages.all()
     total_pages = pages.count()
     
@@ -519,157 +607,60 @@ def calculate_health_score(site) -> Dict[str, Any]:
         return {
             'health_score': 0,
             'health_score_delta': 0,
-            'breakdown': {
-                'base_score': 0,
-                'cannibalization_penalty': 0,
-                'seo_data_penalty': 0,
-                'money_page_bonus': 0,
-            }
+            'breakdown': {'base_score': 0, 'cannibalization_penalty': 0, 'seo_data_penalty': 0, 'money_page_bonus': 0}
         }
     
-    # Start with base score of 75
     score = 75
     
     # Cannibalization penalties
-    issues = detect_cannibalization(pages)
-    cannibalization_penalty = 0
-    for issue in issues:
-        if issue['severity'] == 'high':
-            cannibalization_penalty += 10
-        elif issue['severity'] == 'medium':
-            cannibalization_penalty += 5
-        else:
-            cannibalization_penalty += 2
-    
-    score -= min(cannibalization_penalty, 40)  # Cap penalty at 40
+    issues = detect_static_cannibalization(pages)
+    penalty = sum(10 if i['severity'] == 'HIGH' else 5 if i['severity'] == 'MEDIUM' else 2 for i in issues)
+    score -= min(penalty, 40)
     
     # SEO data penalty
-    pages_without_seo = 0
-    for p in pages:
-        try:
-            _ = p.seo_data
-        except Exception:
-            pages_without_seo += 1
-    seo_data_penalty = min((pages_without_seo / total_pages) * 20, 20) if total_pages > 0 else 0
-    score -= seo_data_penalty
+    pages_without_seo = sum(1 for p in pages if not hasattr(p, 'seo_data') or not p.seo_data)
+    seo_penalty = min((pages_without_seo / total_pages) * 20, 20)
+    score -= seo_penalty
     
-    # Money pages bonus
+    # Money page bonus
     money_pages = pages.filter(is_money_page=True).count()
     if money_pages > 0:
         score += 5
     
-    # Ensure score is between 0 and 100
-    score = max(0, min(100, score))
-    
     return {
-        'health_score': round(score),
+        'health_score': max(0, min(100, round(score))),
         'health_score_delta': 0,
         'breakdown': {
             'base_score': 75,
-            'cannibalization_penalty': -cannibalization_penalty,
-            'seo_data_penalty': -round(seo_data_penalty),
+            'cannibalization_penalty': -penalty,
+            'seo_data_penalty': -round(seo_penalty),
             'money_page_bonus': 5 if money_pages > 0 else 0,
         }
     }
 
 
-def generate_content_recommendations(pages, issues: List[Dict]) -> List[Dict[str, Any]]:
+# =============================================================================
+# MAIN ANALYSIS FUNCTION
+# =============================================================================
+
+def detect_cannibalization(pages, include_noindex: bool = False) -> List[Dict[str, Any]]:
     """
-    Generate content recommendations based on analysis.
+    Main entry point for cannibalization detection (static analysis).
+    For GSC-validated analysis, use analyze_gsc_data() separately.
     """
-    recommendations = []
-    page_list = list(pages)
-    
-    money_pages = [p for p in page_list if getattr(p, 'is_money_page', False)]
-    
-    # For each money page, suggest supporting content
-    for mp in money_pages[:5]:
-        recommendations.append({
-            'type': 'supporting_content',
-            'priority': 'high',
-            'title': f'Create supporting content for "{mp.title}"',
-            'description': f'Your money page needs supporting articles to build topical authority.',
-            'action': 'generate',
-            'target_page_id': mp.id,
-            'target_page_url': mp.url,
-        })
-    
-    # For cannibalization issues, suggest specific fixes
-    for issue in issues[:10]:
-        if issue.get('type') == 'url_structure':
-            conflict_type = issue.get('conflict_type', '')
-            
-            if conflict_type == 'blog_money_page_conflict':
-                recommendations.append({
-                    'type': 'redirect',
-                    'priority': 'high',
-                    'title': f'Redirect blog post to money page for "{issue["keyword"]}"',
-                    'description': 'Consider 301 redirecting the blog post to the product/service page to consolidate ranking power.',
-                    'action': 'redirect',
-                    'competing_pages': issue['competing_pages'],
-                    'suggested_king': issue['suggested_king'],
-                })
-            elif conflict_type == 'category_product_conflict':
-                recommendations.append({
-                    'type': 'differentiation',
-                    'priority': 'high',
-                    'title': f'Differentiate category and product pages for "{issue["keyword"]}"',
-                    'description': 'Update the category page to target broader terms and let products target specific variations.',
-                    'action': 'edit',
-                    'competing_pages': issue['competing_pages'],
-                })
-            elif conflict_type in ['blog_overlap', 'product_similarity']:
-                recommendations.append({
-                    'type': 'consolidation',
-                    'priority': 'medium',
-                    'title': f'Consolidate overlapping content for "{issue["keyword"]}"',
-                    'description': f'{len(issue["competing_pages"])} pages are competing. Consider merging into one comprehensive page.',
-                    'action': 'review',
-                    'competing_pages': issue['competing_pages'],
-                })
-        
-        elif issue.get('recommendation_type') == 'consolidate':
-            recommendations.append({
-                'type': 'consolidation',
-                'priority': 'high' if issue['severity'] == 'high' else 'medium',
-                'title': f'Consolidate pages targeting "{issue["keyword"]}"',
-                'description': f'{len(issue["competing_pages"])} pages are competing for this keyword. Consider merging or differentiating.',
-                'action': 'review',
-                'competing_pages': issue['competing_pages'],
-            })
-    
-    return recommendations[:15]
+    return detect_static_cannibalization(pages, include_noindex)
 
 
 def analyze_site(site) -> Dict[str, Any]:
-    """
-    Run full analysis on a site.
-    
-    Returns comprehensive analysis including:
-    - Health score
-    - Cannibalization issues (URL + keyword based)
-    - Content recommendations
-    """
+    """Run full analysis on a site."""
     pages = site.pages.all().prefetch_related('seo_data')
     
-    # Calculate health score
     health = calculate_health_score(site)
+    issues = detect_static_cannibalization(pages)
     
-    # Detect cannibalization (combined URL + keyword)
-    issues = detect_cannibalization(pages)
-    
-    # Generate recommendations
-    recommendations = generate_content_recommendations(pages, issues)
-    
-    # Count statistics
-    page_list = list(pages)
-    money_page_count = len([p for p in page_list if getattr(p, 'is_money_page', False)])
-    total_pages = len(page_list)
-    
-    # Count by type
-    url_issues = [i for i in issues if i.get('type') == 'url_structure']
-    keyword_issues = [i for i in issues if i.get('type') == 'keyword']
-    high_severity = len([i for i in issues if i['severity'] == 'high'])
+    # Count by severity
+    high_count = sum(1 for i in issues if i['severity'] == 'HIGH')
+    medium_count = sum(1 for i in issues if i['severity'] == 'MEDIUM')
     
     return {
         'site_id': site.id,
@@ -679,13 +670,25 @@ def analyze_site(site) -> Dict[str, Any]:
         'health_breakdown': health['breakdown'],
         'cannibalization_issues': issues,
         'cannibalization_count': len(issues),
-        'url_structure_issues': len(url_issues),
-        'keyword_issues': len(keyword_issues),
-        'high_severity_count': high_severity,
-        'recommendations': recommendations,
-        'recommendation_count': len(recommendations),
-        'page_count': total_pages,
-        'money_page_count': money_page_count,
-        'silo_count': 0,
-        'missing_links_count': 0,
+        'high_severity_count': high_count,
+        'medium_severity_count': medium_count,
+        'recommendations': _generate_recommendations(issues),
+        'recommendation_count': len(issues),
+        'page_count': pages.count(),
+        'money_page_count': pages.filter(is_money_page=True).count(),
     }
+
+
+def _generate_recommendations(issues: List[Dict]) -> List[Dict]:
+    """Generate actionable recommendations from issues."""
+    recs = []
+    for issue in issues[:10]:
+        recs.append({
+            'type': issue['type'],
+            'priority': issue['severity'],
+            'title': f"Fix: {issue['type'].replace('_', ' ').title()}",
+            'description': issue['explanation'],
+            'action': issue['recommendation'],
+            'competing_pages': issue.get('competing_pages', []),
+        })
+    return recs
