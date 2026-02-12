@@ -66,5 +66,6 @@ class RegisterSerializer(serializers.Serializer):
             password=password,
             first_name=validated_data.get('first_name', ''),
             last_name=validated_data.get('last_name', ''),
+            subscription_status='free',  # Required NOT NULL field in database
         )
         return user
