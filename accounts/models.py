@@ -14,13 +14,8 @@ class User(AbstractUser):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
-    # Subscription/Billing fields (required by database schema)
+    # Subscription status (required NOT NULL field in database)
     subscription_status = models.CharField(max_length=50, default='free', blank=True)
-    stripe_customer_id = models.CharField(max_length=255, null=True, blank=True)
-    stripe_subscription_id = models.CharField(max_length=255, null=True, blank=True)
-    subscription_plan = models.CharField(max_length=50, null=True, blank=True)
-    subscription_start_date = models.DateTimeField(null=True, blank=True)
-    subscription_end_date = models.DateTimeField(null=True, blank=True)
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']
