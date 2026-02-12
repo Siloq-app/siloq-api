@@ -32,6 +32,11 @@ class PageViewSet(viewsets.ModelViewSet):
         if site_id:
             queryset = queryset.filter(site_id=site_id)
         
+        # Filter out noindex pages by default (unless include_noindex=true)
+        include_noindex = self.request.query_params.get('include_noindex', 'false').lower()
+        if include_noindex != 'true':
+            queryset = queryset.filter(is_noindex=False)
+        
         return queryset.select_related('site', 'seo_data')
 
     def get_serializer_class(self):
