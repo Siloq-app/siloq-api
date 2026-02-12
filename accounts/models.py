@@ -11,6 +11,10 @@ class User(AbstractUser):
     Used for dashboard user authentication.
     """
     email = models.EmailField(unique=True)
+    subscription_status = models.CharField(
+        max_length=50,
+        default="free"
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

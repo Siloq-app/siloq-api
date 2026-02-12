@@ -22,7 +22,13 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-change-this-in-production'
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,host.docker.internal').split(',')
+# ALLOWED_HOSTS: Django validates the hostname without port
+# Note: Django automatically strips port numbers when validating, so we only need the hostname
+_allowed_hosts_str = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,host.docker.internal')
+ALLOWED_HOSTS = [host.strip() for host in _allowed_hosts_str.split(',') if host.strip()]
+# Ensure host.docker.internal is included for Docker environments
+if 'host.docker.internal' not in ALLOWED_HOSTS:
+    ALLOWED_HOSTS.append('host.docker.internal')
 
 
 # Application definition
@@ -50,7 +56,7 @@ MIDDLEWARE = [
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
-    'django.middleware.common.CommonMiddleware',
+    'siloq_backend.middleware.APICommonMiddleware',  # Custom middleware that disables APPEND_SLASH for API routes
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
@@ -181,6 +187,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://app.siloq.ai",
     "https://app.siloq.ai",
     "https://siloq.ai",
+    
 ]
 
 CORS_ALLOW_CREDENTIALS = True
