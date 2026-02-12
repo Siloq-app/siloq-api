@@ -24,6 +24,14 @@ DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,host.docker.internal').split(',')
 
+# Frontend URL (for OAuth redirects)
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://app.siloq.ai')
+
+# Google Search Console OAuth
+GSC_CLIENT_ID = os.getenv('GSC_CLIENT_ID', '')
+GSC_CLIENT_SECRET = os.getenv('GSC_CLIENT_SECRET', '')
+GSC_REDIRECT_URI = os.getenv('GSC_REDIRECT_URI', 'https://app.siloq.ai/api/v1/gsc/callback/')
+
 
 # Application definition
 

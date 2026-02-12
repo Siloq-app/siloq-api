@@ -71,6 +71,33 @@ class Site(models.Model):
         default=False,
         help_text="Whether the business onboarding wizard has been completed"
     )
+    
+    # Google Search Console Integration
+    gsc_site_url = models.URLField(
+        blank=True,
+        null=True,
+        help_text="GSC property URL (e.g., https://example.com/)"
+    )
+    gsc_access_token = models.TextField(
+        blank=True,
+        null=True,
+        help_text="GSC OAuth access token"
+    )
+    gsc_refresh_token = models.TextField(
+        blank=True,
+        null=True,
+        help_text="GSC OAuth refresh token"
+    )
+    gsc_token_expires_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="When the access token expires"
+    )
+    gsc_connected_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        help_text="When GSC was connected"
+    )
 
     class Meta:
         db_table = 'sites'

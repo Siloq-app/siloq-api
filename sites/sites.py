@@ -244,3 +244,146 @@ class SiteViewSet(viewsets.ModelViewSet):
             'silos': [],
             'total': 0,
         })
+
+    # =========================================================================
+    # GSC Integration Actions
+    # =========================================================================
+    
+    @action(detail=True, methods=['get'], url_path='gsc/status')
+    def gsc_status(self, request, pk=None):
+        """
+        Check GSC connection status for a site.
+        
+        GET /api/v1/sites/{id}/gsc/status/
+        """
+        site = self.get_object()
+        return Response({
+            'connected': bool(site.gsc_refresh_token),
+            'gsc_site_url': site.gsc_site_url,
+            'connected_at': site.gsc_connected_at,
+        })
+    
+    @action(detail=True, methods=['post'], url_path='gsc/connect')
+    def gsc_connect(self, request, pk=None):
+        """
+        Connect GSC to this site.
+        
+        POST /api/v1/sites/{id}/gsc/connect/
+        Body: { "gsc_site_url": "...", "access_token": "...", "refresh_token": "..." }
+        """
+        from django.utils import timezone
+        
+        site = self.get_object()
+        
+        gsc_site_url = request.data.get('gsc_site_url')
+        access_token = request.data.get('access_token')
+        refresh_token = request.data.get('refresh_token')
+        
+        if not gsc_site_url:
+            return Response({'error': 'gsc_site_url required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        site.gsc_site_url = gsc_site_url
+        if access_token:
+            site.gsc_access_token = access_token
+        if refresh_token:
+            site.gsc_refresh_token = refresh_token
+            from datetime import timedelta
+            site.gsc_token_expires_at = timezone.now() + timedelta(hours=1)
+        site.gsc_connected_at = timezone.now()
+        site.save()
+        
+        return Response({
+            'message': 'GSC connected successfully',
+            'gsc_site_url': gsc_site_url,
+        })
+    
+    @action(detail=True, methods=['get'], url_path='gsc/data')
+    def gsc_data(self, request, pk=None):
+        """
+        Fetch GSC search analytics data.
+        
+        GET /api/v1/sites/{id}/gsc/data/?days=90
+        """
+        from integrations.gsc_views import _get_valid_access_token, _fetch_search_analytics
+        from datetime import datetime, timedelta
+        
+        site = self.get_object()
+        
+        if not site.gsc_site_url or not site.gsc_refresh_token:
+            return Response({'error': 'GSC not connected'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        access_token = _get_valid_access_token(site)
+        if not access_token:
+            return Response({'error': 'Failed to get GSC access token'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+        days = int(request.query_params.get('days', 90))
+        start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        
+        data = _fetch_search_analytics(
+            access_token=access_token,
+            site_url=site.gsc_site_url,
+            start_date=start_date,
+            end_date=end_date,
+            dimensions=['query', 'page'],
+            row_limit=5000,
+        )
+        
+        return Response({
+            'site_id': site.id,
+            'gsc_site_url': site.gsc_site_url,
+            'date_range': {'start': start_date, 'end': end_date},
+            'row_count': len(data),
+            'data': data,
+        })
+    
+    @action(detail=True, methods=['post'], url_path='gsc/analyze')
+    def gsc_analyze(self, request, pk=None):
+        """
+        Run cannibalization analysis on GSC data.
+        
+        POST /api/v1/sites/{id}/gsc/analyze/
+        """
+        from integrations.gsc_views import _get_valid_access_token, _fetch_search_analytics
+        from .analysis import analyze_gsc_data
+        
+        site = self.get_object()
+        
+        if not site.gsc_site_url or not site.gsc_refresh_token:
+            return Response({'error': 'GSC not connected'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        access_token = _get_valid_access_token(site)
+        if not access_token:
+            return Response({'error': 'Failed to get GSC access token'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+        gsc_data = _fetch_search_analytics(
+            access_token=access_token,
+            site_url=site.gsc_site_url,
+            dimensions=['query', 'page'],
+            row_limit=5000,
+        )
+        
+        if not gsc_data:
+            return Response({'error': 'No GSC data available'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Transform and analyze
+        formatted_data = [
+            {
+                'query': row.get('query', ''),
+                'page_url': row.get('page', ''),
+                'clicks': row.get('clicks', 0),
+                'impressions': row.get('impressions', 0),
+                'position': row.get('position', 0),
+            }
+            for row in gsc_data
+        ]
+        
+        issues = analyze_gsc_data(formatted_data)
+        
+        return Response({
+            'site_id': site.id,
+            'gsc_site_url': site.gsc_site_url,
+            'queries_analyzed': len(gsc_data),
+            'issues_found': len(issues),
+            'issues': issues,
+        })
