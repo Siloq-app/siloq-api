@@ -67,11 +67,17 @@ def sync_page(request):
     Sync a page from WordPress to Django backend.
     """
     logger.debug(f"sync_page called, user: {request.user}, auth: {request.auth}")
+    logger.debug(f"Request data: {request.data}")
     site = request.auth['site']
     serializer = SEOPageSyncSerializer(data=request.data)
     
     if not serializer.is_valid():
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        logger.error(f"Serializer validation failed: {serializer.errors}")
+        logger.error(f"Request data received: {request.data}")
+        return Response(
+            {'error': 'Validation failed', 'details': serializer.errors},
+            status=status.HTTP_400_BAD_REQUEST
+        )
     
     data = dict(serializer.validated_data)
     data['slug'] = _sanitize_slug(data.get('slug') or '')
