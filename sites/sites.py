@@ -99,3 +99,51 @@ class SiteViewSet(viewsets.ModelViewSet):
             'total_issues': total_issues,
             'last_synced_at': site.last_synced_at,
         })
+
+    @action(detail=True, methods=['get', 'patch'])
+    def profile(self, request, pk=None):
+        """
+        Get or update business profile for onboarding wizard.
+
+        GET /api/v1/sites/{id}/profile/ - Get current profile
+        PATCH /api/v1/sites/{id}/profile/ - Update profile fields
+        """
+        site = self.get_object()
+
+        if request.method == 'GET':
+            return Response({
+                'business_type': site.business_type,
+                'primary_services': site.primary_services or [],
+                'service_areas': site.service_areas or [],
+                'target_audience': site.target_audience or '',
+                'business_description': site.business_description or '',
+                'onboarding_complete': site.onboarding_complete,
+            })
+
+        # PATCH - update profile fields
+        allowed_fields = [
+            'business_type',
+            'primary_services',
+            'service_areas',
+            'target_audience',
+            'business_description',
+        ]
+        
+        for field in allowed_fields:
+            if field in request.data:
+                setattr(site, field, request.data[field])
+        
+        # Check if onboarding is complete (has business_type and at least one service)
+        if site.business_type and site.primary_services:
+            site.onboarding_complete = True
+        
+        site.save()
+        
+        return Response({
+            'business_type': site.business_type,
+            'primary_services': site.primary_services or [],
+            'service_areas': site.service_areas or [],
+            'target_audience': site.target_audience or '',
+            'business_description': site.business_description or '',
+            'onboarding_complete': site.onboarding_complete,
+        })
