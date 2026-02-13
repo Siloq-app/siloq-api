@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 # OAuth Configuration
 GSC_CLIENT_ID = os.environ.get('GSC_CLIENT_ID', '')
 GSC_CLIENT_SECRET = os.environ.get('GSC_CLIENT_SECRET', '')
-GSC_REDIRECT_URI = os.environ.get('GSC_REDIRECT_URI', 'https://app.siloq.ai/api/v1/gsc/callback/')
+GSC_REDIRECT_URI = os.environ.get('GSC_REDIRECT_URI', 'https://api.siloq.ai/api/v1/gsc/callback/')
 
 GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/auth'
 GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'

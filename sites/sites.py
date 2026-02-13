@@ -238,13 +238,102 @@ class SiteViewSet(viewsets.ModelViewSet):
     def silos(self, request, pk=None):
         """
         Get content silos for a site.
+        Auto-generates silos from money pages (target pages) and groups
+        non-money pages as supporting pages by matching URL path hierarchy.
         
         GET /api/v1/sites/{id}/silos/
         """
-        # For now, return empty - silos need to be created first
+        site = self.get_object()
+        from seo.models import Page
+        pages = Page.objects.filter(site=site, is_noindex=False)
+        
+        money_pages = pages.filter(is_money_page=True).order_by('url')
+        all_pages = list(pages.values('id', 'title', 'url', 'status', 'post_type', 'is_money_page'))
+        
+        silos = []
+        assigned_ids = set()
+        
+        for mp in money_pages:
+            mp_url = mp.url.rstrip('/')
+            # Find supporting pages: same URL prefix or pages that link to this money page
+            supporting = []
+            for p in all_pages:
+                if p['id'] == mp.id or p['id'] in assigned_ids or p.get('is_money_page'):
+                    continue
+                p_url = (p['url'] or '').rstrip('/')
+                # Match by URL hierarchy (e.g. /services/roofing/ supports /services/)
+                if mp_url and p_url and p_url.startswith(mp_url + '/'):
+                    supporting.append(p)
+                    assigned_ids.add(p['id'])
+            
+            silos.append({
+                'id': mp.id,
+                'name': mp.title or mp.url,
+                'target_page': {
+                    'id': mp.id,
+                    'title': mp.title,
+                    'url': mp.url,
+                    'status': mp.status or 'publish',
+                },
+                'topic_cluster': None,
+                'supporting_pages': [
+                    {
+                        'id': sp['id'],
+                        'title': sp['title'],
+                        'url': sp['url'],
+                        'status': sp.get('status', 'publish'),
+                    }
+                    for sp in supporting
+                ],
+                'page_count': 1 + len(supporting),
+            })
+        
+        # If no money pages set yet, create silos from pages that look like target pages
+        # (homepage, service pages, category pages) so the dropdown isn't empty
+        if not silos:
+            # Group by top-level URL path
+            from collections import defaultdict
+            from urllib.parse import urlparse
+            path_groups = defaultdict(list)
+            for p in all_pages:
+                parsed = urlparse(p['url'] or '')
+                parts = [x for x in parsed.path.strip('/').split('/') if x]
+                group = parts[0] if parts else 'home'
+                path_groups[group].append(p)
+            
+            for group_name, group_pages in path_groups.items():
+                if not group_pages:
+                    continue
+                # Pick the shortest URL as the target page
+                group_pages.sort(key=lambda x: len(x['url'] or ''))
+                target = group_pages[0]
+                supporting = group_pages[1:10]  # Cap at 10 for display
+                
+                silos.append({
+                    'id': target['id'],
+                    'name': group_name.replace('-', ' ').title(),
+                    'target_page': {
+                        'id': target['id'],
+                        'title': target['title'],
+                        'url': target['url'],
+                        'status': target.get('status', 'publish'),
+                    },
+                    'topic_cluster': None,
+                    'supporting_pages': [
+                        {
+                            'id': sp['id'],
+                            'title': sp['title'],
+                            'url': sp['url'],
+                            'status': sp.get('status', 'publish'),
+                        }
+                        for sp in supporting
+                    ],
+                    'page_count': 1 + len(supporting),
+                })
+        
         return Response({
-            'silos': [],
-            'total': 0,
+            'silos': silos,
+            'total': len(silos),
         })
 
     @action(detail=True, methods=['post'], url_path='generate-silos')
