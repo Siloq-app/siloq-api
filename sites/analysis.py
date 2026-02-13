@@ -208,22 +208,29 @@ def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[
             'is_listicle': is_listicle_url(url),
         }
     
-    processed_pairs = set()
+    # Build inverted keyword index to avoid O(n²) full comparison
+    # Only compare pages that share at least one keyword
+    keyword_to_pages = defaultdict(set)
+    for pid, data in page_data.items():
+        for kw in data['keywords']:
+            keyword_to_pages[kw].add(pid)
     
-    # Check each pair
-    for id_a, data_a in page_data.items():
-        for id_b, data_b in page_data.items():
-            if id_a >= id_b:
-                continue
-            
-            pair_key = (id_a, id_b)
-            if pair_key in processed_pairs:
-                continue
-            processed_pairs.add(pair_key)
-            
-            issue = _check_pair_conflict(data_a, data_b)
-            if issue:
-                issues.append(issue)
+    # Build candidate pairs (pages that share keywords)
+    candidate_pairs = set()
+    for kw, pids in keyword_to_pages.items():
+        pid_list = sorted(pids)
+        for i in range(len(pid_list)):
+            for j in range(i + 1, len(pid_list)):
+                candidate_pairs.add((pid_list[i], pid_list[j]))
+    
+    # Check only candidate pairs
+    for id_a, id_b in candidate_pairs:
+        data_a = page_data[id_a]
+        data_b = page_data[id_b]
+        
+        issue = _check_pair_conflict(data_a, data_b)
+        if issue:
+            issues.append(issue)
     
     # Sort by severity
     severity_order = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}

@@ -167,17 +167,19 @@ class SiteViewSet(viewsets.ModelViewSet):
         for i, issue in enumerate(issues):
             formatted_issues.append({
                 'id': i + 1,
-                'keyword': issue['keyword'],
-                'severity': issue['severity'],
-                'recommendation_type': issue['recommendation_type'],
+                'keyword': issue.get('keyword', ''),
+                'severity': issue.get('severity', 'LOW').lower(),
+                'recommendation_type': issue.get('recommendation_type') or issue.get('type', 'review'),
+                'recommendation': issue.get('recommendation', ''),
                 'total_impressions': issue.get('total_impressions', 0),
                 'competing_pages': [
                     {
-                        'id': p['id'],
-                        'url': p['url'],
-                        'title': p['title'],
+                        'id': p.get('id'),
+                        'url': p.get('url', ''),
+                        'title': p.get('title', ''),
+                        'impression_share': p.get('impression_share'),
                     }
-                    for p in issue['competing_pages']
+                    for p in issue.get('competing_pages', [])
                 ],
                 'suggested_king': {
                     'id': issue['suggested_king']['id'],
