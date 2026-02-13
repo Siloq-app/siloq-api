@@ -17,7 +17,7 @@ from sites.models import Site, APIKey
 from seo.models import Page, SEOData
 from seo.serializers import PageSyncSerializer as SEOPageSyncSerializer
 from .models import Scan
-from .serializers import SEODataSyncSerializer
+from .serializers import SEODataSyncSerializer, ScanCreateSerializer, ScanSerializer
 from .permissions import IsAPIKeyAuthenticated, IsJWTOrAPIKeyAuthenticated
 from .authentication import APIKeyAuthentication
 
@@ -335,5 +335,3 @@ def debug_page_count(request):
         'total_sites': Site.objects.count(),
         'pages_sample': pages_sample
     })
-
-    return Response(report)
