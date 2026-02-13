@@ -15,14 +15,14 @@ class SiteSerializer(serializers.ModelSerializer):
         model = Site
         fields = (
             'id', 'name', 'url', 'wp_site_id', 'is_active',
-            'last_synced_at', 'created_at', 'updated_at',
+            'last_synced_at', 'sync_requested_at', 'created_at', 'updated_at',
             'page_count', 'api_key_count',
             # Business profile fields
             'business_type', 'primary_services', 'service_areas',
             'target_audience', 'business_description', 'onboarding_complete',
             'needs_onboarding'
         )
-        read_only_fields = ('id', 'created_at', 'updated_at', 'last_synced_at', 'needs_onboarding')
+        read_only_fields = ('id', 'created_at', 'updated_at', 'last_synced_at', 'sync_requested_at', 'needs_onboarding')
 
     def get_page_count(self, obj):
         """Get count of pages for this site."""
