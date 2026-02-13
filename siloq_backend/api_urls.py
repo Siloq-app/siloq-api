@@ -42,6 +42,8 @@ urlpatterns = [
     # Page management (dashboard) - comes after integrations to avoid conflicts
     path('pages/', include('seo.urls')),
     # Content generation jobs (WordPress plugin compatibility)
+    # AI Content Engine
+    path('ai/', include('ai.urls')),
     path('content-jobs/', content_jobs_create_view),
     path('content-jobs/<str:job_id>/', content_jobs_status_view),
 ]

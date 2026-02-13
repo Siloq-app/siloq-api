@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'seo',
     'integrations',
     'billing',
+    'ai',
 ]
 
 MIDDLEWARE = [
