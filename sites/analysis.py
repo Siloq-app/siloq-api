@@ -227,14 +227,22 @@ def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[
     # Only consider pairs with 2+ shared keywords
     candidate_pairs = {pair for pair, count in pair_shared_count.items() if count >= 2}
     
-    # Check only candidate pairs
+    # Check only candidate pairs — collect raw pairwise conflicts
+    raw_issues = []
     for id_a, id_b in candidate_pairs:
         data_a = page_data[id_a]
         data_b = page_data[id_b]
         
         issue = _check_pair_conflict(data_a, data_b)
         if issue:
-            issues.append(issue)
+            raw_issues.append(issue)
+    
+    # =========================================================================
+    # CLUSTER GROUPING: Merge pairwise conflicts into clusters
+    # If 6 location pages all trigger "location_boilerplate", show 1 cluster
+    # with 6 pages — NOT 15 pairwise conflicts.
+    # =========================================================================
+    issues = _cluster_issues(raw_issues)
     
     # Tag all static issues as "potential" - not GSC validated
     for issue in issues:
@@ -249,6 +257,155 @@ def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[
     return issues[:30]
 
 
+def _extract_service_keyword(issue: Dict) -> str:
+    """
+    Extract the core service keyword from an issue for clustering.
+    Groups issues that share the same service concept.
+    """
+    pages = issue.get('competing_pages', [])
+    urls = [p.get('url', '') for p in pages]
+    
+    # For location pages, extract the service slug (e.g., "event-planner" from
+    # "/service-area/event-planner/brooklyn-ny/")
+    for url in urls:
+        path = urlparse(url).path.lower().strip('/')
+        parts = path.split('/')
+        # Pattern: service-area/<service>/<location>/
+        if len(parts) >= 2 and parts[0] in ('service-area', 'service-areas', 'locations', 'location'):
+            return parts[1]  # The service slug
+    
+    # Fallback: use the conflict type + shared keywords
+    return issue.get('type', 'unknown')
+
+
+def _cluster_issues(raw_issues: List[Dict]) -> List[Dict]:
+    """
+    Group pairwise conflicts into clusters.
+    
+    If 3+ pages trigger the same conflict type for the same service keyword,
+    merge into ONE cluster showing all pages.
+    """
+    if not raw_issues:
+        return []
+    
+    # Group by (conflict_type, service_keyword)
+    cluster_map = defaultdict(lambda: {
+        'pages': {},  # id -> page data (deduped)
+        'issues': [],
+        'type': None,
+        'severity': None,
+        'explanation': None,
+        'recommendation': None,
+        'suggested_king': None,
+    })
+    
+    for issue in raw_issues:
+        conflict_type = issue.get('type', 'unknown')
+        service_kw = _extract_service_keyword(issue)
+        cluster_key = (conflict_type, service_kw)
+        
+        cluster = cluster_map[cluster_key]
+        cluster['type'] = conflict_type
+        cluster['issues'].append(issue)
+        
+        # Keep highest severity
+        sev_order = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
+        if cluster['severity'] is None or sev_order.get(issue['severity'], 3) < sev_order.get(cluster['severity'], 3):
+            cluster['severity'] = issue['severity']
+            cluster['explanation'] = issue.get('explanation', '')
+            cluster['recommendation'] = issue.get('recommendation', '')
+        
+        if issue.get('suggested_king') and not cluster['suggested_king']:
+            cluster['suggested_king'] = issue['suggested_king']
+        
+        # Collect all unique pages
+        for page in issue.get('competing_pages', []):
+            pid = page.get('id')
+            if pid and pid not in cluster['pages']:
+                cluster['pages'][pid] = page
+    
+    # Convert clusters to issue format
+    clustered_issues = []
+    for (conflict_type, service_kw), cluster in cluster_map.items():
+        all_pages = list(cluster['pages'].values())
+        num_pairs = len(cluster['issues'])
+        
+        # Build display keyword — use service keyword, not token list
+        display_keyword = service_kw.replace('-', ' ').replace('_', ' ')
+        if len(all_pages) >= 3:
+            # This is a true cluster
+            clustered_issues.append({
+                'type': conflict_type,
+                'severity': cluster['severity'],
+                'keyword': display_keyword,
+                'is_cluster': True,
+                'cluster_size': len(all_pages),
+                'pairs_collapsed': num_pairs,
+                'explanation': f"{len(all_pages)} pages share the same conflict pattern. " + (cluster['explanation'] or ''),
+                'recommendation': cluster['recommendation'] or '',
+                'competing_pages': all_pages,
+                'suggested_king': cluster['suggested_king'],
+            })
+        else:
+            # 2-page conflict — keep as individual issue but clean up keyword
+            issue = cluster['issues'][0]
+            # Use the original keyword but strip if it's just token soup
+            orig_kw = issue.get('keyword', display_keyword)
+            # If keyword has 5+ comma-separated tokens, it's token soup — use service keyword instead
+            if orig_kw.count(',') >= 4:
+                orig_kw = display_keyword
+            issue['keyword'] = orig_kw
+            clustered_issues.append(issue)
+    
+    return clustered_issues
+
+
+def _extract_geographic_slug(url: str) -> Optional[str]:
+    """Extract the geographic/city slug from a location URL."""
+    path = urlparse(url).path.lower().strip('/')
+    parts = path.split('/')
+    
+    # Common patterns:
+    # /service-area/<service>/<city>/  → city is last
+    # /locations/<city>/               → city is last
+    # /service-areas/<city>/           → city is last
+    if len(parts) >= 2:
+        # Last non-empty segment is likely the city
+        last = parts[-1]
+        # Check it's not a service word
+        service_words = {'service', 'services', 'area', 'areas', 'location', 'locations'}
+        if last and last not in service_words:
+            return last
+    
+    return None
+
+
+def _extract_location_service(url: str) -> Optional[str]:
+    """Extract the service keyword from a location URL like /service-area/event-planner/brooklyn/."""
+    path = urlparse(url).path.lower().strip('/')
+    parts = path.split('/')
+    
+    # Pattern: <folder>/<service>/<city>
+    location_folders = {'service-area', 'service-areas', 'locations', 'location', 'city', 'areas'}
+    if len(parts) >= 3 and parts[0] in location_folders:
+        return parts[1].replace('-', ' ')
+    if len(parts) >= 2 and parts[0] in location_folders:
+        return parts[1].replace('-', ' ')
+    
+    return None
+
+
+def _is_parent_child(url_a: str, url_b: str) -> bool:
+    """Check if one URL is a parent (hub) of the other (spoke) by URL path."""
+    path_a = urlparse(url_a).path.rstrip('/')
+    path_b = urlparse(url_b).path.rstrip('/')
+    
+    if not path_a or not path_b or path_a == path_b:
+        return False
+    
+    return path_b.startswith(path_a + '/') or path_a.startswith(path_b + '/')
+
+
 def _check_pair_conflict(data_a: Dict, data_b: Dict) -> Optional[Dict]:
     """Check if two pages have a cannibalization conflict."""
     type_a, type_b = data_a['type'], data_b['type']
@@ -261,6 +418,13 @@ def _check_pair_conflict(data_a: Dict, data_b: Dict) -> Optional[Dict]:
         return None
     
     overlap_ratio = len(overlap) / max(len(kw_a | kw_b), 1)
+    
+    # =========================================================================
+    # PARENT-CHILD EXCLUSION: Hub page and spoke page = SAFE
+    # A category/hub and its child pages sharing keywords is correct architecture
+    # =========================================================================
+    if _is_parent_child(url_a, url_b):
+        return None
     
     # =========================================================================
     # RULE 1: Listicle Blog vs Category (HIGH - E-commerce)
@@ -366,20 +530,80 @@ def _check_pair_conflict(data_a: Dict, data_b: Dict) -> Optional[Dict]:
             }
     
     # =========================================================================
-    # RULE 6: Location Boilerplate (MEDIUM - Service Business)
+    # RULE 6: Location Pages — Geography Exclusion + Boilerplate Detection
     # =========================================================================
-    if type_a == 'location' and type_b == 'location' and overlap_ratio > 0.5:
+    if type_a == 'location' and type_b == 'location':
+        # Extract geographic slugs from URLs
+        geo_a = _extract_geographic_slug(url_a)
+        geo_b = _extract_geographic_slug(url_b)
+        
+        # Different cities targeting the same service = SAFE (valid local SEO architecture)
+        if geo_a and geo_b and geo_a != geo_b:
+            # Only flag if titles are nearly identical (boilerplate content issue, not keyword conflict)
+            title_a = data_a['title'].lower()
+            title_b = data_b['title'].lower()
+            # Strip city names from titles to compare service description
+            for geo in (geo_a, geo_b):
+                for variant in (geo, geo.replace('-', ' ')):
+                    title_a = title_a.replace(variant, '').strip()
+                    title_b = title_b.replace(variant, '').strip()
+            
+            # If titles are identical after stripping city = boilerplate
+            if title_a and title_b and title_a == title_b:
+                service_kw = _extract_location_service(url_a) or ', '.join(overlap)
+                return {
+                    'type': 'location_boilerplate',
+                    'severity': 'MEDIUM',
+                    'keyword': service_kw,
+                    'explanation': f"Location pages for different cities share identical templated content. This is a content quality issue, not a keyword conflict.",
+                    'recommendation': "Rewrite each with unique local evidence: local venue references, neighborhood-specific reviews, area-specific photos, local partnerships.",
+                    'competing_pages': [
+                        {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                        {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+                    ],
+                    'suggested_king': None,
+                }
+            
+            # Different cities, different content = SAFE
+            return None
+        
+        # Same city or unknown geography with high overlap = potential conflict
+        if overlap_ratio > 0.5:
+            return {
+                'type': 'location_boilerplate',
+                'severity': 'MEDIUM',
+                'keyword': ', '.join(overlap),
+                'explanation': "Location pages have significant URL overlap. Likely templated content.",
+                'recommendation': "Rewrite with LOCAL EVIDENCE: job photos, city-specific reviews, local landmarks.",
+                'competing_pages': [
+                    {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                    {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+                ],
+                'suggested_king': None,
+            }
+        
+        # Location pages with low overlap = SAFE
+        return None
+    
+    # =========================================================================
+    # RULE 7: Near-Duplicate URLs (HIGH - e.g. /obstacle-course/ vs /obstacle-course-2/)
+    # =========================================================================
+    path_a = urlparse(url_a).path.rstrip('/')
+    path_b = urlparse(url_b).path.rstrip('/')
+    # Check if one URL is the other plus a number suffix
+    if re.match(re.escape(path_a) + r'-\d+$', path_b) or \
+       re.match(re.escape(path_b) + r'-\d+$', path_a):
         return {
-            'type': 'location_boilerplate',
-            'severity': 'MEDIUM',
-            'keyword': ', '.join(overlap),
-            'explanation': "Location pages have significant URL overlap. Likely templated content.",
-            'recommendation': "Rewrite with LOCAL EVIDENCE: job photos, city-specific reviews, local landmarks.",
+            'type': 'near_duplicate_url',
+            'severity': 'HIGH',
+            'keyword': path_a.split('/')[-1].replace('-', ' '),
+            'explanation': f"Near-duplicate URLs detected. One appears to be a numbered variant of the other.",
+            'recommendation': "Consolidate into one URL. 301 redirect the numbered variant to the primary page.",
             'competing_pages': [
                 {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
                 {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
             ],
-            'suggested_king': None,
+            'suggested_king': {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title']},
         }
     
     # =========================================================================
@@ -389,6 +613,15 @@ def _check_pair_conflict(data_a: Dict, data_b: Dict) -> Optional[Dict]:
     # Category + Product = SAFE (different intents: browse vs buy)
     if {type_a, type_b} == {'category', 'product'}:
         return None
+    
+    # Product + Product with distinct identifiers under same category = SAFE
+    # e.g., /virtual-reality-rentals/vr-racing/ vs /virtual-reality-rentals/vr-surfing/
+    if type_a == 'product' and type_b == 'product':
+        parts_a = [p for p in urlparse(url_a).path.strip('/').split('/') if p]
+        parts_b = [p for p in urlparse(url_b).path.strip('/').split('/') if p]
+        # Same parent folder but different product slug = valid product architecture
+        if len(parts_a) >= 2 and len(parts_b) >= 2 and parts_a[:-1] == parts_b[:-1] and parts_a[-1] != parts_b[-1]:
+            return None
     
     # Team pages are organizational/navigational - SAFE with everything
     # Teams are specific organizations (e.g. "Starlight Dance Center"), not SEO targets
