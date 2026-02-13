@@ -3,6 +3,7 @@ Views for Page and SEOData management.
 """
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
@@ -10,6 +11,13 @@ from django.utils import timezone
 from .models import Page, SEOData
 from .serializers import PageSerializer, PageListSerializer, PageSyncSerializer, SEODataSerializer
 from sites.models import Site
+
+
+class LargeResultsSetPagination(PageNumberPagination):
+    """Allow up to 1000 pages per request for dashboard views."""
+    page_size = 1000
+    page_size_query_param = 'page_size'
+    max_page_size = 5000
 
 
 class PageViewSet(viewsets.ModelViewSet):
@@ -20,6 +28,7 @@ class PageViewSet(viewsets.ModelViewSet):
     retrieve: GET /api/v1/pages/{id}/ - Get page details with SEO data
     """
     permission_classes = [IsAuthenticated]
+    pagination_class = LargeResultsSetPagination
     http_method_names = ['get', 'post', 'patch', 'head', 'options']  # GET, POST (for actions), PATCH
 
     def get_queryset(self):
