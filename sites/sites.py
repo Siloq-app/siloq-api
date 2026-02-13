@@ -265,6 +265,25 @@ class SiteViewSet(viewsets.ModelViewSet):
             'connected_at': site.gsc_connected_at,
         })
     
+    @action(detail=True, methods=['post'], url_path='gsc/disconnect')
+    def gsc_disconnect(self, request, pk=None):
+        """
+        Disconnect GSC from this site (allows reconnection).
+        
+        POST /api/v1/sites/{id}/gsc/disconnect/
+        """
+        site = self.get_object()
+        site.gsc_site_url = ''
+        site.gsc_access_token = ''
+        site.gsc_refresh_token = ''
+        site.gsc_token_expires_at = None
+        site.gsc_connected_at = None
+        site.save()
+        
+        return Response({
+            'message': 'GSC disconnected successfully',
+        })
+
     @action(detail=True, methods=['post'], url_path='gsc/connect')
     def gsc_connect(self, request, pk=None):
         """
@@ -524,6 +543,110 @@ class SiteViewSet(viewsets.ModelViewSet):
             'geo_issues_count': results.get('geo_issues_count', 0),
             'geo_results': results.get('geo_results', []),
             'geo_recommendations': results.get('geo_recommendations', []),
+        })
+
+    # =========================================================================
+    # Smart Money Page Detection
+    # =========================================================================
+
+    @action(detail=True, methods=['get'], url_path='suggested-money-pages')
+    def suggested_money_pages(self, request, pk=None):
+        """
+        Auto-detect likely money pages based on URL patterns, post type, and content.
+        Returns categorized suggestions for the user to confirm.
+        
+        GET /api/v1/sites/{id}/suggested-money-pages/
+        """
+        from .analysis import classify_page_type
+        
+        site = self.get_object()
+        pages = site.pages.filter(status='publish', is_noindex=False)
+        
+        suggestions = {
+            'homepage': [],
+            'service_pages': [],
+            'product_categories': [],
+            'key_products': [],
+            'location_pages': [],
+        }
+        
+        already_money = set(pages.filter(is_money_page=True).values_list('id', flat=True))
+        
+        for page in pages:
+            page_type = classify_page_type(page.url, getattr(page, 'post_type', None))
+            entry = {
+                'id': page.id,
+                'url': page.url,
+                'title': page.title,
+                'page_type': page_type,
+                'post_type': page.post_type,
+                'is_money_page': page.id in already_money,
+                'reason': '',
+            }
+            
+            if page.is_homepage or page_type == 'homepage':
+                entry['reason'] = 'Homepage — the foundation of your site authority'
+                suggestions['homepage'].append(entry)
+            elif page_type == 'service':
+                entry['reason'] = 'Service page — directly drives business revenue'
+                suggestions['service_pages'].append(entry)
+            elif page_type == 'category':
+                entry['reason'] = 'Category page — key shopping/browsing entry point'
+                suggestions['product_categories'].append(entry)
+            elif page_type == 'location':
+                entry['reason'] = 'Location page — captures local search traffic'
+                suggestions['location_pages'].append(entry)
+            elif page_type == 'product' and page.post_type == 'product':
+                # Only suggest top products (ones with short URLs or featured)
+                url_depth = page.url.count('/') if page.url else 0
+                if url_depth <= 4:  # Not too deeply nested
+                    entry['reason'] = 'Product page — direct revenue generator'
+                    suggestions['key_products'].append(entry)
+        
+        # Limit products to top 20 (most likely important ones)
+        suggestions['key_products'] = suggestions['key_products'][:20]
+        
+        # Count totals
+        total_suggested = sum(len(v) for v in suggestions.values())
+        already_marked = sum(1 for v in suggestions.values() for p in v if p['is_money_page'])
+        
+        return Response({
+            'site_id': site.id,
+            'total_pages': pages.count(),
+            'total_suggested': total_suggested,
+            'already_marked': already_marked,
+            'suggestions': suggestions,
+            'message': f"Siloq found {total_suggested} pages that look like money pages. "
+                       f"{already_marked} are already marked. Review and confirm below.",
+        })
+
+    @action(detail=True, methods=['post'], url_path='bulk-set-money-pages')
+    def bulk_set_money_pages(self, request, pk=None):
+        """
+        Accept or modify money page suggestions in bulk.
+        
+        POST /api/v1/sites/{id}/bulk-set-money-pages/
+        Body: { "page_ids": [1, 2, 3], "clear_others": false }
+        """
+        from seo.models import Page
+        
+        site = self.get_object()
+        page_ids = request.data.get('page_ids', [])
+        clear_others = request.data.get('clear_others', False)
+        
+        if not page_ids:
+            return Response({'error': 'page_ids required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if clear_others:
+            # Clear all money page flags first
+            Page.objects.filter(site=site, is_money_page=True).update(is_money_page=False)
+        
+        # Set selected pages as money pages
+        updated = Page.objects.filter(site=site, id__in=page_ids).update(is_money_page=True)
+        
+        return Response({
+            'message': f'{updated} money pages set successfully',
+            'money_page_count': updated,
         })
 
     # =========================================================================
