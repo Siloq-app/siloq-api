@@ -187,7 +187,7 @@ def oauth_callback(request):
             return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_error=save_failed")
     
     # No site_id — redirect to site picker with temporary token
-    return redirect(f"{settings.FRONTEND_URL}/dashboard/gsc-connect?access_token={access_token}")
+    return redirect(f"{settings.FRONTEND_URL}/dashboard?tab=search-console&gsc_callback=true")
 
 
 @api_view(['GET'])
