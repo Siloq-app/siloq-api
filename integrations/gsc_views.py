@@ -154,25 +154,33 @@ def oauth_callback(request):
             site.gsc_connected_at = timezone.now()
             
             # Auto-detect the matching GSC site URL from user's properties
-            if access_token and site.url:
+            if access_token:
                 try:
                     headers = {'Authorization': f'Bearer {access_token}'}
                     gsc_resp = requests.get(f'{GSC_API_BASE}/sites', headers=headers, timeout=10)
+                    print(f"[GSC] Properties API response ({gsc_resp.status_code}): {gsc_resp.text[:500]}", flush=True)
                     if gsc_resp.status_code == 200:
                         gsc_sites = gsc_resp.json().get('siteEntry', [])
-                        site_domain = site.url.lower().replace('https://', '').replace('http://', '').replace('www.', '').rstrip('/')
-                        for gs in gsc_sites:
-                            gs_url = gs.get('siteUrl', '').lower().replace('www.', '')
-                            if site_domain in gs_url or gs_url.rstrip('/').endswith(site_domain):
-                                site.gsc_site_url = gs['siteUrl']
-                                logger.info(f"GSC OAuth: auto-matched site URL: {gs['siteUrl']}")
-                                break
+                        print(f"[GSC] Found {len(gsc_sites)} properties: {[gs.get('siteUrl') for gs in gsc_sites]}", flush=True)
+                        
+                        if site.url:
+                            site_domain = site.url.lower().replace('https://', '').replace('http://', '').replace('www.', '').rstrip('/')
+                            for gs in gsc_sites:
+                                gs_url = gs.get('siteUrl', '').lower().replace('www.', '')
+                                gs_domain = gs_url.replace('https://', '').replace('http://', '').replace('sc-domain:', '').rstrip('/')
+                                if site_domain == gs_domain or site_domain in gs_url or gs_url.rstrip('/').endswith(site_domain):
+                                    site.gsc_site_url = gs['siteUrl']
+                                    print(f"[GSC] Auto-matched: {gs['siteUrl']}", flush=True)
+                                    break
+                        
                         if not site.gsc_site_url and gsc_sites:
                             # Fallback: use first available GSC property
                             site.gsc_site_url = gsc_sites[0]['siteUrl']
-                            logger.info(f"GSC OAuth: no exact match, using first property: {site.gsc_site_url}")
+                            print(f"[GSC] No exact match, using first property: {site.gsc_site_url}", flush=True)
+                    else:
+                        print(f"[GSC] Properties API FAILED ({gsc_resp.status_code})", flush=True)
                 except Exception as e:
-                    logger.warning(f"GSC OAuth: failed to auto-detect site URL: {e}")
+                    print(f"[GSC] Auto-detect error: {e}", flush=True)
             
             site.save()
             print(f"[GSC] SUCCESS: saved tokens for site {site_id}. gsc_site_url={site.gsc_site_url}", flush=True)
