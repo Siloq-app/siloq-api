@@ -258,6 +258,10 @@ def get_content_recommendations(request, site_id):
     # 3. Industry-standard content (medium priority)
     recommendations.extend(_suggest_industry_content(site))
     
+    # 4. Fallback: if no recommendations yet, generate from existing pages
+    if not recommendations:
+        recommendations.extend(_fallback_recommendations(site))
+    
     # Sort by priority
     priority_order = {'high': 0, 'medium': 1, 'low': 2}
     recommendations.sort(key=lambda x: priority_order.get(x['priority'], 3))
@@ -304,6 +308,7 @@ def generate_from_recommendation(request, site_id, rec_id):
     all_recommendations.extend(_analyze_silo_gaps(site))
     all_recommendations.extend(_analyze_service_coverage(site))
     all_recommendations.extend(_suggest_industry_content(site))
+    all_recommendations.extend(_fallback_recommendations(site))
     
     recommendation = next((r for r in all_recommendations if r['id'] == rec_id), None)
     
@@ -459,3 +464,57 @@ def approve_content(request, site_id):
         # In production, would include:
         # 'wordpress_edit_url': f"{site.url}/wp-admin/post.php?post={page.wp_post_id}&action=edit"
     }, status=status.HTTP_201_CREATED)
+
+
+def _fallback_recommendations(site: Site) -> List[Dict[str, Any]]:
+    """
+    Generate basic recommendations when no onboarding data exists.
+    Uses existing page titles and site name to infer what content would help.
+    """
+    recommendations = []
+    existing_pages = Page.objects.filter(site=site, status='publish')
+    existing_titles = [p.title.lower() for p in existing_pages]
+    
+    # Extract likely services/topics from existing page titles
+    # (pages already on the site hint at what the business does)
+    topics = []
+    for page in existing_pages[:10]:
+        # Use money pages or pages with short titles as topic indicators
+        if page.is_money_page or len(page.title.split()) <= 5:
+            topics.append(page.title)
+    
+    if not topics:
+        # Use site name as a topic hint
+        topics = [site.name]
+    
+    # Generate FAQ, how-to, and cost guide suggestions
+    templates = [
+        ('FAQ: Common Questions About {topic}', 'Frequently asked questions help capture voice search and AI citations'),
+        ('How Much Does {topic} Cost?', 'Cost pages are among the highest-converting content for service businesses'),
+        ('{topic} Checklist: What to Expect', 'Checklist content builds trust and captures "what to expect" searches'),
+        ('Why Choose {site_name} for {topic}', 'Differentiator content that builds brand authority'),
+        ('Signs You Need {topic}', 'Problem-aware content that captures top-of-funnel searches'),
+    ]
+    
+    for topic in topics[:2]:
+        for template_title, reason in templates:
+            title = template_title.format(topic=topic, site_name=site.name)
+            title_lower = title.lower()
+            
+            # Skip if similar page already exists
+            if any(title_lower in et or et in title_lower for et in existing_titles):
+                continue
+            
+            rec_id = _generate_rec_id(site.id, title)
+            recommendations.append({
+                'id': rec_id,
+                'title': title,
+                'silo': topic,
+                'silo_id': None,
+                'reason': reason,
+                'priority': 'medium',
+                'content_type': 'supporting_article',
+                'estimated_searches': None,
+            })
+    
+    return recommendations[:8]  # Cap at 8
