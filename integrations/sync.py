@@ -72,18 +72,31 @@ def sync_page(request):
     serializer = SEOPageSyncSerializer(data=request.data)
     
     if not serializer.is_valid():
-        logger.error(f"Serializer validation failed: {serializer.errors}")
-        logger.error(f"Request data received: {request.data}")
-        return Response(
-            {'error': 'Validation failed', 'details': serializer.errors},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        logger.warning(f"sync_page validation failed: {serializer.errors}")
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     data = dict(serializer.validated_data)
     data['slug'] = _sanitize_slug(data.get('slug') or '')
     
-    # Get or create page
-    wp_post_id = data['wp_post_id']
+    # Handle wp_post_id - can be integer or string like "term_123" for taxonomy terms
+    raw_wp_post_id = data['wp_post_id']
+    if isinstance(raw_wp_post_id, str):
+        if raw_wp_post_id.startswith('term_'):
+            # Taxonomy term - use negative ID to distinguish from posts
+            # term_123 -> -123
+            try:
+                wp_post_id = -int(raw_wp_post_id.replace('term_', ''))
+            except ValueError:
+                wp_post_id = hash(raw_wp_post_id) % 1000000 * -1  # Fallback
+        else:
+            # Try to parse as integer
+            try:
+                wp_post_id = int(raw_wp_post_id)
+            except ValueError:
+                wp_post_id = hash(raw_wp_post_id) % 1000000
+    else:
+        wp_post_id = raw_wp_post_id
+    data['wp_post_id'] = wp_post_id
     page, created = Page.objects.get_or_create(
         site=site,
         wp_post_id=wp_post_id,
@@ -319,5 +332,3 @@ def debug_page_count(request):
         'total_sites': Site.objects.count(),
         'pages_sample': pages_sample
     })
-
-    return Response(report)

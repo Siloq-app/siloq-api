@@ -69,22 +69,36 @@ class PageListSerializer(serializers.ModelSerializer):
             return 0
 
 
+class FlexibleDateTimeField(serializers.DateTimeField):
+    """DateTimeField that accepts MySQL format (YYYY-MM-DD HH:MM:SS) and ISO format."""
+    def to_internal_value(self, value):
+        if isinstance(value, str):
+            # Try parsing MySQL format first (YYYY-MM-DD HH:MM:SS)
+            import re
+            mysql_match = re.match(r'^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$', value)
+            if mysql_match:
+                value = value.replace(' ', 'T') + 'Z'  # Convert to ISO
+        return super().to_internal_value(value)
+
+
 class PageSyncSerializer(serializers.Serializer):
     """Serializer for WordPress page sync requests."""
-    wp_post_id = serializers.IntegerField()
+    # Accept both integer (pages) and string (taxonomy terms like "term_123")
+    wp_post_id = serializers.CharField(max_length=50)
     url = serializers.URLField()
     title = serializers.CharField(max_length=500)
     content = serializers.CharField(required=False, allow_blank=True)
     excerpt = serializers.CharField(required=False, allow_blank=True)
     status = serializers.CharField(default='publish')
-    published_at = serializers.DateTimeField(required=False, allow_null=True)
-    modified_at = serializers.DateTimeField(required=False, allow_null=True)
+    post_type = serializers.CharField(required=False, default='page')  # page, post, product, product_cat
+    published_at = FlexibleDateTimeField(required=False, allow_null=True)
+    modified_at = FlexibleDateTimeField(required=False, allow_null=True)
     slug = serializers.CharField(max_length=500, required=False, allow_blank=True)
     parent_id = serializers.IntegerField(required=False, allow_null=True)
     menu_order = serializers.IntegerField(default=0)
     yoast_title = serializers.CharField(required=False, allow_blank=True)
     yoast_description = serializers.CharField(required=False, allow_blank=True)
-    featured_image = serializers.CharField(required=False, allow_blank=True)  # Changed from URLField to CharField to handle empty strings
+    featured_image = serializers.CharField(required=False, allow_blank=True, allow_null=True)  # Allow any string, not just URL
     is_noindex = serializers.BooleanField(required=False, default=False)
     is_homepage = serializers.BooleanField(required=False, default=False)
 
