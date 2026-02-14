@@ -42,20 +42,35 @@ def verify_api_key(request):
     Verify API key endpoint for WordPress plugin Test Connection.
     
     POST /api/v1/auth/verify
-    Headers: Authorization: Bearer <api_key>   (api_key must be sk_siloq_...)
+    Headers: Authorization: Bearer <api_key>   (sk_siloq_ or ak_siloq_)
     
     Returns: { "authenticated": true, "valid": true, "site_id": ..., "site_name": "...", "site_url": "..." }
     WordPress plugin expects 200 and body.authenticated === true for success.
     """
-    site = request.auth['site']
+    site = request.auth.get('site')
+    auth_type = request.auth.get('auth_type', 'site_key')
     
-    return Response({
+    response_data = {
         'authenticated': True,
         'valid': True,
-        'site_id': site.id,
-        'site_name': site.name,
-        'site_url': site.url,
-    }, status=status.HTTP_200_OK)
+        'auth_type': auth_type,
+    }
+    
+    if site:
+        response_data.update({
+            'site_id': site.id,
+            'site_name': site.name,
+            'site_url': site.url,
+        })
+    else:
+        response_data.update({
+            'site_id': None,
+            'site_name': None,
+            'site_url': None,
+            'message': 'Account key verified. Site will be auto-created on first sync.',
+        })
+    
+    return Response(response_data, status=status.HTTP_200_OK)
 
 
 @csrf_exempt
