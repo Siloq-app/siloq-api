@@ -4,12 +4,16 @@ All API endpoints are prefixed with /api/v1/
 """
 from django.urls import path, include
 from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 
 # Health check endpoint
+@csrf_exempt
 def health_check(request):
     return JsonResponse({"status": "healthy"})
 
 # Lazy import wrapper to avoid AppRegistryNotReady
+# CSRF exemption is preserved from the original view, but we add it here too for safety
+@csrf_exempt
 def verify_api_key_view(request):
     from integrations.sync import verify_api_key
     return verify_api_key(request)

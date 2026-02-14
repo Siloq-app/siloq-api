@@ -67,7 +67,7 @@ def sync_page(request):
     Sync a page from WordPress to Django backend.
     """
     logger.debug(f"sync_page called, user: {request.user}, auth: {request.auth}")
-    logger.info(f"sync_page request.data keys: {list(request.data.keys()) if hasattr(request.data, 'keys') else type(request.data)}")
+    logger.debug(f"Request data: {request.data}")
     site = request.auth['site']
     serializer = SEOPageSyncSerializer(data=request.data)
     
@@ -97,9 +97,6 @@ def sync_page(request):
     else:
         wp_post_id = raw_wp_post_id
     data['wp_post_id'] = wp_post_id
-    
-    # Get or create page
-    wp_post_id = data['wp_post_id']
     page, created = Page.objects.get_or_create(
         site=site,
         wp_post_id=wp_post_id,
@@ -335,5 +332,3 @@ def debug_page_count(request):
         'total_sites': Site.objects.count(),
         'pages_sample': pages_sample
     })
-
-    return Response(report)
