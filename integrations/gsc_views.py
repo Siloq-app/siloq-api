@@ -296,11 +296,39 @@ def get_gsc_data(request, site_id):
         row_limit=5000,
     )
     
+    # Aggregate totals for dashboard metrics
+    total_clicks = sum(r.get('clicks', 0) for r in data)
+    total_impressions = sum(r.get('impressions', 0) for r in data)
+    avg_ctr = (total_clicks / total_impressions) if total_impressions > 0 else 0
+    positions = [r.get('position', 0) for r in data if r.get('position', 0) > 0]
+    avg_position = (sum(positions) / len(positions)) if positions else 0
+
+    # Calculate position volatility (std dev of positions)
+    if len(positions) > 1:
+        mean_pos = avg_position
+        variance = sum((p - mean_pos) ** 2 for p in positions) / len(positions)
+        position_volatility = round(variance ** 0.5, 1)
+    else:
+        position_volatility = 0
+
     return Response({
         'site_id': site.id,
         'gsc_site_url': site.gsc_site_url,
         'date_range': {'start': start_date, 'end': end_date},
         'row_count': len(data),
+        'totals': {
+            'clicks': total_clicks,
+            'impressions': total_impressions,
+            'ctr': round(avg_ctr, 4),
+            'position': round(avg_position, 1),
+            'avg_position': round(avg_position, 1),
+            'position_volatility': position_volatility,
+            'clicks_delta': 0,
+            'impressions_delta': 0,
+            'ctr_delta': 0,
+            'position_delta': 0,
+            'volatility_delta': 0,
+        },
         'data': data,
     })
 
