@@ -314,8 +314,19 @@ class SiteViewSet(viewsets.ModelViewSet):
         from seo.models import Page
         pages = Page.objects.filter(site=site, is_noindex=False)
         
+        # Auto-classify if no pages have been classified yet (all still default 'supporting')
+        classified_count = pages.exclude(page_type_classification='supporting').count()
+        if classified_count == 0 and pages.count() > 0:
+            try:
+                from seo.page_classifier import classify_all_pages
+                classify_all_pages(site.id)
+                # Refresh queryset after classification
+                pages = Page.objects.filter(site=site, is_noindex=False)
+            except Exception:
+                logger.warning(f"Auto-classify failed for site {site.id}", exc_info=True)
+        
         money_pages = pages.filter(is_money_page=True).order_by('url')
-        all_pages = list(pages.values('id', 'title', 'url', 'status', 'post_type', 'is_money_page', 'page_type_classification'))
+        all_pages = list(pages.values('id', 'title', 'url', 'status', 'post_type', 'is_money_page', 'page_type_classification', 'page_type_override'))
         
         silos = []
         assigned_ids = set()
@@ -341,6 +352,8 @@ class SiteViewSet(viewsets.ModelViewSet):
                     'title': mp.title,
                     'url': mp.url,
                     'status': mp.status or 'publish',
+                    'page_type_classification': mp.page_type_classification,
+                    'page_type_override': mp.page_type_override,
                 },
                 'topic_cluster': None,
                 'supporting_pages': [
@@ -384,6 +397,8 @@ class SiteViewSet(viewsets.ModelViewSet):
                         'title': target['title'],
                         'url': target['url'],
                         'status': target.get('status', 'publish'),
+                        'page_type_classification': target.get('page_type_classification', 'supporting'),
+                        'page_type_override': target.get('page_type_override', False),
                     },
                     'topic_cluster': None,
                     'supporting_pages': [
