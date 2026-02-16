@@ -313,7 +313,10 @@ def detect_static_cannibalization(pages, include_noindex: bool = False, impressi
             # BUG FIX: If ALL pages have 0 impressions AND 0 clicks, severity = LOW
             # (cosmetic similarity only, no actual search competition)
             # ═══════════════════════════════════════════════════════════════
-            total_impressions = sum(impressions_map.get(pd['url'], 0) for pd in all_dup_pages)
+            total_impressions = sum(
+                impressions_map.get(pd['url'], 0) or impressions_map.get(pd['url'].rstrip('/'), 0)
+                for pd in all_dup_pages
+            )
             severity = 'LOW' if total_impressions == 0 else 'HIGH'
             
             raw_issues.append({
@@ -578,7 +581,8 @@ def _apply_impression_severity(issue: Dict, impressions_map: Dict[str, int]) -> 
 
     for page in competing:
         url = page.get('url', '')
-        imp = impressions_map.get(url, 0)
+        # Try both with and without trailing slash for URL normalization
+        imp = impressions_map.get(url, 0) or impressions_map.get(url.rstrip('/'), 0)
         page['impressions'] = imp
         page_impressions.append(imp)
 

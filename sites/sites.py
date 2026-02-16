@@ -198,6 +198,8 @@ class SiteViewSet(viewsets.ModelViewSet):
         
         # Build impression map from GSC if connected
         impressions_map = {}
+        clicks_map = {}
+        position_map = {}
         if gsc_connected:
             try:
                 from integrations.gsc import refresh_access_token, fetch_search_analytics
@@ -210,8 +212,22 @@ class SiteViewSet(viewsets.ModelViewSet):
                     )
                     for row in rows:
                         page_url = row.get('keys', [''])[0] if row.get('keys') else row.get('page', '')
-                        impressions_map[page_url] = impressions_map.get(page_url, 0) + row.get('impressions', 0)
-            except Exception:
+                        # Normalize URL: strip trailing slash for consistent matching
+                        normalized = page_url.rstrip('/')
+                        impressions_map[normalized] = impressions_map.get(normalized, 0) + row.get('impressions', 0)
+                        clicks_map[normalized] = clicks_map.get(normalized, 0) + row.get('clicks', 0)
+                        # Keep best (lowest) position
+                        pos = row.get('position', 0)
+                        if normalized not in position_map or pos < position_map[normalized]:
+                            position_map[normalized] = pos
+                        # Also store WITH trailing slash so either format matches
+                        with_slash = normalized + '/'
+                        impressions_map[with_slash] = impressions_map[normalized]
+                        clicks_map[with_slash] = clicks_map[normalized]
+                        position_map[with_slash] = position_map[normalized]
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"GSC fetch failed for site {site.id}: {e}")
                 pass  # Gracefully degrade — run without impression data
         
         # Detect cannibalization (static analysis with optional impression weighting)
@@ -239,9 +255,9 @@ class SiteViewSet(viewsets.ModelViewSet):
                         'title': p.get('title', ''),
                         'page_type': p.get('page_type', ''),
                         'impression_share': p.get('impression_share') or p.get('share'),
-                        'impressions': p.get('impressions', impressions_map.get(p.get('url', ''), 0)),
-                        'clicks': p.get('clicks'),
-                        'position': p.get('position'),
+                        'impressions': p.get('impressions') or impressions_map.get(p.get('url', ''), 0) or impressions_map.get(p.get('url', '').rstrip('/'), 0),
+                        'clicks': p.get('clicks') or clicks_map.get(p.get('url', ''), 0) or clicks_map.get(p.get('url', '').rstrip('/'), 0),
+                        'position': p.get('position') or position_map.get(p.get('url', ''), None) or position_map.get(p.get('url', '').rstrip('/'), None),
                         'is_noindex': _get_page_field(pages, p.get('id'), 'is_noindex', False),
                         'post_type': _get_page_field(pages, p.get('id'), 'post_type', ''),
                     }
