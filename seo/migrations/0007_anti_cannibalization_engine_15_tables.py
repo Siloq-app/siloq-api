@@ -377,11 +377,120 @@ class Migration(migrations.Migration):
 
         # ─────────────────────────────────────────────────────
         # KEYWORD ASSIGNMENT: Drop and rebuild with v2 UUID schema
-        # Table created by 0006 is empty — safe to rebuild.
-        # RunPython placed AFTER SiloDefinition CreateModel (above)
-        # so the silo FK reference works.
+        # Using SeparateDatabaseAndState so Django's internal state
+        # correctly tracks the new PK type as UUID (needed for FKs).
         # ─────────────────────────────────────────────────────
-        migrations.RunPython(rebuild_keyword_assignments_table, migrations.RunPython.noop),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunPython(rebuild_keyword_assignments_table, migrations.RunPython.noop),
+            ],
+            state_operations=[
+                migrations.RemoveIndex(
+                    model_name='keywordassignment',
+                    name='keyword_ass_page_id_e149c6_idx',
+                ),
+                migrations.RemoveIndex(
+                    model_name='keywordassignment',
+                    name='keyword_ass_silo_id_1e32aa_idx',
+                ),
+                migrations.AlterUniqueTogether(
+                    name='keywordassignment',
+                    unique_together={('keyword', 'site')},
+                ),
+                migrations.AlterField(
+                    model_name='keywordassignment',
+                    name='id',
+                    field=models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False),
+                ),
+                migrations.AlterField(
+                    model_name='keywordassignment',
+                    name='keyword',
+                    field=models.CharField(max_length=500),
+                ),
+                migrations.AlterField(
+                    model_name='keywordassignment',
+                    name='page_type',
+                    field=models.CharField(default='spoke', max_length=30),
+                ),
+                migrations.AlterField(
+                    model_name='keywordassignment',
+                    name='assignment_source',
+                    field=models.CharField(default='auto', max_length=30),
+                ),
+                migrations.AlterField(
+                    model_name='keywordassignment',
+                    name='status',
+                    field=models.CharField(default='active', max_length=20),
+                ),
+                migrations.AddField(
+                    model_name='keywordassignment',
+                    name='page_url',
+                    field=models.CharField(default='', max_length=2048),
+                    preserve_default=False,
+                ),
+                migrations.AddField(
+                    model_name='keywordassignment',
+                    name='page_id',
+                    field=models.IntegerField(blank=True, null=True),
+                ),
+                migrations.AddField(
+                    model_name='keywordassignment',
+                    name='page_title',
+                    field=models.CharField(blank=True, max_length=500, null=True),
+                ),
+                migrations.AddField(
+                    model_name='keywordassignment',
+                    name='keyword_type',
+                    field=models.CharField(default='primary', max_length=20),
+                ),
+                migrations.AddField(
+                    model_name='keywordassignment',
+                    name='gsc_impressions',
+                    field=models.IntegerField(default=0),
+                ),
+                migrations.AddField(
+                    model_name='keywordassignment',
+                    name='gsc_clicks',
+                    field=models.IntegerField(default=0),
+                ),
+                migrations.AddField(
+                    model_name='keywordassignment',
+                    name='gsc_avg_position',
+                    field=models.DecimalField(blank=True, decimal_places=1, max_digits=5, null=True),
+                ),
+                migrations.AddField(
+                    model_name='keywordassignment',
+                    name='gsc_last_synced',
+                    field=models.DateTimeField(blank=True, null=True),
+                ),
+                migrations.AddField(
+                    model_name='keywordassignment',
+                    name='deprecated_at',
+                    field=models.DateTimeField(blank=True, null=True),
+                ),
+                migrations.AddField(
+                    model_name='keywordassignment',
+                    name='silo',
+                    field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='keyword_assignments', to='seo.silodefinition'),
+                ),
+                migrations.RemoveField(
+                    model_name='keywordassignment',
+                    name='page',
+                ),
+                migrations.RemoveField(
+                    model_name='keywordassignment',
+                    name='reassigned_at',
+                ),
+                migrations.RemoveField(
+                    model_name='keywordassignment',
+                    name='reassigned_from_page',
+                ),
+                migrations.RemoveField(
+                    model_name='keywordassignment',
+                    name='silo_id',
+                ),
+            ],
+        ),
 
         # ─────────────────────────────────────────────────────
         # FK FIELDS: Wire up all ForeignKeys on new tables
@@ -401,7 +510,7 @@ class Migration(migrations.Migration):
             name='site',
             field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='silo_keywords', to='sites.site'),
         ),
-        # keywordassignment.silo FK already created by rebuild_keyword_assignments_table above
+        # keywordassignment.silo FK handled in SeparateDatabaseAndState above
         migrations.AddField(
             model_name='keywordassignmenthistory',
             name='assignment',
@@ -488,8 +597,7 @@ class Migration(migrations.Migration):
             field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='validation_logs', to='sites.site'),
         ),
 
-        # Old KeywordAssignment fields (page, reassigned_at, etc.) removed
-        # by rebuild_keyword_assignments_table above — no RemoveField needed
+        # Old KeywordAssignment fields handled in SeparateDatabaseAndState above
 
         # ─────────────────────────────────────────────────────
         # INDEXES & CONSTRAINTS
