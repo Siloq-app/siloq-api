@@ -162,6 +162,13 @@ class SiteViewSet(viewsets.ModelViewSet):
             site.onboarding_complete = True
         
         site.save()
+
+        # Re-classify all pages when business profile changes (services may have changed)
+        try:
+            from seo.page_classifier import classify_all_pages
+            classify_all_pages(site.id)
+        except Exception:
+            logger.warning(f"Failed to re-classify pages for site {site.id} after profile update", exc_info=True)
         
         return Response({
             'business_type': site.business_type,
@@ -308,7 +315,7 @@ class SiteViewSet(viewsets.ModelViewSet):
         pages = Page.objects.filter(site=site, is_noindex=False)
         
         money_pages = pages.filter(is_money_page=True).order_by('url')
-        all_pages = list(pages.values('id', 'title', 'url', 'status', 'post_type', 'is_money_page'))
+        all_pages = list(pages.values('id', 'title', 'url', 'status', 'post_type', 'is_money_page', 'page_type_classification'))
         
         silos = []
         assigned_ids = set()

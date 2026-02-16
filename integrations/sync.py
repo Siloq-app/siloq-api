@@ -131,6 +131,16 @@ def sync_page(request):
     if data.get('is_homepage', False):
         Page.objects.filter(site=site, is_homepage=True).exclude(id=page.id).update(is_homepage=False)
     
+    # Auto-classify page (skip if manually overridden)
+    if not page.page_type_override:
+        try:
+            from seo.page_classifier import classify_and_save, _get_business_profile
+            profile = _get_business_profile(site)
+            classify_and_save(page, business_profile=profile)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to classify page {page.id}", exc_info=True)
+
     # Update site's last_synced_at
     site.last_synced_at = timezone.now()
     site.save(update_fields=['last_synced_at'])

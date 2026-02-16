@@ -45,6 +45,23 @@ class Page(models.Model):
     is_homepage = models.BooleanField(default=False)
     is_noindex = models.BooleanField(default=False)
 
+    PAGE_TYPE_CHOICES = [
+        ('money', 'Money Page'),
+        ('supporting', 'Supporting Content'),
+        ('utility', 'Utility Page'),
+        ('conversion', 'Conversion Page'),
+        ('archive', 'Archive / Index'),
+        ('product', 'E-commerce Product'),
+    ]
+    page_type_classification = models.CharField(
+        max_length=20, default='supporting', choices=PAGE_TYPE_CHOICES,
+        help_text="6-type page classification",
+    )
+    page_type_override = models.BooleanField(
+        default=False,
+        help_text="True if user manually set the page type (skip auto-reclassification)",
+    )
+
     parent_silo = models.ForeignKey('self', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='supporting_pages')
     last_synced_at = models.DateTimeField(auto_now=True)
@@ -60,6 +77,7 @@ class Page(models.Model):
             models.Index(fields=['url']),
             models.Index(fields=['is_money_page']),
             models.Index(fields=['is_homepage']),
+            models.Index(fields=['page_type_classification']),
         ]
 
     def __str__(self):
@@ -67,13 +85,14 @@ class Page(models.Model):
 
     @property
     def page_type(self):
-        if self.is_homepage:
-            return 'homepage'
-        elif self.is_money_page:
-            return 'target'
-        elif self.parent_silo:
-            return 'supporting'
-        return 'unassigned'
+        """Return the 6-type classification. Backward-compat wrapper."""
+        return self.page_type_classification
+
+    @page_type.setter
+    def page_type(self, value):
+        self.page_type_classification = value
+        # Keep is_money_page in sync
+        self.is_money_page = (value == 'money')
 
 
 class InternalLink(models.Model):
