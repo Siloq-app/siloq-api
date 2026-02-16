@@ -101,19 +101,54 @@ def logout(request):
         return Response({'error': 'Logout failed'}, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(['GET'])
+@api_view(['GET', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def me(request):
     """
-    Get current authenticated user.
+    Get or update current authenticated user.
     
     GET /api/v1/auth/me
     Headers: Authorization: Bearer <token>
+    Returns: { "user": {...} }
     
+    PATCH /api/v1/auth/me
+    Headers: Authorization: Bearer <token>
+    Body: { "name": "...", "first_name": "...", "last_name": "..." }
     Returns: { "user": {...} }
     """
+    if request.method == 'GET':
+        return Response({
+            'user': UserSerializer(request.user).data
+        })
+    
+    # PATCH - Update user profile
+    user = request.user
+    data = request.data
+    
+    # Handle 'name' field - split into first_name and last_name
+    if 'name' in data:
+        name = data['name'].strip()
+        if ' ' in name:
+            # Split on first space
+            parts = name.split(' ', 1)
+            user.first_name = parts[0]
+            user.last_name = parts[1]
+        else:
+            # No space - treat as first name
+            user.first_name = name
+            user.last_name = ''
+    
+    # Allow direct first_name/last_name updates (override 'name' if provided)
+    if 'first_name' in data:
+        user.first_name = data['first_name'].strip()
+    if 'last_name' in data:
+        user.last_name = data['last_name'].strip()
+    
+    user.save()
+    
     return Response({
-        'user': UserSerializer(request.user).data
+        'user': UserSerializer(user).data,
+        'message': 'Profile updated successfully'
     })
 
 
