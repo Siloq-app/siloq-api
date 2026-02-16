@@ -8,6 +8,7 @@ from seo.content_recommendations import (
     get_content_recommendations,
     generate_from_recommendation,
     approve_content,
+    upload_content,
 )
 from seo.keyword_registry_views import (
     keyword_registry_list,
@@ -31,6 +32,7 @@ urlpatterns = [
     path('<int:site_id>/content-recommendations/', get_content_recommendations, name='site-content-recommendations'),
     path('<int:site_id>/content-recommendations/<str:rec_id>/generate/', generate_from_recommendation, name='site-content-recommendations-generate'),
     path('<int:site_id>/content/approve/', approve_content, name='site-content-approve'),
+    path('<int:site_id>/content/upload/', upload_content, name='content-upload'),
     # Keyword Registry
     path('<int:site_id>/keyword-registry/', keyword_registry_list, name='keyword-registry-list'),
     path('<int:site_id>/keyword-registry/bootstrap/', keyword_registry_bootstrap, name='keyword-registry-bootstrap'),

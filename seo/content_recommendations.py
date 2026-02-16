@@ -6,13 +6,16 @@ Analyzes site structure and suggests content to create based on:
 - Service coverage (primary services without dedicated pages)
 - Industry best practices (common content types for business type)
 """
+import io
 import uuid
 import hashlib
 import logging
 from typing import List, Dict, Any
 
 from django.shortcuts import get_object_or_404
-from rest_framework.decorators import api_view, permission_classes
+from django.utils.text import slugify
+from rest_framework.decorators import api_view, permission_classes, parser_classes
+from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
@@ -757,3 +760,150 @@ def _fallback_recommendations(site: Site) -> List[Dict[str, Any]]:
             })
     
     return recommendations[:8]  # Cap at 8
+
+
+# ─────────────────────────────────────────────────────────────
+# Content Upload (user-written articles)
+# ─────────────────────────────────────────────────────────────
+
+def _extract_file_content(uploaded_file) -> str:
+    """Extract text content from an uploaded file (.txt, .html, .docx)."""
+    name = (uploaded_file.name or '').lower()
+    raw = uploaded_file.read()
+
+    if name.endswith('.docx'):
+        try:
+            from docx import Document
+            doc = Document(io.BytesIO(raw))
+            return '\n'.join(p.text for p in doc.paragraphs)
+        except ImportError:
+            # python-docx not installed — return raw decoded text
+            return raw.decode('utf-8', errors='replace')
+
+    # .txt, .html, or anything else — read as text
+    return raw.decode('utf-8', errors='replace')
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@parser_classes([JSONParser, MultiPartParser, FormParser])
+def upload_content(request, site_id):
+    """
+    POST /api/v1/sites/{site_id}/content/upload/
+
+    Accept user-written content, run preflight validation, save for review.
+
+    Body (JSON or multipart):
+    - title: str (required)
+    - content: str (required — HTML or plain text; ignored if `file` is provided)
+    - file: uploaded file (.txt/.html/.docx) — alternative to `content`
+    - slug: str (optional — auto-generated from title if missing)
+    - target_keyword: str (optional)
+    - silo_id: int (optional — which silo this belongs to)
+    - meta_description: str (optional)
+    - excerpt: str (optional)
+
+    Returns:
+    - id, title, slug, preflight_result, status ('pending_review')
+    - If preflight blocks: returns the blocking checks with explanations
+    """
+    site = get_object_or_404(Site, id=site_id)
+
+    if site.user != request.user:
+        return Response({'error': 'Permission denied'}, status=status.HTTP_403_FORBIDDEN)
+
+    # ── Required fields ──────────────────────────────────────
+    title = request.data.get('title', '').strip()
+    content = request.data.get('content', '').strip()
+
+    # File upload takes precedence over content field
+    uploaded_file = request.FILES.get('file')
+    if uploaded_file:
+        try:
+            content = _extract_file_content(uploaded_file)
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to read uploaded file: {e}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    if not title:
+        return Response({'error': 'title is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if not content:
+        return Response(
+            {'error': 'content is required (provide content field or upload a file)'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ── Optional fields ──────────────────────────────────────
+    slug = request.data.get('slug', '').strip()
+    if not slug:
+        slug = slugify(title)[:200]
+
+    target_keyword = request.data.get('target_keyword', '').strip() or title
+    silo_id = request.data.get('silo_id')
+    meta_description = request.data.get('meta_description', '').strip()
+    excerpt = request.data.get('excerpt', '').strip()
+
+    # ── Preflight validation ─────────────────────────────────
+    preflight_result = run_preflight_validation(
+        site=site,
+        proposed_title=title,
+        proposed_keyword=target_keyword,
+        proposed_slug=slug,
+        proposed_h1=title,
+        silo_id=silo_id,
+        page_type='spoke',
+    )
+
+    # If preflight blocks, return the conflicts but don't save
+    if preflight_result.get('status') == 'block':
+        return Response({
+            'error': 'Content blocked by preflight validation',
+            'preflight_result': preflight_result,
+            'title': title,
+            'slug': slug,
+        }, status=status.HTTP_409_CONFLICT)
+
+    # ── Resolve parent silo ──────────────────────────────────
+    parent_silo = None
+    if silo_id:
+        try:
+            parent_silo = Page.objects.get(id=silo_id, site=site)
+        except Page.DoesNotExist:
+            return Response(
+                {'error': f'Silo page with ID {silo_id} not found'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+    # ── Save as draft page (same shape approve_content uses) ─
+    page = Page.objects.create(
+        site=site,
+        title=title,
+        content=content,
+        slug=slug,
+        url=f"{site.url}/{slug}/",
+        status='draft',
+        post_type='page',
+        wp_post_id=0,
+        parent_silo=parent_silo,
+        is_money_page=False,
+        yoast_description=meta_description,
+        excerpt=excerpt,
+    )
+
+    logger.info(f"Uploaded content saved as draft page {page.id} for site {site.id}: {title}")
+
+    return Response({
+        'id': page.id,
+        'title': page.title,
+        'slug': page.slug,
+        'url': page.url,
+        'status': 'pending_review',
+        'silo_id': parent_silo.id if parent_silo else None,
+        'meta_description': meta_description,
+        'excerpt': excerpt,
+        'target_keyword': target_keyword,
+        'preflight_result': preflight_result,
+        'message': 'Content uploaded and saved for review. Use the approve endpoint to push to WordPress.',
+    }, status=status.HTTP_201_CREATED)
