@@ -137,6 +137,7 @@ def sync_page(request):
     
     return Response({
         'page_id': page.id,
+        'site_id': str(site.id),
         'message': 'Page synced successfully',
         'created': created
     }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
