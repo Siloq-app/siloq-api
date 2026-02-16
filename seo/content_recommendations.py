@@ -654,9 +654,14 @@ def approve_content(request, site_id):
     
     logger.info(f"Created draft page {page.id} for site {site.id}: {title}")
     
-    # Push draft to WordPress via webhook
+    # =========================================================================
+    # BUG FIX: Push draft to WordPress via webhook
+    # Sends POST to {site.url}/wp-json/siloq/v1/webhook with event 'content.create_draft'
+    # =========================================================================
     from integrations.wordpress_webhook import send_webhook_to_wordpress
 
+    logger.info(f"Pushing content to WordPress for site {site.id}: {title}")
+    
     wp_result = send_webhook_to_wordpress(site, 'content.create_draft', {
         'title': title,
         'content': content,
@@ -664,6 +669,7 @@ def approve_content(request, site_id):
         'meta_description': meta_description,
         'siloq_page_id': str(page.id),
         'status': 'draft',
+        'parent_silo_id': str(silo_id) if silo_id else None,
     })
 
     # If WP returned a post ID, persist it
@@ -675,6 +681,11 @@ def approve_content(request, site_id):
             page.wp_post_id = int(wp_post_id)
             page.save(update_fields=['wp_post_id'])
             wp_edit_url = f"{site.url}/wp-admin/post.php?post={wp_post_id}&action=edit"
+            logger.info(f"WordPress draft created successfully: post ID {wp_post_id}")
+    else:
+        logger.error(
+            f"WordPress webhook failed for site {site.id}: {wp_result.get('error', 'Unknown error')}"
+        )
 
     response_data = {
         'page_id': page.id,
@@ -686,13 +697,15 @@ def approve_content(request, site_id):
         'wordpress_push': {
             'success': wp_result['success'],
             'error': wp_result.get('error'),
+            'status_code': wp_result.get('status_code'),
             'wp_post_id': wp_post_id,
             'edit_url': wp_edit_url,
+            'webhook_url': f"{site.url.rstrip('/')}/wp-json/siloq/v1/webhook",
         },
         'message': (
             'Page created and pushed to WordPress as draft.'
             if wp_result['success']
-            else 'Page created locally. WordPress push failed — retry via sync.'
+            else f"Page created locally. WordPress webhook failed: {wp_result.get('error', 'Unknown error')}. Check that the Siloq plugin is installed and active."
         ),
     }
 

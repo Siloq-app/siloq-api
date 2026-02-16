@@ -264,17 +264,61 @@ def detect_static_cannibalization(pages, include_noindex: bool = False, impressi
         # If same slug exists in 2+ different parent folders = duplicate folder structure
         if len(folder_groups) >= 2:
             all_dup_pages = []
-            for folder_pages in folder_groups.values():
+            page_types_in_conflict = set()
+            folder_names_in_conflict = set()
+            
+            for parent_folder, folder_pages in folder_groups.items():
+                # Extract folder name (e.g., 'teams', 'product', 'blog')
+                folder_name = parent_folder.strip('/').split('/')[-1] if parent_folder.strip('/') else 'root'
+                folder_names_in_conflict.add(folder_name)
+                
                 for pd in folder_pages:
                     all_dup_pages.append({
                         'id': pd['page'].id, 'url': pd['url'],
                         'title': pd['title'], 'page_type': pd['type'],
                     })
+                    page_types_in_conflict.add(pd['type'])
                     folder_dup_ids.add(pd['page'].id)
+            
+            # ═══════════════════════════════════════════════════════════════
+            # BUG FIX: Skip conflict if pages have DIFFERENT page types
+            # (different page types = different purposes, not cannibalization)
+            # ═══════════════════════════════════════════════════════════════
+            should_skip = False
+            if len(page_types_in_conflict) > 1:
+                # Check if folders are in the "different intent" list
+                different_intent_pairs = {
+                    frozenset(['teams', 'product']),
+                    frozenset(['teams', 'product-category']),
+                    frozenset(['teams', 'category']),
+                    frozenset(['product-category', 'product']),
+                    frozenset(['product', 'category']),
+                    frozenset(['blog', 'product']),
+                    frozenset(['blog', 'service']),
+                    frozenset(['blog', 'category']),
+                }
+                
+                # Check if current folders match any different-intent pair
+                for pair in different_intent_pairs:
+                    if folder_names_in_conflict.issubset(pair) or pair.issubset(folder_names_in_conflict):
+                        # Different page types in intentionally different folders = SAFE, skip
+                        should_skip = True
+                        break
+            
+            if should_skip:
+                # Don't flag as conflict - these serve different purposes
+                continue
+            
+            # ═══════════════════════════════════════════════════════════════
+            # BUG FIX: If ALL pages have 0 impressions AND 0 clicks, severity = LOW
+            # (cosmetic similarity only, no actual search competition)
+            # ═══════════════════════════════════════════════════════════════
+            total_impressions = sum(impressions_map.get(pd['url'], 0) for pd in all_dup_pages)
+            severity = 'LOW' if total_impressions == 0 else 'HIGH'
             
             raw_issues.append({
                 'type': 'duplicate_folder',
-                'severity': 'HIGH',
+                'severity': severity,
                 '_shared_slug': slug,
                 'keyword': slug.replace('-', ' '),
                 'explanation': f"'{slug}' exists under {len(folder_groups)} different URL folders. Each duplicate splits authority for the same keywords.",
