@@ -98,6 +98,20 @@ def is_listicle_url(url: str) -> bool:
     return any(re.search(p, path) for p in LISTICLE_PATTERNS)
 
 
+STOP_WORDS = {
+    'page', 'pages', 'post', 'posts', 'product', 'products',
+    'category', 'categories', 'tag', 'tags', 'shop', 'store',
+    'blog', 'news', 'article', 'articles', 'index', 'home',
+    'www', 'http', 'https', 'html', 'php', 'aspx', 'htm',
+    'the', 'and', 'for', 'with', 'our', 'your', 'all', 'you',
+    'how', 'what', 'why', 'when', 'where', 'which', 'who',
+    'this', 'that', 'from', 'into', 'about', 'more', 'most',
+    'one', 'stop', 'need', 'needs', 'right', 'best', 'top',
+    'choose', 'choosing', 'find', 'finding', 'get', 'getting',
+}
+STOP_WORDS.update(str(y) for y in range(2015, 2030))
+
+
 def extract_url_keywords(url: str) -> Set[str]:
     """Extract meaningful keywords from URL slug."""
     if not url:
@@ -111,18 +125,18 @@ def extract_url_keywords(url: str) -> Set[str]:
     # Split by / - _
     parts = re.split(r'[/\-_]', path.lower())
     
-    # Filter out noise
-    stop_slugs = {
-        'page', 'pages', 'post', 'posts', 'product', 'products',
-        'category', 'categories', 'tag', 'tags', 'shop', 'store',
-        'blog', 'news', 'article', 'articles', 'index', 'home',
-        'www', 'http', 'https', 'html', 'php', 'aspx', 'htm',
-        'the', 'and', 'for', 'with', 'our', 'your',
-    }
-    # Also filter years
-    stop_slugs.update(str(y) for y in range(2015, 2030))
+    return {p for p in parts if p and len(p) > 2 and p not in STOP_WORDS and not p.isdigit()}
+
+
+def extract_title_keywords(title: str) -> Set[str]:
+    """Extract meaningful keywords from page title."""
+    if not title:
+        return set()
     
-    return {p for p in parts if p and len(p) > 2 and p not in stop_slugs and not p.isdigit()}
+    # Split by spaces and common separators
+    parts = re.split(r'[\s\-–—|:,./]+', title.lower())
+    
+    return {p for p in parts if p and len(p) > 2 and p not in STOP_WORDS and not p.isdigit()}
 
 
 def get_query_intent(query: str) -> str:
@@ -201,12 +215,19 @@ def detect_static_cannibalization(pages, include_noindex: bool = False, impressi
             continue
         
         url = page.url or ''
+        title = page.title or ''
+        url_kw = extract_url_keywords(url)
+        title_kw = extract_title_keywords(title)
+        # Combined keywords = union of URL + title keywords for broader matching
+        combined_kw = url_kw | title_kw
         page_data[page.id] = {
             'page': page,
             'url': url,
-            'title': page.title or '',
+            'title': title,
             'type': classify_page_type(url, getattr(page, 'post_type', None)),
-            'keywords': extract_url_keywords(url),
+            'keywords': url_kw,
+            'title_keywords': title_kw,
+            'combined_keywords': combined_kw,
             'is_money_page': getattr(page, 'is_money_page', False),
             'is_listicle': is_listicle_url(url),
         }
@@ -295,7 +316,7 @@ def detect_static_cannibalization(pages, include_noindex: bool = False, impressi
     for pid, data in page_data.items():
         if pid in folder_dup_ids:
             continue  # Already handled
-        for kw in data['keywords']:
+        for kw in data['combined_keywords']:
             keyword_to_pages[kw].add(pid)
     
     pair_shared_count = defaultdict(int)
@@ -543,7 +564,9 @@ def _check_pair_conflict(data_a: Dict, data_b: Dict, impressions: Optional[Dict[
     """Check if two pages have a cannibalization conflict."""
     type_a, type_b = data_a['type'], data_b['type']
     url_a, url_b = data_a['url'], data_b['url']
-    kw_a, kw_b = data_a['keywords'], data_b['keywords']
+    # Use combined keywords (URL + title) for overlap detection
+    kw_a = data_a.get('combined_keywords') or data_a['keywords']
+    kw_b = data_b.get('combined_keywords') or data_b['keywords']
     
     # Calculate keyword overlap
     overlap = kw_a & kw_b
@@ -740,6 +763,46 @@ def _check_pair_conflict(data_a: Dict, data_b: Dict, impressions: Optional[Dict[
         }
     
     # =========================================================================
+    # RULE 8: Title Keyword Overlap (Service Business — catches blog vs service via titles)
+    # Two pages with 50%+ title keyword overlap targeting the same topic
+    # =========================================================================
+    title_kw_a = data_a.get('title_keywords', set())
+    title_kw_b = data_b.get('title_keywords', set())
+    title_overlap = title_kw_a & title_kw_b
+    title_overlap_ratio = len(title_overlap) / max(len(title_kw_a | title_kw_b), 1) if (title_kw_a or title_kw_b) else 0
+    
+    if title_overlap_ratio >= 0.4 and len(title_overlap) >= 2:
+        # Blog/general page competing with service page via title keywords
+        if type_a != type_b and 'blog' in (type_a, type_b) or 'general' in (type_a, type_b):
+            sev = 'HIGH' if title_overlap_ratio >= 0.6 else 'MEDIUM'
+            return {
+                'type': 'title_keyword_overlap',
+                'severity': sev,
+                'keyword': ', '.join(sorted(title_overlap)[:5]),
+                'explanation': f"Pages have {int(title_overlap_ratio*100)}% title keyword overlap: '{data_a['title']}' vs '{data_b['title']}'",
+                'recommendation': "The blog/informational page should link to the service page and avoid targeting the same primary keyword.",
+                'competing_pages': [
+                    {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                    {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+                ],
+                'suggested_king': None,
+            }
+        # Same type pages with high title overlap
+        if type_a == type_b and title_overlap_ratio >= 0.5:
+            return {
+                'type': 'title_keyword_overlap',
+                'severity': 'MEDIUM',
+                'keyword': ', '.join(sorted(title_overlap)[:5]),
+                'explanation': f"Two {type_a} pages with {int(title_overlap_ratio*100)}% title keyword overlap may compete for the same queries.",
+                'recommendation': "Differentiate titles and target keywords, or consolidate into one stronger page.",
+                'competing_pages': [
+                    {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                    {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+                ],
+                'suggested_king': None,
+            }
+    
+    # =========================================================================
     # SAFE PATTERNS - DO NOT FLAG
     # =========================================================================
     
@@ -785,10 +848,10 @@ def _check_pair_conflict(data_a: Dict, data_b: Dict, impressions: Optional[Dict[
             return None
     
     # =========================================================================
-    # FALLBACK: Very high overlap, same page type, unclassified
-    # Must be >80% overlap AND same type to be flagged
+    # FALLBACK: High overlap, same page type, unclassified
+    # Now uses combined (URL+title) keywords, so lower threshold is appropriate
     # =========================================================================
-    if overlap_ratio > 0.8 and type_a == type_b:
+    if overlap_ratio > 0.5 and type_a == type_b and len(overlap) >= 3:
         return {
             'type': 'url_overlap',
             'severity': 'LOW',
