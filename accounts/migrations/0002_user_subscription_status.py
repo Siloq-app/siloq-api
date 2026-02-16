@@ -24,5 +24,16 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(add_subscription_status_if_missing, migrations.RunPython.noop),
+        migrations.SeparateDatabaseAndState(
+            database_operations=[
+                migrations.RunPython(add_subscription_status_if_missing, migrations.RunPython.noop),
+            ],
+            state_operations=[
+                migrations.AddField(
+                    model_name='user',
+                    name='subscription_status',
+                    field=models.CharField(blank=True, default='free', max_length=50),
+                ),
+            ],
+        ),
     ]

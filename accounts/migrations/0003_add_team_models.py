@@ -13,11 +13,6 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.AddField(
-            model_name='user',
-            name='subscription_status',
-            field=models.CharField(blank=True, default='free', max_length=50),
-        ),
         migrations.CreateModel(
             name='SiteAccess',
             fields=[
