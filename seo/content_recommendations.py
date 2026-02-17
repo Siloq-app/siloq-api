@@ -7,6 +7,7 @@ Analyzes site structure and suggests content to create based on:
 - Industry best practices (common content types for business type)
 """
 import io
+import os
 import uuid
 import hashlib
 import logging
@@ -444,18 +445,22 @@ def generate_from_recommendation(request, site_id, rec_id):
         )
     
     # Get all recommendations to find this one
-    # (In production, you might want to cache or rebuild from rec_id)
+    logger.info(f"Generate content request for site {site_id}, rec {rec_id}")
     all_recommendations = []
     all_recommendations.extend(_analyze_silo_gaps(site))
     all_recommendations.extend(_analyze_service_coverage(site))
     all_recommendations.extend(_suggest_industry_content(site))
     all_recommendations.extend(_fallback_recommendations(site))
     
+    logger.info(f"Found {len(all_recommendations)} total recommendations, looking for rec_id={rec_id}")
+    logger.info(f"Available rec IDs: {[r['id'] for r in all_recommendations[:10]]}")
+    
     recommendation = next((r for r in all_recommendations if r['id'] == rec_id), None)
     
     if not recommendation:
+        logger.warning(f"Recommendation {rec_id} not found among {len(all_recommendations)} recs")
         return Response(
-            {'error': 'Recommendation not found'},
+            {'error': f'Recommendation not found. Available: {len(all_recommendations)} recs. This can happen if site data changed since the page loaded. Try refreshing.'},
             status=status.HTTP_404_NOT_FOUND
         )
     
@@ -511,7 +516,8 @@ def generate_from_recommendation(request, site_id, rec_id):
             pass
     
     # Generate content
-    logger.info(f"Generating content for recommendation {rec_id}: {title}")
+    logger.info(f"Generating content for recommendation {rec_id}: {title} (type={recommendation.get('content_type', 'supporting_article')})")
+    logger.info(f"OPENAI_API_KEY set: {bool(os.environ.get('OPENAI_API_KEY', ''))}")
     
     result = generate_supporting_content(
         target_page_title=target_page_title or 'General',
