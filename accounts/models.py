@@ -15,8 +15,10 @@ class User(AbstractUser):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
-    # Subscription status (required NOT NULL field in database)
+    # Subscription fields (columns exist in DB)
+    subscription_tier = models.CharField(max_length=50, default='free', blank=True)
     subscription_status = models.CharField(max_length=50, default='free', blank=True)
+    stripe_subscription_id = models.CharField(max_length=255, null=True, blank=True)
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']
