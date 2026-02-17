@@ -632,8 +632,18 @@ def approve_content(request, site_id):
     # Generate slug if not provided
     if not slug:
         slug = title.lower().replace(' ', '-').replace('?', '').replace(':', '')
-        # Remove special characters
-        slug = ''.join(c for c in slug if c.isalnum() or c == '-')
+        # Remove special characters (but preserve / for nested paths)
+        slug = ''.join(c for c in slug if c.isalnum() or c in ('-', '/'))
+        # Clean up double slashes or leading/trailing
+        slug = re.sub(r'/+', '/', slug).strip('/')
+    else:
+        # User provided a slug — preserve path structure, just clean it
+        slug = slug.strip('/')
+        slug = '/'.join(
+            re.sub(r'[^a-z0-9-]', '', segment)
+            for segment in slug.lower().split('/')
+            if segment
+        )
     
     # Get parent silo if specified
     parent_silo = None
@@ -862,6 +872,12 @@ def upload_content(request, site_id):
     slug = request.data.get('slug', '').strip()
     if not slug:
         slug = slugify(title)[:200]
+    else:
+        # Preserve path structure (e.g., service-area/blue-springs-mo)
+        slug = slug.strip('/')
+        slug = '/'.join(
+            slugify(segment) for segment in slug.split('/') if segment
+        )
 
     target_keyword = request.data.get('target_keyword', '').strip() or title
     silo_id = request.data.get('silo_id')
