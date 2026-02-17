@@ -152,7 +152,8 @@ Example structure:
                 'error': {'code': 'CONFIG_ERROR', 'message': 'OpenAI API key not configured', 'detail': None, 'status': 500}
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        response = openai.chat.completions.create(
+        client = openai.OpenAI(api_key=openai.api_key, timeout=25.0)
+        response = client.chat.completions.create(
             model='gpt-4o-mini',
             messages=[
                 {'role': 'system', 'content': 'You are an expert SEO consultant specializing in content differentiation.'},
@@ -161,6 +162,7 @@ Example structure:
             temperature=0.7,
             max_tokens=2000,
         )
+        logger.info(f"Differentiation AI response received for site {site_id}, {len(enriched_pages)} pages")
 
         ai_response = response.choices[0].message.content.strip()
         
