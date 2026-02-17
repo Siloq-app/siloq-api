@@ -15,7 +15,8 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from sites.models import Site
-from seo.models import RedirectRegistry
+from seo.models import RedirectRegistry, Page, CannibalizationConflict
+from integrations.wordpress_webhook import send_webhook_to_wordpress
 
 logger = logging.getLogger(__name__)
 
@@ -258,3 +259,181 @@ def redirect_verify(request):
         },
         'issues': issues,
     })
+
+
+# ===================================================================
+# Site-scoped endpoints for cannibalization redirect resolution
+# ===================================================================
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_redirect(request, site_id):
+    """
+    Create a 301 redirect and push to WordPress.
+    
+    URL: POST /api/v1/sites/{site_id}/redirects/create/
+    
+    Body:
+    - from_url: str (the losing URL path, e.g., "/overland-park-ks-tile-installation/")
+    - to_url: str (the winning URL path, e.g., "/service-area/overland-park-ks/")
+    - reason: str (optional, e.g., "Cannibalization resolution")
+    - conflict_keyword: str (optional, for tracking)
+    """
+    try:
+        site = Site.objects.get(id=site_id)
+    except Site.DoesNotExist:
+        return Response({'error': 'Site not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    from_url = request.data.get('from_url')
+    to_url = request.data.get('to_url')
+    reason = request.data.get('reason', 'Cannibalization resolution')
+    conflict_keyword = request.data.get('conflict_keyword', '')
+    
+    if not from_url or not to_url:
+        return Response(
+            {'error': 'Both from_url and to_url are required'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    # Normalize URLs (ensure they start with /)
+    if not from_url.startswith('/'):
+        from_url = '/' + from_url
+    if not to_url.startswith('/'):
+        to_url = '/' + to_url
+    
+    # Validate URLs belong to site
+    site_base = site.url.rstrip('/')
+    from_full = site_base + from_url
+    to_full = site_base + to_url
+    
+    from_page = Page.objects.filter(site=site, url=from_full).first()
+    to_page = Page.objects.filter(site=site, url=to_full).first()
+    
+    if not from_page:
+        logger.warning(f"Source URL {from_full} not found in pages for site {site.name}")
+    
+    if not to_page:
+        logger.warning(f"Target URL {to_full} not found in pages for site {site.name}")
+    
+    # Check for existing redirect
+    existing = RedirectRegistry.objects.filter(
+        site=site,
+        source_url=from_url,
+        status='active'
+    ).first()
+    
+    if existing:
+        return Response(
+            {'error': f'Active redirect already exists from {from_url}'},
+            status=status.HTTP_409_CONFLICT
+        )
+    
+    # Try to link to conflict if keyword provided
+    conflict = None
+    if conflict_keyword:
+        conflict = CannibalizationConflict.objects.filter(
+            site=site,
+            keyword=conflict_keyword
+        ).order_by('-detected_at').first()
+    
+    # Create redirect record
+    redirect = RedirectRegistry.objects.create(
+        site=site,
+        source_url=from_url,
+        target_url=to_url,
+        redirect_type=301,
+        reason=reason,
+        conflict=conflict,
+        status='active',
+        created_by=request.user.email if hasattr(request.user, 'email') else 'siloq_user'
+    )
+    
+    # Send webhook to WordPress
+    webhook_payload = {
+        'from_url': from_url,
+        'to_url': to_url,
+        'type': 301
+    }
+    
+    webhook_result = send_webhook_to_wordpress(site, 'redirect.create', webhook_payload)
+    
+    if not webhook_result['success']:
+        logger.error(
+            f"Failed to push redirect to WordPress for site {site.name}: {webhook_result['error']}"
+        )
+        # Don't fail the request, but log it
+        redirect.status = 'pending'
+        redirect.save()
+    
+    # Mark the losing page as redirected
+    if from_page:
+        from_page.status = 'redirected'
+        from_page.save()
+        logger.info(f"Marked page {from_page.id} ({from_url}) as redirected")
+    
+    return Response({
+        'success': True,
+        'redirect': {
+            'id': str(redirect.id),
+            'from_url': redirect.source_url,
+            'to_url': redirect.target_url,
+            'type': redirect.redirect_type,
+            'reason': redirect.reason,
+            'status': redirect.status,
+            'created_at': redirect.created_at.isoformat(),
+        },
+        'webhook_pushed': webhook_result['success'],
+        'webhook_status': webhook_result.get('status_code'),
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_redirects(request, site_id):
+    """
+    List all redirects for a site from redirect_registry.
+    
+    URL: GET /api/v1/sites/{site_id}/redirects/
+    
+    Query params:
+    - status: filter by status (active, removed, etc.)
+    - limit: number of results (default 100)
+    """
+    try:
+        site = Site.objects.get(id=site_id)
+    except Site.DoesNotExist:
+        return Response({'error': 'Site not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    redirects_qs = RedirectRegistry.objects.filter(site=site)
+    
+    # Filter by status if provided
+    status_filter = request.query_params.get('status')
+    if status_filter:
+        redirects_qs = redirects_qs.filter(status=status_filter)
+    
+    # Limit results
+    limit = int(request.query_params.get('limit', 100))
+    redirects_qs = redirects_qs.order_by('-created_at')[:limit]
+    
+    redirects_data = [
+        {
+            'id': str(r.id),
+            'from_url': r.source_url,
+            'to_url': r.target_url,
+            'type': r.redirect_type,
+            'reason': r.reason,
+            'status': r.status,
+            'conflict_keyword': r.conflict.keyword if r.conflict else None,
+            'created_by': r.created_by,
+            'created_at': r.created_at.isoformat(),
+            'is_verified': r.is_verified,
+            'last_verified': r.last_verified.isoformat() if r.last_verified else None,
+        }
+        for r in redirects_qs
+    ]
+    
+    return Response({
+        'site_id': site_id,
+        'redirects': redirects_data,
+        'count': len(redirects_data),
+    }, status=status.HTTP_200_OK)

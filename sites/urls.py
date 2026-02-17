@@ -22,6 +22,11 @@ from seo.classification_views import (
     classify_all,
     manual_page_type_override,
 )
+from seo.differentiate_views import (
+    differentiate_conflict,
+    apply_differentiation,
+)
+from seo.redirect_views import create_redirect, list_redirects
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -43,4 +48,10 @@ urlpatterns = [
     path('<int:site_id>/pages/<int:page_id>/classify/', classify_single_page, name='page-classify'),
     path('<int:site_id>/classify-all/', classify_all, name='site-classify-all'),
     path('<int:site_id>/pages/<int:page_id>/page-type/', manual_page_type_override, name='page-type-override'),
+    # Redirects
+    path('<int:site_id>/redirects/', list_redirects, name='site-redirects'),
+    path('<int:site_id>/redirects/create/', create_redirect, name='site-redirect-create'),
+    # Conflict Differentiation (AI-powered)
+    path('<int:site_id>/conflicts/differentiate/', differentiate_conflict, name='conflict-differentiate'),
+    path('<int:site_id>/conflicts/apply-differentiation/', apply_differentiation, name='conflict-apply-differentiation'),
 ]
