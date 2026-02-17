@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import List, Dict, Any, Optional, Tuple, Set
 from urllib.parse import urlparse
 from django.utils import timezone
+from seo.modifier_classifier import filter_conflicts_by_modifiers, bootstrap_site_locations
 
 
 # =============================================================================
@@ -391,6 +392,15 @@ def detect_static_cannibalization(pages, include_noindex: bool = False, impressi
     # with 6 pages — NOT 15 pairwise conflicts.
     # =========================================================================
     issues = _cluster_issues(raw_issues)
+    
+    # =========================================================================
+    # STAGE 4.5: Modifier-Aware Conflict Filter
+    # Classify modifiers (location, service_type, audience, etc.) and dismiss
+    # cross-category false positives. See Kyle's spec:
+    # "Modifier-Aware Conflict Filtering & Service × Location Architecture"
+    # =========================================================================
+    site_locations = bootstrap_site_locations(page_list)
+    issues = filter_conflicts_by_modifiers(issues, site_locations)
     
     # Tag all static issues as "potential" - not GSC validated
     for issue in issues:
