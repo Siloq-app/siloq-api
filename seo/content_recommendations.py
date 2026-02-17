@@ -217,7 +217,7 @@ def _analyze_silo_gaps(site: Site) -> List[Dict[str, Any]]:
     """
     recommendations = []
     
-    # Get all money pages
+    # Get all money pages (excluding homepage — homepage is never a content silo)
     money_pages = Page.objects.filter(
         site=site,
         is_money_page=True,
@@ -225,6 +225,19 @@ def _analyze_silo_gaps(site: Site) -> List[Dict[str, Any]]:
     ).prefetch_related('supporting_pages')
     
     for money_page in money_pages:
+        # Skip homepage — it's a brand page, not a service silo
+        url_path = (money_page.url or '').rstrip('/')
+        if url_path == '' or url_path.endswith('.com') or url_path.endswith('.com/'):
+            continue
+        page_slug = url_path.split('/')[-1] if '/' in url_path else ''
+        if page_slug in ('', 'home', 'index', 'home-new', 'homepage'):
+            continue
+        
+        # Skip pages with generic/uninformative titles
+        title_lower = money_page.title.lower().strip()
+        if title_lower in ('home', 'home new', 'homepage', 'main', 'index', ''):
+            continue
+        
         supporting_count = money_page.supporting_pages.filter(status='publish').count()
         
         # Determine priority
@@ -238,34 +251,25 @@ def _analyze_silo_gaps(site: Site) -> List[Dict[str, Any]]:
             priority = 'medium'
             reason = f'Only {supporting_count} supporting pages for "{money_page.title}"'
         else:
-            # Skip if already has plenty of support
             continue
         
-        # Extract keywords from money page title for topic suggestions
-        # Simple approach: remove common words and suggest related topics
-        title_words = money_page.title.lower().replace('-', ' ').split()
-        service_keywords = [w for w in title_words if len(w) > 3 and w not in ['page', 'home', 'about', 'contact']]
+        # Use the full page title as the topic (it's already descriptive)
+        # e.g., "Basement Remodeling", "Kitchen Remodeling"
+        service_name = money_page.title.strip()
         
-        if not service_keywords:
-            service_keywords = ['this topic']
-        
-        # Generate 2-3 suggested topics based on money page
-        base_topic = ' '.join(service_keywords[:3])
-        
-        # Suggest complementary topics
+        # Generate topic-specific suggestions using the actual service name
         topic_suggestions = [
-            f"Common Questions About {base_topic.title()}",
-            f"How to Choose the Right {base_topic.title()}",
-            f"{base_topic.title()} Cost Guide",
+            f"Common Questions About {service_name}",
+            f"How Much Does {service_name} Cost?",
+            f"Signs You Need {service_name}",
         ]
         
-        # Add recommendations for this silo
-        for idx, suggested_title in enumerate(topic_suggestions[:2]):  # Limit to 2 per silo to avoid spam
+        for idx, suggested_title in enumerate(topic_suggestions[:2]):
             rec_id = _generate_rec_id(site.id, suggested_title)
             recommendations.append({
                 'id': rec_id,
                 'title': suggested_title,
-                'silo': money_page.title,
+                'silo': service_name,
                 'silo_id': money_page.id,
                 'reason': reason,
                 'priority': priority,

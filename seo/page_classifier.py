@@ -23,6 +23,7 @@ UTILITY_SLUGS = {
     'cookie-policy', 'disclaimer',
     'careers', 'jobs', 'employment', 'hiring', 'join-our-team',
     'sitemap', 'site-map', 'login', 'register', 'my-account', 'account', 'dashboard',
+    'service-area', 'service-areas', 'areas-we-serve', 'coverage-area',
     'cart', 'checkout', 'order-confirmation', 'order-tracking', 'wishlist', 'compare',
     'faq', 'faqs', 'help', 'support',
     'testimonials', 'reviews', 'gallery', 'portfolio', 'our-work', 'case-studies',
@@ -44,6 +45,7 @@ CONVERSION_SLUGS = {
 ARCHIVE_SLUGS = {
     'blog', 'news', 'articles', 'resources', 'category', 'tag', 'author',
     'events', 'press', 'media',
+    'services', 'our-services', 'products', 'our-products',
 }
 
 TEAM_INDICATORS = {
@@ -111,6 +113,15 @@ def _phase1_exclusion(page):
     slug = _get_slug(page)
     post_type = getattr(page, 'post_type', '') or ''
     title = (getattr(page, 'title', '') or '').lower()
+    url = getattr(page, 'url', '') or ''
+
+    # Homepage → utility (brand page, not a service silo)
+    is_homepage = getattr(page, 'is_homepage', False)
+    path = urlparse(url).path.strip('/')
+    if is_homepage or not path or path in ('', 'home', 'index', 'index.html'):
+        return ('utility', 0.95, 'Homepage — brand page, not a service silo')
+    if slug in ('home', 'home-new', 'homepage', 'index', 'front-page'):
+        return ('utility', 0.90, f'Slug "{slug}" indicates homepage')
 
     # WordPress post_type = product → e-commerce product
     if post_type == 'product':
