@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Subscription tier limits for team members
 TIER_LIMITS = {
     'free': 0,
+    'free_trial': 1,
     'pro': 1,
     'builder': 3,
     'builder_plus': 3,
@@ -76,7 +77,7 @@ def team_list(request):
     } for invite in pending_invites]
     
     # Get subscription tier and limits
-    tier = user.subscription_status or 'free'
+    tier = user.subscription_tier or 'free'
     max_team_members = TIER_LIMITS.get(tier, 0)
     current_count = SiteAccess.objects.filter(site__user=user).count()
     
@@ -116,17 +117,20 @@ def team_invite(request):
     if role not in ['viewer', 'editor', 'admin']:
         return Response({'error': 'Invalid role'}, status=status.HTTP_400_BAD_REQUEST)
     
+    # If no site_id provided, use the first owned site (dashboard invites without site context)
     if not site_id:
-        return Response({'error': 'Site ID is required'}, status=status.HTTP_400_BAD_REQUEST)
-    
-    # Check if site exists and user owns it
-    try:
-        site = Site.objects.get(id=site_id, user=user)
-    except Site.DoesNotExist:
-        return Response({'error': 'Site not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
+        site = Site.objects.filter(user=user).first()
+        if not site:
+            return Response({'error': 'No sites found. Create a site first.'}, status=status.HTTP_400_BAD_REQUEST)
+    else:
+        # Check if site exists and user owns it
+        try:
+            site = Site.objects.get(id=site_id, user=user)
+        except Site.DoesNotExist:
+            return Response({'error': 'Site not found or access denied'}, status=status.HTTP_404_NOT_FOUND)
     
     # Check subscription limits
-    tier = user.subscription_status or 'free'
+    tier = user.subscription_tier or 'free'
     max_team_members = TIER_LIMITS.get(tier, 0)
     current_count = SiteAccess.objects.filter(site__user=user).count()
     
