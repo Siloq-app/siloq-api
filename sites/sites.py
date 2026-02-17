@@ -274,6 +274,7 @@ class SiteViewSet(viewsets.ModelViewSet):
             'issues': formatted_issues,
             'total': len(formatted_issues),
             'gsc_connected': gsc_connected,
+            'gsc_pages_with_data': len(impressions_map) if impressions_map else 0,
         })
 
     @action(detail=True, methods=['get'], url_path='health-summary')
