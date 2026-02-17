@@ -8,6 +8,8 @@ Analyzes site structure and suggests content to create based on:
 """
 import io
 import os
+import re
+import base64
 import uuid
 import hashlib
 import logging
@@ -28,6 +30,157 @@ from seo.preflight_validation import run_preflight_validation
 from ai.image_generator import generate_content_image
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_city_page_doc(raw_text: str) -> dict:
+    """
+    Parse The Remodel Co's city page document format.
+    
+    Extracts structured data from 3-section format:
+    1. Backend & Meta Data — slug, meta_title, meta_description
+    2. On-Page Content — HTML-formatted content with special markers
+    3. Developer Directions — ignored
+    
+    Returns dict with: slug, meta_title, meta_description, content_html, image_alts
+    """
+    result = {
+        'slug': '',
+        'meta_title': '',
+        'meta_description': '',
+        'content_html': '',
+        'image_alts': [],
+    }
+    
+    lines = raw_text.split('\n')
+    current_section = None
+    content_lines = []
+    in_ul = False
+    in_faq = False
+    
+    for line in lines:
+        stripped = line.strip()
+        
+        # Section detection
+        if 'Backend & Meta Data' in line or 'Backend and Meta Data' in line:
+            current_section = 'meta'
+            continue
+        elif 'On-Page Content' in line or 'Copy & Paste' in line:
+            current_section = 'content'
+            continue
+        elif 'Developer Directions' in line or 'Technical Implementation' in line:
+            current_section = 'dev'
+            break  # Stop parsing at dev section
+        
+        # ══════════════════════════════════════════════════════
+        # Section 1: Backend & Meta Data
+        # ══════════════════════════════════════════════════════
+        if current_section == 'meta':
+            if stripped.startswith('Slug:'):
+                result['slug'] = stripped.replace('Slug:', '').strip().strip('/')
+            elif stripped.startswith('Meta Title:'):
+                result['meta_title'] = stripped.replace('Meta Title:', '').strip()
+            elif stripped.startswith('Meta Description:'):
+                # Meta description might span multiple lines
+                desc = stripped.replace('Meta Description:', '').strip()
+                result['meta_description'] = desc
+        
+        # ══════════════════════════════════════════════════════
+        # Section 2: On-Page Content (Copy & Paste)
+        # ══════════════════════════════════════════════════════
+        elif current_section == 'content':
+            if not stripped:
+                # Close open lists
+                if in_ul:
+                    content_lines.append('</ul>')
+                    in_ul = False
+                content_lines.append('')
+                continue
+            
+            # [H1] heading
+            if stripped.startswith('[H1]'):
+                text = stripped.replace('[H1]', '').strip()
+                content_lines.append(f'<h1>{text}</h1>')
+            
+            # [H2] heading
+            elif stripped.startswith('[H2]'):
+                if in_ul:
+                    content_lines.append('</ul>')
+                    in_ul = False
+                text = stripped.replace('[H2]', '').strip()
+                content_lines.append(f'<h2>{text}</h2>')
+            
+            # [H3] heading
+            elif stripped.startswith('[H3]'):
+                if in_ul:
+                    content_lines.append('</ul>')
+                    in_ul = False
+                text = stripped.replace('[H3]', '').strip()
+                content_lines.append(f'<h3>{text}</h3>')
+            
+            # [Intro] paragraph
+            elif stripped.startswith('[Intro]'):
+                text = stripped.replace('[Intro]', '').strip()
+                content_lines.append(f'<p class="intro">{text}</p>')
+            
+            # Q: question (FAQ)
+            elif stripped.startswith('Q:'):
+                if in_ul:
+                    content_lines.append('</ul>')
+                    in_ul = False
+                if in_faq:
+                    content_lines.append('</div>')
+                question = stripped.replace('Q:', '').strip()
+                content_lines.append(f'<div class="faq-item"><h3>{question}</h3>')
+                in_faq = True
+            
+            # A: answer (FAQ)
+            elif stripped.startswith('A:'):
+                answer = stripped.replace('A:', '').strip()
+                content_lines.append(f'<p>{answer}</p></div>')
+                in_faq = False
+            
+            # Bullet points (lines starting with • or - or word:)
+            elif stripped.startswith('•') or stripped.startswith('-') or re.match(r'^[A-Z][a-z]+:', stripped):
+                if not in_ul:
+                    content_lines.append('<ul>')
+                    in_ul = True
+                text = re.sub(r'^[•\-]\s*', '', stripped)
+                content_lines.append(f'  <li>{text}</li>')
+            
+            # Links: [Link: /path/] anchor text or Link: *text [Link: /path/] more text*
+            elif '[Link:' in stripped or 'Link:' in stripped:
+                # Pattern: Link: *text [Link: /path/] more text.*
+                # Or: [Link: /path/] anchor text
+                processed = stripped
+                
+                # Replace [Link: /path/] anchor → <a href="/path/">anchor</a>
+                processed = re.sub(
+                    r'\[Link:\s*([^\]]+)\]\s*([^[*\n]+)',
+                    r'<a href="\1">\2</a>',
+                    processed
+                )
+                
+                # Clean up any remaining markers
+                processed = processed.replace('Link:', '').replace('*', '').strip()
+                content_lines.append(f'<p>{processed}</p>')
+            
+            # Regular paragraph
+            else:
+                # Don't wrap if already in a list
+                if in_ul:
+                    content_lines.append(f'  <li>{stripped}</li>')
+                else:
+                    content_lines.append(f'<p>{stripped}</p>')
+    
+    # Close any open tags
+    if in_ul:
+        content_lines.append('</ul>')
+    if in_faq:
+        content_lines.append('</div>')
+    
+    result['content_html'] = '\n'.join(content_lines)
+    
+    return result
 
 
 def _check_content_cannibalization(site, title: str, topic: str) -> dict:
@@ -588,6 +741,7 @@ def approve_content(request, site_id):
     - title: Page title (required)
     - content: Page content (required)
     - silo_id: Parent silo/money page ID (optional)
+    - meta_title: SEO meta title (optional, uses title if not provided)
     - meta_description: SEO meta description (optional)
     - slug: URL slug (optional, will be auto-generated if not provided)
     """
@@ -622,6 +776,7 @@ def approve_content(request, site_id):
         }, status=status.HTTP_409_CONFLICT)
     
     silo_id = request.data.get('silo_id')
+    meta_title = request.data.get('meta_title', '').strip() or title
     meta_description = request.data.get('meta_description', '')
     slug = request.data.get('slug', '')
     image_url = request.data.get('image_url', '')
@@ -669,6 +824,7 @@ def approve_content(request, site_id):
         wp_post_id=0,  # Placeholder - will be updated by webhook
         parent_silo=parent_silo,
         is_money_page=False,
+        yoast_title=meta_title,
         yoast_description=meta_description,
     )
     
@@ -686,6 +842,7 @@ def approve_content(request, site_id):
         'title': title,
         'content': content,
         'slug': slug,
+        'meta_title': meta_title,
         'meta_description': meta_description,
         'siloq_page_id': str(page.id),
         'status': 'draft',
@@ -833,11 +990,16 @@ def upload_content(request, site_id):
     - slug: str (optional — auto-generated from title if missing)
     - target_keyword: str (optional)
     - silo_id: int (optional — which silo this belongs to)
+    - meta_title: str (optional — SEO meta title, separate from H1)
     - meta_description: str (optional)
     - excerpt: str (optional)
+    - images[]: uploaded image files (optional, up to 10)
+    - image_alts[]: alt text for each image (optional)
+    - image_captions[]: captions for each image (optional)
 
     Returns:
     - id, title, slug, preflight_result, status ('pending_review')
+    - If smart parser detected city page format: parsed fields returned
     - If preflight blocks: returns the blocking checks with explanations
     """
     site = get_object_or_404(Site, id=site_id)
@@ -851,9 +1013,20 @@ def upload_content(request, site_id):
 
     # File upload takes precedence over content field
     uploaded_file = request.FILES.get('file')
+    parsed_data = None
     if uploaded_file:
         try:
-            content = _extract_file_content(uploaded_file)
+            raw_content = _extract_file_content(uploaded_file)
+            
+            # ══════════════════════════════════════════════════════
+            # Feature 3: Smart Content Parser for City Page Docs
+            # ══════════════════════════════════════════════════════
+            if 'Backend & Meta Data' in raw_content and 'On-Page Content' in raw_content:
+                parsed_data = _parse_city_page_doc(raw_content)
+                content = parsed_data['content_html']
+                logger.info(f"Smart parser detected city page format for site {site.id}")
+            else:
+                content = raw_content
         except Exception as e:
             return Response(
                 {'error': f'Failed to read uploaded file: {e}'},
@@ -869,8 +1042,11 @@ def upload_content(request, site_id):
         )
 
     # ── Optional fields ──────────────────────────────────────
+    # If smart parser detected city page format, use parsed values
     slug = request.data.get('slug', '').strip()
-    if not slug:
+    if parsed_data and parsed_data.get('slug'):
+        slug = parsed_data['slug']
+    elif not slug:
         slug = slugify(title)[:200]
     else:
         # Preserve path structure (e.g., service-area/blue-springs-mo)
@@ -881,8 +1057,48 @@ def upload_content(request, site_id):
 
     target_keyword = request.data.get('target_keyword', '').strip() or title
     silo_id = request.data.get('silo_id')
+    
+    meta_title = request.data.get('meta_title', '').strip()
+    if parsed_data and parsed_data.get('meta_title'):
+        meta_title = parsed_data['meta_title']
+    
     meta_description = request.data.get('meta_description', '').strip()
+    if parsed_data and parsed_data.get('meta_description'):
+        meta_description = parsed_data['meta_description']
+    
     excerpt = request.data.get('excerpt', '').strip()
+    
+    # ══════════════════════════════════════════════════════════
+    # Feature 2: Image Upload with Alt Text
+    # ══════════════════════════════════════════════════════════
+    images = request.FILES.getlist('images[]') or request.FILES.getlist('images')
+    image_alts = request.data.getlist('image_alts[]') or request.data.getlist('image_alts') or []
+    image_captions = request.data.getlist('image_captions[]') or request.data.getlist('image_captions') or []
+    
+    # Encode images as base64 for WordPress webhook
+    images_data = []
+    for idx, img_file in enumerate(images[:10]):  # Limit to 10 images
+        try:
+            img_bytes = img_file.read()
+            img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+            alt_text = image_alts[idx] if idx < len(image_alts) else ''
+            caption = image_captions[idx] if idx < len(image_captions) else ''
+            
+            # Slugify alt text for filename
+            filename_base = slugify(alt_text)[:50] if alt_text else f'image-{idx+1}'
+            filename = f"{filename_base}.{img_file.name.split('.')[-1]}"
+            
+            images_data.append({
+                'data': img_base64,
+                'alt': alt_text,
+                'caption': caption,
+                'filename': filename,
+                'mime_type': img_file.content_type,
+            })
+        except Exception as e:
+            logger.error(f"Failed to encode image {idx}: {e}")
+    
+    logger.info(f"Uploaded {len(images_data)} images for site {site.id}")
 
     # ── Preflight validation ─────────────────────────────────
     preflight_result = run_preflight_validation(
@@ -927,22 +1143,43 @@ def upload_content(request, site_id):
         wp_post_id=0,
         parent_silo=parent_silo,
         is_money_page=False,
+        yoast_title=meta_title or title,
         yoast_description=meta_description,
         excerpt=excerpt,
     )
 
     logger.info(f"Uploaded content saved as draft page {page.id} for site {site.id}: {title}")
 
-    return Response({
+    response_data = {
         'id': page.id,
+        'content_id': page.id,  # For approve endpoint
         'title': page.title,
         'slug': page.slug,
         'url': page.url,
         'status': 'pending_review',
+        'can_approve': preflight_result.get('status') != 'block',
         'silo_id': parent_silo.id if parent_silo else None,
+        'meta_title': meta_title,
         'meta_description': meta_description,
         'excerpt': excerpt,
         'target_keyword': target_keyword,
-        'preflight_result': preflight_result,
+        'checks': preflight_result.get('checks', []),
+        'preflight': preflight_result.get('checks', []),
         'message': 'Content uploaded and saved for review. Use the approve endpoint to push to WordPress.',
-    }, status=status.HTTP_201_CREATED)
+    }
+    
+    # If smart parser was used, include parsed fields
+    if parsed_data:
+        response_data['smart_parsed'] = True
+        response_data['parsed_fields'] = {
+            'slug': parsed_data.get('slug', ''),
+            'meta_title': parsed_data.get('meta_title', ''),
+            'meta_description': parsed_data.get('meta_description', ''),
+        }
+    
+    # Include image data if any
+    if images_data:
+        response_data['images'] = images_data
+        response_data['image_count'] = len(images_data)
+    
+    return Response(response_data, status=status.HTTP_201_CREATED)
