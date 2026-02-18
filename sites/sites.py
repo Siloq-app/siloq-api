@@ -18,7 +18,7 @@ from .models import Site
 from .serializers import SiteSerializer
 from .permissions import IsSiteOwner
 from .analysis import detect_cannibalization, analyze_site, calculate_health_score
-from integrations.wordpress_webhook import send_webhook_to_wordpress
+from integrations.wordpress_webhook import send_webhook_to_wordpress, create_wordpress_redirect
 
 logger = logging.getLogger(__name__)
 
@@ -331,22 +331,45 @@ class SiteViewSet(viewsets.ModelViewSet):
             # Determine action_type based on resolution_type or recommendation
             action_type = conflict.resolution_type or 'redirect'
             
-            # Generate description
+            # Generate description with clear action details
             loser_urls = [p.page_url for p in losers[:2]]
-            loser_text = ', '.join(loser_urls) if loser_urls else 'competing pages'
-            description = f"Resolve keyword cannibalization for '{conflict.keyword}': {loser_text}"
+            
+            # Create a clearer description based on action type
+            if action_type in ('redirect', 'merge_redirect'):
+                if winner and loser_urls:
+                    description = f"301 Redirect: {loser_urls[0]} → {winner.page_url}"
+                    if len(loser_urls) > 1:
+                        description += f" (+{len(loser_urls) - 1} more)"
+                else:
+                    description = f"Resolve keyword cannibalization for '{conflict.keyword}'"
+            elif action_type == 'canonical':
+                if winner and loser_urls:
+                    description = f"Set Canonical: {loser_urls[0]} → {winner.page_url}"
+                else:
+                    description = f"Set canonical tag for '{conflict.keyword}'"
+            elif action_type == 'differentiate':
+                description = f"Differentiate content for '{conflict.keyword}': {', '.join(loser_urls[:2]) if loser_urls else 'competing pages'}"
+            else:
+                loser_text = ', '.join(loser_urls[:2]) if loser_urls else 'competing pages'
+                description = f"Resolve keyword cannibalization for '{conflict.keyword}': {loser_text}"
             
             # Map severity to risk level
-            risk = 'destructive' if conflict.severity in ('critical', 'high') else 'content_change' if conflict.severity == 'medium' else 'safe'
+            risk = 'destructive' if conflict.severity in ('critical', 'high') else 'redirect' if action_type in ('redirect', 'merge_redirect') else 'content_change' if conflict.severity == 'medium' else 'safe'
             is_destructive = conflict.severity in ('critical', 'high')
             
-            # Generate impact description
+            # Generate impact description with more specifics
             if action_type == 'redirect':
-                impact = f"Consolidate SEO signals by redirecting to {winner.page_url if winner else 'recommended page'}"
+                total_impressions = sum(p.gsc_impressions or 0 for p in losers)
+                if total_impressions > 0:
+                    impact = f"Consolidate {total_impressions:,} monthly impressions to {winner.page_url if winner else 'recommended page'}"
+                else:
+                    impact = f"Consolidate SEO signals by redirecting to {winner.page_url if winner else 'recommended page'}"
             elif action_type == 'merge_redirect':
                 impact = "Merge content and redirect to strengthen target page"
             elif action_type == 'canonical':
                 impact = "Set canonical tag to clarify preferred version"
+            elif action_type == 'differentiate':
+                impact = "Rewrite content to target distinct user intents"
             else:
                 impact = "Resolve conflict following Siloq recommendation"
             
@@ -797,19 +820,27 @@ class SiteViewSet(viewsets.ModelViewSet):
                         redirect_obj.save()
                     actions_taken['redirect_created'] = True
                     
-                    # Push redirect to WordPress
+                    # Push redirect to WordPress via REST API
                     try:
-                        webhook_payload = {
-                            'source_url': loser_url,
-                            'target_url': winner_url,
-                            'redirect_type': 301,
-                            'reason': f'conflict_resolution_{action_type}',
-                        }
-                        webhook_result = send_webhook_to_wordpress(site, 'redirect.create', webhook_payload)
-                        actions_taken['webhook_pushed'] = webhook_result.get('success', False)
-                    except Exception as webhook_err:
-                        logger.warning('WordPress webhook error for conflict %s: %s', action_id, str(webhook_err))
-                        actions_taken['webhook_pushed'] = False
+                        redirect_result = create_wordpress_redirect(
+                            site=site,
+                            source_url=loser_url,
+                            target_url=winner_url,
+                            redirect_type=301,
+                            reason=f'Conflict resolution: {action_type}',
+                        )
+                        actions_taken['wordpress_redirect_pushed'] = redirect_result.get('success', False)
+                        if redirect_result.get('success'):
+                            logger.info('Redirect successfully created in WordPress for conflict %s', action_id)
+                        else:
+                            logger.warning(
+                                'WordPress redirect creation failed for conflict %s: %s',
+                                action_id,
+                                redirect_result.get('error', 'unknown error')
+                            )
+                    except Exception as redirect_err:
+                        logger.error('WordPress redirect API error for conflict %s: %s', action_id, str(redirect_err))
+                        actions_taken['wordpress_redirect_pushed'] = False
                 
                 # Step 2: Reassign keyword
                 try:
