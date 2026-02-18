@@ -68,37 +68,75 @@ def _are_product_siblings(page_a: PageClassification, page_b: PageClassification
     """
     Product sibling filter.
     
-    Criteria:
+    Criteria for SAME parent (existing logic):
     - Both classified_type == "product"
     - Same parent_path
     - Distinct slug_last (different product names)
     - NOT legacy variants of each other
     - NOT near-duplicate slugs (Jaccard < 0.80)
+    
+    NEW: Criteria for DIFFERENT parent (the "cheer" case):
+    - Share a common slug token
+    - DIFFERENT parent_path
+    - Different title keywords (excluding the shared slug)
+    - Example: /team-warmups/cheer vs /uniforms/cheer
+      → Shared token: "cheer"
+      → Different parents: "team-warmups" vs "uniforms"
+      → These are cross-linking opportunities, NOT conflicts
     """
     # Must both be products
     if page_a.classified_type != 'product' or page_b.classified_type != 'product':
         return False
     
-    # Must have same parent path
-    if page_a.parent_path != page_b.parent_path:
-        return False
-    
-    # Must have distinct slugs
-    if page_a.slug_last == page_b.slug_last:
-        return False
-    
-    # Must NOT be legacy variants of each other
-    if page_a.is_legacy_variant or page_b.is_legacy_variant:
-        # Check if one is legacy variant of the other
-        if _is_legacy_pair(page_a.normalized_path, page_b.normalized_path):
+    # Case 1: SAME parent path (original logic)
+    if page_a.parent_path == page_b.parent_path:
+        # Must have distinct slugs
+        if page_a.slug_last == page_b.slug_last:
             return False
+        
+        # Must NOT be legacy variants of each other
+        if page_a.is_legacy_variant or page_b.is_legacy_variant:
+            # Check if one is legacy variant of the other
+            if _is_legacy_pair(page_a.normalized_path, page_b.normalized_path):
+                return False
+        
+        # Must NOT be near-duplicate slugs
+        similarity = slug_similarity(page_a.normalized_path, page_b.normalized_path)
+        if similarity >= 0.80:
+            return False
+        
+        return True
     
-    # Must NOT be near-duplicate slugs
-    similarity = slug_similarity(page_a.normalized_path, page_b.normalized_path)
-    if similarity >= 0.80:
+    # Case 2: DIFFERENT parent path (NEW logic for "cheer" case)
+    else:
+        # Check if they share a common slug token
+        tokens_a = set(page_a.slug_tokens_json) if page_a.slug_tokens_json else set()
+        tokens_b = set(page_b.slug_tokens_json) if page_b.slug_tokens_json else set()
+        
+        shared_tokens = tokens_a & tokens_b
+        if not shared_tokens:
+            return False  # No shared tokens, not siblings
+        
+        # Extract parent folder names (last segment of parent_path)
+        parent_a = page_a.parent_path.strip('/').split('/')[-1] if page_a.parent_path else ''
+        parent_b = page_b.parent_path.strip('/').split('/')[-1] if page_b.parent_path else ''
+        
+        # Parents must be different AND distinct (not just modifiers)
+        if not parent_a or not parent_b or parent_a == parent_b:
+            return False
+        
+        # Check if parents represent different product categories
+        # Extract keywords from titles (excluding shared slug tokens)
+        title_a_words = set(page_a.title.lower().split()) - shared_tokens
+        title_b_words = set(page_b.title.lower().split()) - shared_tokens
+        
+        # If title keywords are mostly different (< 50% overlap), they're siblings
+        if title_a_words and title_b_words:
+            overlap = len(title_a_words & title_b_words) / max(len(title_a_words), len(title_b_words))
+            if overlap < 0.50:
+                return True  # Different product categories, safe pair
+        
         return False
-    
-    return True
 
 
 def _are_parent_child(page_a: PageClassification, page_b: PageClassification) -> bool:
