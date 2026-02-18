@@ -6,6 +6,8 @@ import logging
 from datetime import timedelta
 from django.utils import timezone
 from django.db.models import Q
+from django.core.mail import send_mail
+from django.conf import settings
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -188,8 +190,56 @@ def team_invite(request):
         expires_at=expires_at
     )
     
-    # TODO: Send email notification (implement later)
-    logger.info(f"Team invite created: {email} to site {site.name} by {user.email}")
+    # Send invite email
+    try:
+        invite_url = f"{settings.FRONTEND_URL}/invite?token={token}"
+        inviter_name = f"{user.first_name} {user.last_name}".strip() or user.email
+        subject = f"{inviter_name} invited you to join {site.name} on Siloq"
+        message = f"""Hi there,
+
+{inviter_name} has invited you to join {site.name} on Siloq as a {role}.
+
+Click the link below to accept your invitation (expires in 7 days):
+{invite_url}
+
+If you don't have a Siloq account yet, you'll be prompted to create one when you accept.
+
+— The Siloq Team
+support@siloq.ai
+"""
+        html_message = f"""<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="text-align: center; margin-bottom: 30px;">
+    <h1 style="color: #6C5CE7; font-size: 28px; margin: 0;">Siloq</h1>
+  </div>
+  <h2 style="color: #1a1a2e;">You've been invited!</h2>
+  <p style="color: #555; line-height: 1.6;">
+    <strong>{inviter_name}</strong> has invited you to join <strong>{site.name}</strong> on Siloq as a <strong>{role}</strong>.
+  </p>
+  <div style="text-align: center; margin: 30px 0;">
+    <a href="{invite_url}" style="background: #6C5CE7; color: white; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; font-size: 16px;">
+      Accept Invitation
+    </a>
+  </div>
+  <p style="color: #999; font-size: 13px;">
+    This invitation expires in 7 days. If you don't have a Siloq account yet, you'll be prompted to create one when you accept.
+  </p>
+  <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+  <p style="color: #999; font-size: 12px; text-align: center;">
+    Siloq · <a href="https://app.siloq.ai" style="color: #6C5CE7;">app.siloq.ai</a>
+  </p>
+</div>"""
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=f"Siloq <{settings.EMAIL_HOST_USER}>",
+            recipient_list=[email],
+            html_message=html_message,
+            fail_silently=False,
+        )
+        logger.info(f"Team invite email sent: {email} to site {site.name} by {user.email}")
+    except Exception as e:
+        logger.error(f"Failed to send invite email to {email}: {e}")
+        # Don't fail the whole request if email fails — invite is still created in DB
     
     return Response({
         'invite': {

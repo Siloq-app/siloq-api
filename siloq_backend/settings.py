@@ -197,6 +197,16 @@ CORS_ALLOW_CREDENTIALS = True
 # Custom User Model
 AUTH_USER_MODEL = 'accounts.User'
 
+# Email configuration (Google Workspace SMTP)
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', 'support@siloq.ai')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.getenv('EMAIL_HOST_USER', 'support@siloq.ai')
+SERVER_EMAIL = os.getenv('EMAIL_HOST_USER', 'support@siloq.ai')
+
 # Logging - ensure all output goes to stdout for DigitalOcean App Platform
 LOGGING = {
     'version': 1,
