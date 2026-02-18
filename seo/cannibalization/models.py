@@ -273,6 +273,20 @@ class PageClassification(models.Model):
         help_text="List of slug tokens for similarity comparison"
     )
     
+    # Thin content detection
+    word_count = models.IntegerField(
+        default=0,
+        help_text="Word count from SEOData (if available)"
+    )
+    is_thin_content = models.BooleanField(
+        default=False,
+        help_text="True if word_count < 300"
+    )
+    is_critically_thin = models.BooleanField(
+        default=False,
+        help_text="True if word_count < 100"
+    )
+    
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
