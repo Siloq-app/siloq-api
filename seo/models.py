@@ -727,6 +727,106 @@ class ValidationLog(models.Model):
 
 
 # ─────────────────────────────────────────────────────────────
+# DOMAIN 6: PAGE CONTENT OPTIMIZATION (Three-Layer Model)
+# ─────────────────────────────────────────────────────────────
+
+class PageAnalysis(models.Model):
+    """
+    AI-driven analysis of a single page against the Three-Layer Content Model
+    (GEO → SEO → CRO). Each analysis captures input data snapshots (GSC +
+    WordPress meta) and the AI-generated recommendations for all three layers.
+
+    Recommendations are stored as JSON lists. Each item in the list is a dict:
+    {
+        "id": "geo_1",
+        "layer": "GEO",
+        "priority": "high|medium|low",
+        "issue": "What's wrong",
+        "recommendation": "Specific fix",
+        "before": "Current text or 'Not present'",
+        "after": "Improved version",
+        "field": "content_body|title|meta_description|h1|schema",
+        "status": "pending|approved|applied"
+    }
+
+    Overall score is the weighted average: GEO 30%, SEO 40%, CRO 30%.
+    """
+
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('analyzing', 'Analyzing'),
+        ('complete', 'Complete'),
+        ('failed', 'Failed'),
+    ]
+
+    site = models.ForeignKey(
+        'sites.Site',
+        on_delete=models.CASCADE,
+        related_name='page_analyses',
+    )
+    page_url = models.URLField(max_length=2048)
+    page_title = models.CharField(max_length=500, blank=True)
+
+    # ── Input data snapshots ─────────────────────────────────
+    gsc_data = models.JSONField(
+        default=dict,
+        help_text='GSC queries/positions for this page at analysis time',
+    )
+    wp_meta = models.JSONField(
+        default=dict,
+        help_text='WordPress page meta: title, h1, meta_description, word_count, schema, content_snippet',
+    )
+
+    # ── AI-generated recommendations ─────────────────────────
+    geo_recommendations = models.JSONField(default=list)
+    seo_recommendations = models.JSONField(default=list)
+    cro_recommendations = models.JSONField(default=list)
+
+    # ── Layer scores (0-100) ─────────────────────────────────
+    geo_score = models.IntegerField(null=True, blank=True)
+    seo_score = models.IntegerField(null=True, blank=True)
+    cro_score = models.IntegerField(null=True, blank=True)
+    overall_score = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text='Weighted average: GEO 30%, SEO 40%, CRO 30%',
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending',
+        db_index=True,
+    )
+    error_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'page_analyses'
+        ordering = ['-created_at']
+        get_latest_by = 'created_at'
+        indexes = [
+            models.Index(fields=['site', 'status']),
+            models.Index(fields=['site', 'page_url']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return f"PageAnalysis({self.page_url}) — {self.status}"
+
+    def compute_overall_score(self) -> int:
+        """Return weighted average: GEO 30 %, SEO 40 %, CRO 30 %."""
+        scores = [
+            (self.geo_score, 0.30),
+            (self.seo_score, 0.40),
+            (self.cro_score, 0.30),
+        ]
+        weighted = sum(s * w for s, w in scores if s is not None)
+        weights = sum(w for s, w in scores if s is not None)
+        if not weights:
+            return 0
+        return round(weighted / weights)
 # DOMAIN 6: SILO HEALTH SCORING
 # ─────────────────────────────────────────────────────────────
 
