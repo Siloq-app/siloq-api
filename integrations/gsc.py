@@ -168,6 +168,83 @@ def fetch_search_analytics(
     return results
 
 
+def fetch_page_search_analytics(
+    access_token: str,
+    site_url: str,
+    page_url: str,
+    start_date: str = None,
+    end_date: str = None,
+    row_limit: int = 200,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch GSC search analytics filtered to a single page URL.
+
+    Uses dimensionFilterGroups to scope results to the given page so that
+    only queries ranking for that specific page are returned.
+
+    Args:
+        access_token: Valid OAuth access token
+        site_url: GSC property URL (e.g. 'https://example.com/')
+        page_url: Full page URL to filter on (e.g. 'https://example.com/services/remodeling/')
+        start_date: YYYY-MM-DD, defaults to 90 days ago
+        end_date: YYYY-MM-DD, defaults to today
+        row_limit: Max rows (default 200)
+
+    Returns:
+        List of dicts with keys: query, page, clicks, impressions, ctr, position
+    """
+    if not start_date:
+        start_date = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+    if not end_date:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'Content-Type': 'application/json',
+    }
+
+    encoded_site = requests.utils.quote(site_url, safe='')
+    url = f'{GSC_API_BASE}/sites/{encoded_site}/searchAnalytics/query'
+
+    payload = {
+        'startDate': start_date,
+        'endDate': end_date,
+        'dimensions': ['query'],
+        'rowLimit': row_limit,
+        'dimensionFilterGroups': [
+            {
+                'filters': [
+                    {
+                        'dimension': 'page',
+                        'operator': 'equals',
+                        'expression': page_url,
+                    }
+                ]
+            }
+        ],
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+
+    if response.status_code != 200:
+        return []
+
+    data = response.json()
+    results = []
+    for row in data.get('rows', []):
+        keys = row.get('keys', [])
+        results.append({
+            'query': keys[0] if keys else '',
+            'clicks': row.get('clicks', 0),
+            'impressions': row.get('impressions', 0),
+            'ctr': row.get('ctr', 0),
+            'position': round(row.get('position', 0), 1),
+        })
+
+    results.sort(key=lambda r: r['impressions'], reverse=True)
+    return results
+
+
 def fetch_cannibalization_data(access_token: str, site_url: str) -> List[Dict[str, Any]]:
     """
     Fetch GSC data specifically for cannibalization analysis.
