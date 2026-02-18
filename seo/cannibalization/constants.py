@@ -131,6 +131,22 @@ CONFLICT_TYPES = {
         'description': 'Homepage ranking for specific service query',
         'action_code': 'HOMEPAGE_DEOPTIMIZE',
     },
+
+    # BLOG_OVERLAP bucket (Phase: Blog vs Service)
+    'BLOG_SERVICE_OVERLAP': {
+        'bucket': 'BLOG_OVERLAP',
+        'badge': 'POTENTIAL',
+        'description': 'Blog post targets same keyword as service/product page',
+        'action_code': 'REWRITE_AS_SPOKE',
+        'severity': 'MEDIUM',
+    },
+    'BLOG_CONSOLIDATION': {
+        'bucket': 'BLOG_OVERLAP',
+        'badge': 'POTENTIAL',
+        'description': '3+ blog posts targeting similar keywords (Jaccard ≥ 0.4)',
+        'action_code': 'REWRITE_AS_SPOKE',
+        'severity': 'MEDIUM',
+    },
 }
 
 # =============================================================================
@@ -142,6 +158,7 @@ BUCKET_SCORES = {
     'SEARCH_CONFLICT': 50,
     'SITE_DUPLICATION': 25,
     'WRONG_WINNER': 15,
+    'BLOG_OVERLAP': 10,
 }
 
 # Severity priority
@@ -289,3 +306,19 @@ SERVICE_KEYWORDS = [
     'maintenance', 'cleaning', 'restoration', 'consultation',
     'design', 'build', 'remodel', 'renovation',
 ]
+
+# =============================================================================
+# BLOG SERVICE OVERLAP THRESHOLDS
+# =============================================================================
+
+# Blog posts below this word count are candidates for MERGE_INTO_SERVICE
+THIN_BLOG_WORD_COUNT = 300
+
+# Minimum slug token overlap to consider blog/service conflict
+BLOG_SERVICE_MIN_TOKEN_OVERLAP = 1
+
+# Minimum number of blog posts targeting similar keywords to flag BLOG_CONSOLIDATION
+BLOG_CONSOLIDATION_MIN_COUNT = 3
+
+# Minimum slug token Jaccard similarity to group blogs for consolidation
+BLOG_CONSOLIDATION_JACCARD_THRESHOLD = 0.4

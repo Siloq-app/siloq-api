@@ -238,3 +238,56 @@ def _classify_page_type(
     
     # RULE 17: Fallback
     return 'uncategorized'
+
+
+# =============================================================================
+# INTENT CLASSIFICATION
+# =============================================================================
+
+# Page types that signal purchase / service intent
+_TRANSACTIONAL_TYPES = {
+    'service_hub',
+    'service_spoke',
+    'product',
+    'category_woo',
+    'category_custom',
+    'shop',
+    'product_rentals',
+}
+
+# Page types that signal informational / content intent
+_INFORMATIONAL_TYPES = {
+    'blog',
+    'portfolio',
+    'news',
+}
+
+
+def get_intent_type(classified_type: str, wp_post_type: str = '') -> str:
+    """
+    Classify a page's commercial intent based on its classified type.
+
+    WordPress post_type='post' always maps to informational, regardless of
+    the classified_type returned by the slug classifier (which may label it
+    'uncategorized' if the blog folder wasn't detected).
+
+    Args:
+        classified_type: The type string from _classify_page_type().
+        wp_post_type:    WordPress post_type (optional, e.g. 'post', 'page').
+
+    Returns:
+        'informational'  — blog posts, portfolio, content pages
+        'transactional'  — service pages, products, shop/category pages
+        'other'          — homepage, location, utility, uncategorized, etc.
+    """
+    # WordPress native posts are always informational (overrides slug classifier)
+    if wp_post_type == 'post':
+        return 'informational'
+
+    if classified_type in _TRANSACTIONAL_TYPES:
+        return 'transactional'
+
+    if classified_type in _INFORMATIONAL_TYPES:
+        return 'informational'
+
+    return 'other'

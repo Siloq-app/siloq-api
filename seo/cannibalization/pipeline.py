@@ -22,6 +22,7 @@ from . import phase2_safe_filters
 from . import phase3_static_detect
 from . import phase4_gsc_validate
 from . import phase5_wrong_winner
+from . import phase_blog_service
 from . import phase6_cluster
 from . import phase7_fix
 
@@ -78,6 +79,7 @@ def run_analysis(site_id: int, include_gsc: bool = True, gsc_days: int = 90) -> 
         # =====================================================================
         gsc_issues = []
         wrong_winner_issues = []
+        gsc_data = []  # Initialize here so blog phase can access it unconditionally
         
         if include_gsc:
             # Fetch GSC data (aggregate + daily for flip-flop detection)
@@ -117,6 +119,17 @@ def run_analysis(site_id: int, include_gsc: bool = True, gsc_days: int = 90) -> 
                 )
         
         # =====================================================================
+        # BLOG vs SERVICE PAGE DETECTION (runs with or without GSC data)
+        # =====================================================================
+        # This phase runs unconditionally because it can detect structural
+        # overlaps even without GSC data.  When GSC data is available it
+        # upgrades matching pairs from POTENTIAL → CONFIRMED.
+        blog_service_issues = phase_blog_service.run_phase_blog_service(
+            classifications,
+            gsc_data=gsc_data or None,
+        )
+
+        # =====================================================================
         # SEVERITY GATE: Cap structural-only conflicts at MEDIUM
         # =====================================================================
         # Issues from Phase 3 (static detection) that were NOT upgraded by
@@ -124,7 +137,7 @@ def run_analysis(site_id: int, include_gsc: bool = True, gsc_days: int = 90) -> 
         # overlap with zero search traffic proof.  These must never be
         # HIGH or CRITICAL because flagging zero-impression overlaps as
         # HIGH erodes user trust.
-        all_issues = static_issues + gsc_issues + wrong_winner_issues
+        all_issues = static_issues + gsc_issues + wrong_winner_issues + blog_service_issues
 
         for issue in all_issues:
             # Only touch SITE_DUPLICATION / POTENTIAL issues (Phase 3)
@@ -250,7 +263,8 @@ def run_analysis(site_id: int, include_gsc: bool = True, gsc_days: int = 90) -> 
             analysis_run.search_conflict_count = sum(1 for c in clustered_issues if c['bucket'] == 'SEARCH_CONFLICT')
             analysis_run.site_duplication_count = sum(1 for c in clustered_issues if c['bucket'] == 'SITE_DUPLICATION')
             analysis_run.wrong_winner_count = sum(1 for c in clustered_issues if c['bucket'] == 'WRONG_WINNER')
-            
+            analysis_run.blog_overlap_count = sum(1 for c in clustered_issues if c['bucket'] == 'BLOG_OVERLAP')
+
             # Count by badge
             analysis_run.confirmed_count = sum(1 for c in clustered_issues if c['badge'] == 'CONFIRMED')
             analysis_run.potential_count = sum(1 for c in clustered_issues if c['badge'] == 'POTENTIAL')
@@ -396,6 +410,7 @@ def get_analysis_results(analysis_run_id: int) -> dict:
             'SEARCH_CONFLICT': analysis_run.search_conflict_count,
             'SITE_DUPLICATION': analysis_run.site_duplication_count,
             'WRONG_WINNER': analysis_run.wrong_winner_count,
+            'BLOG_OVERLAP': analysis_run.blog_overlap_count,
         },
         'badges': {
             'CONFIRMED': analysis_run.confirmed_count,
