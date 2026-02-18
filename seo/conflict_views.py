@@ -16,7 +16,7 @@ from seo.models import (
     CannibalizationConflict, ConflictPage, ConflictResolution,
     RedirectRegistry, KeywordAssignment, KeywordAssignmentHistory,
 )
-from integrations.wordpress_webhook import send_webhook_to_wordpress
+from integrations.wordpress_webhook import send_webhook_to_wordpress, create_wordpress_redirect
 
 logger = logging.getLogger(__name__)
 
@@ -215,25 +215,28 @@ def conflict_resolve(request, conflict_id):
                     redirect_obj.save()
                 actions_taken['redirect_created'] = True
 
-            # Step 1b: Push redirect to WordPress via plugin webhook
+            # Step 1b: Push redirect to WordPress via REST API
             if actions_taken['redirect_created'] and redirect_obj:
                 try:
-                    webhook_payload = {
-                        'source_url': loser_url,
-                        'target_url': winner_url,
-                        'redirect_type': redirect_type,
-                        'reason': f'conflict_resolution_{action_type}',
-                    }
-                    webhook_result = send_webhook_to_wordpress(site, 'redirect.create', webhook_payload)
-                    actions_taken['webhook_pushed'] = webhook_result.get('success', False)
-                    if not webhook_result.get('success'):
+                    redirect_result = create_wordpress_redirect(
+                        site=site,
+                        source_url=loser_url,
+                        target_url=winner_url,
+                        redirect_type=redirect_type,
+                        reason=f'Conflict resolution: {action_type}',
+                    )
+                    actions_taken['wordpress_redirect_pushed'] = redirect_result.get('success', False)
+                    if redirect_result.get('success'):
+                        logger.info('Redirect successfully created in WordPress for conflict %s', conflict_id)
+                    else:
                         logger.warning(
-                            'WordPress webhook failed for conflict %s redirect: %s',
-                            conflict_id, webhook_result.get('error', 'unknown')
+                            'WordPress redirect creation failed for conflict %s: %s',
+                            conflict_id,
+                            redirect_result.get('error', 'unknown error')
                         )
-                except Exception as webhook_err:
-                    logger.warning('WordPress webhook error for conflict %s: %s', conflict_id, str(webhook_err))
-                    actions_taken['webhook_pushed'] = False
+                except Exception as redirect_err:
+                    logger.error('WordPress redirect API error for conflict %s: %s', conflict_id, str(redirect_err))
+                    actions_taken['wordpress_redirect_pushed'] = False
 
             # Step 2: Reassign keyword
             if reassign_keyword and winner_url:
