@@ -194,10 +194,13 @@ def is_legacy_variant(url: str) -> bool:
 def strip_legacy_suffix(url: str) -> str:
     """
     Remove legacy suffix from URL to find canonical version.
+    Always returns path without trailing slash for consistency.
     
     Example:
         /services/event-planning-old/
-        → /services/event-planning/
+        → /services/event-planning
+        /normal-page/
+        → /normal-page
     """
     if not url:
         return url
@@ -214,7 +217,8 @@ def strip_legacy_suffix(url: str) -> str:
             parts[-1] = clean_slug
             return '/' + '/'.join(parts)
     
-    return url
+    # No legacy suffix found — return canonical form without trailing slash
+    return '/' + '/'.join(parts)
 
 
 def normalize_geo(slug: str) -> str:
@@ -409,15 +413,25 @@ def classify_query_intent(query: str) -> Tuple[str, bool]:
     Returns:
         (intent, has_local_modifier)
         intent: 'transactional', 'informational', 'listicle', 'navigational', 'ambiguous'
+    
+    Uses word-boundary matching for single-word markers to avoid substring false positives
+    (e.g. 'in' matching inside 'planning').
     """
     from .constants import INTENT_MARKERS, GEO_MODIFIERS
     
     query_lower = query.lower()
+    query_words = set(query_lower.split())  # For word-boundary matching
     
-    # Check for local modifier
-    has_local = any(geo in query_lower for geo in GEO_MODIFIERS)
+    # Check for local modifier — use word-boundary for single-word geo modifiers
+    # to avoid 'in' matching inside words like 'planning'
+    has_local = any(
+        (geo in query_lower if ' ' in geo else geo in query_words)
+        for geo in GEO_MODIFIERS
+    )
     
-    # Check intent markers (order matters - most specific first)
+    # Check intent markers using substring matching (so 'service' matches 'services', etc.)
+    # Order matters — listicle/informational are checked before transactional to avoid
+    # ambiguous markers like short words triggering transactional first.
     for intent, markers in INTENT_MARKERS.items():
         for marker in markers:
             if marker in query_lower:
@@ -445,8 +459,8 @@ def is_plural_query(query: str) -> bool:
     # Check last significant word
     last_word = words[-1]
     
-    # Simple heuristic: ends in 's' but not 'ss' or 'us'
-    if last_word.endswith('s') and not last_word.endswith(('ss', 'us', 'is')):
+    # Simple heuristic: ends in 's' but not common non-plural suffixes
+    if last_word.endswith('s') and not last_word.endswith(('ss', 'us', 'is', 'as')):
         return True
     
     return False

@@ -68,10 +68,13 @@ def _are_product_siblings(page_a: PageClassification, page_b: PageClassification
     """
     Product sibling filter — spec v2.0 approach.
     
-    Pages are product siblings if they share a slug token but the 
-    non-shared portions of their titles indicate distinct products.
-    Works regardless of page type classification.
+    Pages are product siblings if they share the same parent path and have
+    distinct slugs (not legacy variants of each other).
     """
+    # Legacy variants are never siblings — they represent the same canonical content
+    if page_a.is_legacy_variant or page_b.is_legacy_variant:
+        return False
+
     # Check if pages share a common slug segment
     a_segments = set(page_a.normalized_path.strip('/').split('/'))
     b_segments = set(page_b.normalized_path.strip('/').split('/'))
@@ -80,33 +83,17 @@ def _are_product_siblings(page_a: PageClassification, page_b: PageClassification
     if not shared_segments:
         return False  # No shared URL tokens at all
     
-    # Check if parent paths are DIFFERENT (same parent = old logic still applies)
-    # Different parent paths sharing a slug token = likely product siblings
-    if page_a.parent_path == page_b.parent_path:
-        # Same parent — use existing logic (distinct slugs, not legacy variants)
-        if page_a.slug_last == page_b.slug_last:
-            return False
-        # Check slug similarity
-        sim = slug_similarity(page_a.normalized_path, page_b.normalized_path)
-        return sim < 0.80
+    # Pages must share the same parent path to be siblings
+    if page_a.parent_path != page_b.parent_path:
+        return False
     
-    # Different parent paths — check titles for distinct products
-    # Strip shared slug tokens from both titles
-    shared_tokens = set()
-    for seg in shared_segments:
-        shared_tokens.update(seg.lower().split('-'))
+    # Same parent — distinct slugs required (identical slugs = duplicates)
+    if page_a.slug_last == page_b.slug_last:
+        return False
     
-    a_title_tokens = set(page_a.title.lower().split()) - shared_tokens - STOP_WORDS
-    b_title_tokens = set(page_b.title.lower().split()) - shared_tokens - STOP_WORDS
-    
-    # If remaining title tokens are different, these are distinct products
-    if a_title_tokens and b_title_tokens:
-        overlap = a_title_tokens & b_title_tokens
-        union = a_title_tokens | b_title_tokens
-        if len(union) > 0 and len(overlap) / len(union) < 0.5:
-            return True  # Distinct products
-    
-    return False
+    # Check slug similarity — high similarity means near-duplicates, not siblings
+    sim = slug_similarity(page_a.normalized_path, page_b.normalized_path)
+    return sim < 0.80
 
 
 STOP_WORDS = {'the', 'a', 'an', 'and', 'or', 'for', 'in', 'on', 'at', 'to', 'of', 'is', 'it', 'by', 'with'}

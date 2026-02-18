@@ -208,7 +208,7 @@ def _calculate_position_volatility(daily_positions: List[Tuple[str, float]]) -> 
     return variance ** 0.5
 
 
-def _analyze_query_group(query: str, rows: List[Dict], daily_lookup: Dict) -> Optional[Dict]:
+def _analyze_query_group(query: str, rows: List[Dict], daily_lookup: Dict = None) -> Optional[Dict]:
     """
     Analyze a single query with multiple competing pages.
     Now includes flip-flop detection.
@@ -313,7 +313,7 @@ def _analyze_query_group(query: str, rows: List[Dict], daily_lookup: Dict) -> Op
             'gsc_rows': [
                 {
                     'url': r['page_url'],
-                    'normalized_url': r['normalized_url'],
+                    'normalized_url': r.get('normalized_url', r['page_class'].normalized_url),
                     'page_type': r['page_class'].classified_type,
                     'clicks': r['clicks'],
                     'impressions': r['impressions'],

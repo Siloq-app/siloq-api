@@ -204,19 +204,19 @@ ACTION_CODES = {
 # =============================================================================
 
 INTENT_MARKERS = {
-    'transactional': [
-        'buy', 'purchase', 'order', 'book', 'hire', 'get', 'request',
-        'near me', 'in', 'service', 'company', 'companies', 'business',
-        'price', 'cost', 'quote', 'estimate', 'pricing',
+    'listicle': [
+        'best', 'top', 'review', 'reviews', 'vs', 'versus',
+        'compare', 'comparison', 'ranking', 'rated',
     ],
     'informational': [
         'how', 'what', 'why', 'when', 'where', 'who', 'which',
         'guide', 'tips', 'ideas', 'tutorial', 'learn', 'understand',
         'meaning', 'definition', 'explain', 'difference',
     ],
-    'listicle': [
-        'best', 'top', 'review', 'reviews', 'vs', 'versus',
-        'compare', 'comparison', 'ranking', 'rated',
+    'transactional': [
+        'buy', 'purchase', 'order', 'book', 'hire', 'get', 'request',
+        'near me', 'service', 'company', 'companies', 'business',
+        'price', 'cost', 'quote', 'estimate', 'pricing',
     ],
     'navigational': [
         'login', 'contact', 'about', 'hours', 'location',

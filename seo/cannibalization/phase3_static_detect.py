@@ -205,8 +205,12 @@ def _detect_legacy_variants(
     # Find all legacy pages
     legacy_pages = [pc for pc in classifications if pc.is_legacy_variant]
     
-    # Build lookup by normalized path
-    path_lookup = {pc.normalized_path: pc for pc in classifications}
+    # Build lookup by normalized path (strip trailing slashes for consistent matching,
+    # since strip_legacy_suffix always returns paths without trailing slash)
+    path_lookup = {
+        (pc.normalized_path if pc.normalized_path == '/' else pc.normalized_path.rstrip('/')): pc
+        for pc in classifications
+    }
     
     for legacy_page in legacy_pages:
         # Find the clean version
