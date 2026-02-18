@@ -416,6 +416,11 @@ class CannibalizationConflict(models.Model):
     resolved_by = models.CharField(max_length=255, blank=True, null=True)
     max_impressions = models.IntegerField(default=0)
     shared_gsc_queries = models.JSONField(default=list)
+    # NEW: Flip-flop detection metadata
+    flip_flop_detected = models.BooleanField(default=False)
+    flip_flop_correlation = models.DecimalField(max_digits=4, decimal_places=3, null=True, blank=True)
+    position_volatility = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)  # For flip-flop daily_positions and other future metadata
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
