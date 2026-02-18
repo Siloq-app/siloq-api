@@ -28,6 +28,14 @@ from .constants import (
     SEVERITY_THRESHOLDS,
 )
 
+# Page types that qualify as "dedicated service/product pages".
+# Homepage NEVER wins against any of these (absolute rule).
+_SERVICE_PRODUCT_PAGE_TYPES = frozenset({
+    'service', 'service_hub', 'service_spoke',
+    'product', 'category', 'category_woo', 'category_shop',
+    'location',
+})
+
 
 def run_phase4(
     classifications: List[PageClassification],
@@ -106,7 +114,203 @@ def run_phase4(
         issue = _analyze_query_group(query, rows, daily_lookup)
         if issue:
             issues.append(issue)
-    
+
+    # -------------------------------------------------------------------------
+    # Homepage Cannibalization Detection — second pass over GSC query_groups.
+    # Produces HOMEPAGE_CANNIBALIZATION issues (CONFIRMED / SEARCH_CONFLICT /
+    # DE_OPTIMIZE_HOMEPAGE) regardless of the impression-share thresholds
+    # used by _analyze_query_group.  Homepage conflicts always surface.
+    # -------------------------------------------------------------------------
+    homepage_issues = _detect_homepage_cannibalization(query_groups, url_to_page)
+    issues.extend(homepage_issues)
+
+    return issues
+
+
+def _detect_homepage_cannibalization(
+    query_groups: Dict[str, List[Dict]],
+    url_to_page: Dict,
+) -> List[Dict]:
+    """
+    Homepage Cannibalization Detection — second pass over GSC query groups.
+
+    ABSOLUTE RULE: Homepage NEVER wins a service/product keyword conflict.
+
+    Detects two patterns:
+      1. Homepage Hoarding  — homepage is the *primary* (highest-impression)
+         ranker for a query that also has a dedicated service/product page.
+      2. Homepage Split     — homepage appears alongside a service/product page
+         (even as secondary) with non-trivial impression share.
+
+    Groups results by (homepage_url, service_page_url) pair so one issue
+    covers ALL queries stolen by the same homepage/service-page conflict.
+
+    Returns:
+        List of HOMEPAGE_CANNIBALIZATION issue dicts (badge=CONFIRMED,
+        bucket=SEARCH_CONFLICT, action_code=DE_OPTIMIZE_HOMEPAGE).
+    """
+    # Accumulate: (homepage_norm_url, service_norm_url) → conflict data
+    pair_map: Dict[tuple, Dict] = {}
+
+    for query, rows in query_groups.items():
+        if len(rows) < 2:
+            continue
+
+        total_imps = sum(r['impressions'] for r in rows)
+        if total_imps == 0:
+            continue
+
+        homepage_rows = [
+            r for r in rows
+            if r['page_class'].classified_type == 'homepage'
+        ]
+        service_rows = [
+            r for r in rows
+            if r['page_class'].classified_type in _SERVICE_PRODUCT_PAGE_TYPES
+        ]
+
+        if not homepage_rows or not service_rows:
+            continue  # No homepage/service competition for this query
+
+        for hp_row in homepage_rows:
+            hp_norm = hp_row['normalized_url']
+            hp_imps = hp_row['impressions']
+            hp_share = hp_imps / total_imps if total_imps else 0.0
+
+            # Noise filter: ignore rows with <5% share AND 0 clicks
+            if hp_share < 0.05 and hp_row['clicks'] == 0:
+                continue
+
+            for svc_row in service_rows:
+                svc_norm = svc_row['normalized_url']
+                pair_key = (hp_norm, svc_norm)
+
+                if pair_key not in pair_map:
+                    pair_map[pair_key] = {
+                        'homepage_page': hp_row['page_class'],
+                        'service_page': svc_row['page_class'],
+                        'homepage_url': hp_row['page_url'],
+                        'service_url': svc_row['page_url'],
+                        'hoarded_queries': [],   # homepage is primary ranker
+                        'split_queries': [],     # homepage is secondary ranker
+                        'total_impressions': 0,
+                        'total_clicks': 0,
+                        'max_severity_rank': 1,
+                    }
+
+                entry = pair_map[pair_key]
+
+                sorted_rows = sorted(rows, key=lambda r: r['impressions'], reverse=True)
+                primary_norm = sorted_rows[0]['normalized_url']
+
+                svc_imps = svc_row['impressions']
+                svc_share = svc_imps / total_imps if total_imps else 0.0
+
+                query_detail = {
+                    'query': query,
+                    'homepage_impressions': hp_imps,
+                    'homepage_clicks': hp_row['clicks'],
+                    'homepage_share': round(hp_share * 100, 1),
+                    'homepage_position': round(hp_row['position'], 1),
+                    'service_impressions': svc_imps,
+                    'service_clicks': svc_row['clicks'],
+                    'service_share': round(svc_share * 100, 1),
+                    'service_position': round(svc_row['position'], 1),
+                    'total_impressions': total_imps,
+                    'pattern': 'hoarding' if primary_norm == hp_norm else 'split',
+                }
+
+                if primary_norm == hp_norm:
+                    entry['hoarded_queries'].append(query_detail)
+                else:
+                    entry['split_queries'].append(query_detail)
+
+                entry['total_impressions'] += hp_imps
+                entry['total_clicks'] += hp_row['clicks']
+
+                # hoarding = severity rank 3 (HIGH), split = rank 2 (MEDIUM)
+                sev_rank = 3 if primary_norm == hp_norm else 2
+                if sev_rank > entry['max_severity_rank']:
+                    entry['max_severity_rank'] = sev_rank
+
+    # Convert accumulated pairs into HOMEPAGE_CANNIBALIZATION issues
+    issues = []
+    for (hp_norm, svc_norm), entry in pair_map.items():
+        if not entry['hoarded_queries'] and not entry['split_queries']:
+            continue
+
+        all_queries = entry['hoarded_queries'] + entry['split_queries']
+        hoarded_kws = [q['query'] for q in entry['hoarded_queries']]
+        split_kws = [q['query'] for q in entry['split_queries']]
+
+        # Severity: SEVERE if hoarding+split coexist; HIGH if only hoarding; MEDIUM otherwise
+        if entry['hoarded_queries'] and entry['split_queries']:
+            severity = 'SEVERE'
+        elif entry['max_severity_rank'] >= 3:
+            severity = 'HIGH'
+        else:
+            severity = 'MEDIUM'
+
+        service_url = entry['service_url']
+
+        # Build specific per-keyword recommendation
+        if hoarded_kws and split_kws:
+            rec = (
+                f"Homepage is stealing rankings for {len(hoarded_kws)} keyword(s) "
+                f"(hoarding) and splitting impressions for {len(split_kws)} keyword(s). "
+                f"De-optimize homepage for: {', '.join(repr(q) for q in hoarded_kws[:5])}"
+                f"{' and more' if len(hoarded_kws) > 5 else ''}. "
+                f"Strengthen {service_url} to own all these keywords."
+            )
+        elif hoarded_kws:
+            rec = (
+                f"De-optimize homepage for {repr(hoarded_kws[0])}"
+                + (f" (and {len(hoarded_kws) - 1} more keywords)" if len(hoarded_kws) > 1 else "")
+                + f". Strengthen {service_url} instead. "
+                "Homepage should target brand + broad category only."
+            )
+        else:
+            kws_preview = ', '.join(repr(q) for q in split_kws[:3])
+            rec = (
+                f"Homepage is splitting impressions with {service_url} for: "
+                f"{kws_preview}"
+                f"{' and more' if len(split_kws) > 3 else ''}. "
+                f"Remove these keywords from homepage title/meta/body and strengthen {service_url}."
+            )
+
+        issue = {
+            'conflict_type': 'HOMEPAGE_CANNIBALIZATION',
+            'severity': severity,
+            'badge': 'CONFIRMED',
+            'bucket': 'SEARCH_CONFLICT',
+            'pages': [entry['homepage_page'], entry['service_page']],
+            'metadata': {
+                'homepage_url': entry['homepage_url'],
+                'service_page_url': service_url,
+                'hoarded_queries': entry['hoarded_queries'],
+                'split_queries': entry['split_queries'],
+                'total_impressions': entry['total_impressions'],
+                'total_clicks': entry['total_clicks'],
+                'recommendation': rec,
+                # gsc_rows for downstream compatibility
+                'gsc_rows': [
+                    {
+                        'url': q_detail['query'],
+                        'normalized_url': hp_norm,
+                        'page_type': 'homepage',
+                        'clicks': q_detail['homepage_clicks'],
+                        'impressions': q_detail['homepage_impressions'],
+                        'position': q_detail['homepage_position'],
+                        'share': q_detail['homepage_share'],
+                        'pattern': q_detail['pattern'],
+                    }
+                    for q_detail in all_queries
+                ],
+            },
+        }
+
+        issues.append(issue)
+
     return issues
 
 

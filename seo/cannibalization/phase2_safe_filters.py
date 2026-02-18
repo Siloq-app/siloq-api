@@ -61,6 +61,22 @@ def _is_safe_pair(page_a: PageClassification, page_b: PageClassification) -> boo
     if _are_geographic_variants(page_a, page_b):
         return True
     
+    # FILTER 4: E-commerce category vs product
+    if _are_category_vs_product(page_a, page_b):
+        return True
+    
+    # FILTER 5: E-commerce product variants
+    if _are_product_variants(page_a, page_b):
+        return True
+    
+    # FILTER 6: Pagination pages
+    if _is_pagination_page(page_a) or _is_pagination_page(page_b):
+        return True
+    
+    # FILTER 7: Product tag archives
+    if _is_product_tag_archive(page_a) or _is_product_tag_archive(page_b):
+        return True
+    
     return False
 
 
@@ -175,3 +191,124 @@ def _is_legacy_pair(path_a: str, path_b: str) -> bool:
     
     # If they resolve to the same clean path, they're legacy pairs
     return clean_a == clean_b and path_a != path_b
+
+
+def _are_category_vs_product(page_a: PageClassification, page_b: PageClassification) -> bool:
+    """
+    E-commerce filter: Category archives should NOT compete with product pages.
+    Different intent: browse (category) vs buy (product).
+    
+    Criteria:
+    - One page is category_woo and the other is product
+    - Category is parent or shares parent with product
+    """
+    # Check if one is category and one is product
+    types_set = {page_a.classified_type, page_b.classified_type}
+    if types_set != {'category_woo', 'product'}:
+        return False
+    
+    # Identify which is which
+    category_page = page_a if page_a.classified_type == 'category_woo' else page_b
+    product_page = page_b if page_a.classified_type == 'category_woo' else page_a
+    
+    # Check if category is parent of product
+    if is_direct_parent(category_page.normalized_path, product_page.normalized_path):
+        return True
+    
+    # Check if they share the same parent category
+    if category_page.parent_path and product_page.parent_path:
+        if category_page.parent_path == product_page.parent_path:
+            return True
+    
+    return False
+
+
+def _are_product_variants(page_a: PageClassification, page_b: PageClassification) -> bool:
+    """
+    E-commerce filter: Product variants (color/size) should not be flagged as competing.
+    
+    Criteria:
+    - Both are products
+    - Share significant slug similarity (same base product)
+    - Titles differ by variant indicators (color, size, etc.)
+    """
+    from .constants import ECOMMERCE_PRODUCT_VARIANT_INDICATORS
+    
+    # Must both be products
+    if page_a.classified_type != 'product' or page_b.classified_type != 'product':
+        return False
+    
+    # Check if they share the same parent path (same product family)
+    if page_a.parent_path != page_b.parent_path:
+        return False
+    
+    # Check slug similarity - variants should have high similarity
+    sim = slug_similarity(page_a.normalized_path, page_b.normalized_path)
+    if sim < 0.70:  # Need at least 70% similarity
+        return False
+    
+    # Check if titles contain variant indicators
+    a_title_lower = page_a.title.lower()
+    b_title_lower = page_b.title.lower()
+    
+    # Look for variant indicators in either title
+    has_variant_indicator = False
+    for indicator in ECOMMERCE_PRODUCT_VARIANT_INDICATORS:
+        if indicator in a_title_lower or indicator in b_title_lower:
+            has_variant_indicator = True
+            break
+    
+    # Alternative: check if slugs differ by variant-like suffixes
+    # e.g., /product-red/ vs /product-blue/
+    a_slug = page_a.slug_last.lower()
+    b_slug = page_b.slug_last.lower()
+    
+    # Extract potential variant suffixes (last token after dash)
+    a_tokens = a_slug.split('-')
+    b_tokens = b_slug.split('-')
+    
+    if len(a_tokens) == len(b_tokens) and len(a_tokens) > 1:
+        # Same structure, check if only last token differs
+        if a_tokens[:-1] == b_tokens[:-1] and a_tokens[-1] != b_tokens[-1]:
+            return True
+    
+    return has_variant_indicator
+
+
+def _is_pagination_page(page: PageClassification) -> bool:
+    """
+    E-commerce filter: Pagination pages should be excluded from cannibalization.
+    
+    Criteria:
+    - Path matches /page/2/, /page/3/, etc.
+    - OR classified_type is 'pagination'
+    """
+    import re
+    from .constants import ECOMMERCE_PAGINATION_PATTERN
+    
+    # Check if classified as pagination
+    if page.classified_type == 'pagination':
+        return True
+    
+    # Check path pattern
+    if re.search(ECOMMERCE_PAGINATION_PATTERN, page.normalized_path):
+        return True
+    
+    return False
+
+
+def _is_product_tag_archive(page: PageClassification) -> bool:
+    """
+    E-commerce filter: Product tag archives should be excluded or treated as low priority.
+    
+    Criteria:
+    - classified_type is 'product_tag'
+    - OR folder_root is 'product-tag'
+    """
+    if page.classified_type == 'product_tag':
+        return True
+    
+    if page.folder_root == 'product-tag':
+        return True
+    
+    return False

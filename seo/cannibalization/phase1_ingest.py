@@ -128,6 +128,9 @@ def classify_page(analysis_run, site, page: Page) -> Optional[PageClassification
         is_thin = word_count < 300
         is_critically_thin = word_count < 100
     
+    # Classify page intent based on content and URL
+    intent = _classify_page_intent(normalized_path, page.title or '', classified_type)
+    
     classification = PageClassification(
         analysis_run=analysis_run,
         site=site,
@@ -144,6 +147,7 @@ def classify_page(analysis_run, site, page: Page) -> Optional[PageClassification
         depth=depth,
         geo_node=geo_node,
         service_keyword=service_kw,
+        intent=intent,
         slug_tokens_json=slug_tokens,
         word_count=word_count,
         is_thin_content=is_thin,
@@ -188,6 +192,16 @@ def _classify_page_type(
     # RULE 5: WooCommerce category (from post_type)
     if post_type in ['product_cat', 'product_category']:
         return 'category_woo'
+    
+    # RULE 5a: WooCommerce product tag (from post_type)
+    if post_type in ['product_tag']:
+        return 'product_tag'
+    
+    # RULE 5b: Pagination detection (must come before other rules)
+    import re
+    from .constants import ECOMMERCE_PAGINATION_PATTERN
+    if re.search(ECOMMERCE_PAGINATION_PATTERN, path):
+        return 'pagination'
     
     # RULE 6: Shop root (depth 1)
     if folder_root == 'shop' and depth == 1:
@@ -240,54 +254,44 @@ def _classify_page_type(
     return 'uncategorized'
 
 
-# =============================================================================
-# INTENT CLASSIFICATION
-# =============================================================================
-
-# Page types that signal purchase / service intent
-_TRANSACTIONAL_TYPES = {
-    'service_hub',
-    'service_spoke',
-    'product',
-    'category_woo',
-    'category_custom',
-    'shop',
-    'product_rentals',
-}
-
-# Page types that signal informational / content intent
-_INFORMATIONAL_TYPES = {
-    'blog',
-    'portfolio',
-    'news',
-}
-
-
-def get_intent_type(classified_type: str, wp_post_type: str = '') -> str:
+def _classify_page_intent(path: str, title: str, page_type: str) -> str:
     """
-    Classify a page's commercial intent based on its classified type.
-
-    WordPress post_type='post' always maps to informational, regardless of
-    the classified_type returned by the slug classifier (which may label it
-    'uncategorized' if the blog folder wasn't detected).
-
-    Args:
-        classified_type: The type string from _classify_page_type().
-        wp_post_type:    WordPress post_type (optional, e.g. 'post', 'page').
-
+    Classify page intent based on URL path, title, and page type.
+    
     Returns:
-        'informational'  — blog posts, portfolio, content pages
-        'transactional'  — service pages, products, shop/category pages
-        'other'          — homepage, location, utility, uncategorized, etc.
+        'informational', 'transactional', 'navigational', 'listicle', or 'ambiguous'
     """
-    # WordPress native posts are always informational (overrides slug classifier)
-    if wp_post_type == 'post':
+    from .constants import INTENT_MARKERS
+    
+    # Combine path and title for analysis
+    text = (path + ' ' + title).lower()
+    
+    # Page type-based heuristics
+    if page_type in ['blog']:
+        # Blog posts are typically informational, but check for signals
+        if any(marker in text for marker in INTENT_MARKERS.get('listicle', [])):
+            return 'listicle'
+        if any(marker in text for marker in INTENT_MARKERS.get('transactional', [])):
+            return 'transactional'
         return 'informational'
-
-    if classified_type in _TRANSACTIONAL_TYPES:
+    
+    if page_type in ['service_hub', 'service_spoke', 'product', 'category_woo', 'category_shop', 'category_custom']:
+        # Service and product pages are typically transactional
         return 'transactional'
-
-    if classified_type in _INFORMATIONAL_TYPES:
-        return 'informational'
-
-    return 'other'
+    
+    if page_type in ['location']:
+        # Location pages are typically transactional (local services)
+        return 'transactional'
+    
+    if page_type in ['homepage', 'portfolio']:
+        # Homepage and portfolio are navigational
+        return 'navigational'
+    
+    # Check intent markers (order matters - most specific first)
+    for intent, markers in INTENT_MARKERS.items():
+        for marker in markers:
+            if marker in text:
+                return intent
+    
+    # Default to ambiguous
+    return 'ambiguous'
