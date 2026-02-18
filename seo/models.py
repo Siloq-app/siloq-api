@@ -781,6 +781,107 @@ class SlugChangeLog(models.Model):
 
 # ─────────────────────────────────────────────────────────────
 # DOMAIN 7: SILO HEALTH SCORING (v2)
+# DOMAIN 6: PAGE CONTENT OPTIMIZATION (Three-Layer Model)
+# ─────────────────────────────────────────────────────────────
+
+class PageAnalysis(models.Model):
+    """
+    AI-driven analysis of a single page against the Three-Layer Content Model
+    (GEO → SEO → CRO). Each analysis captures input data snapshots (GSC +
+    WordPress meta) and the AI-generated recommendations for all three layers.
+
+    Recommendations are stored as JSON lists. Each item in the list is a dict:
+    {
+        "id": "geo_1",
+        "layer": "GEO",
+        "priority": "high|medium|low",
+        "issue": "What's wrong",
+        "recommendation": "Specific fix",
+        "before": "Current text or 'Not present'",
+        "after": "Improved version",
+        "field": "content_body|title|meta_description|h1|schema",
+        "status": "pending|approved|applied"
+    }
+
+    Overall score is the weighted average: GEO 30%, SEO 40%, CRO 30%.
+    """
+
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('analyzing', 'Analyzing'),
+        ('complete', 'Complete'),
+        ('failed', 'Failed'),
+    ]
+
+    site = models.ForeignKey(
+        'sites.Site',
+        on_delete=models.CASCADE,
+        related_name='page_analyses',
+    )
+    page_url = models.URLField(max_length=2048)
+    page_title = models.CharField(max_length=500, blank=True)
+
+    # ── Input data snapshots ─────────────────────────────────
+    gsc_data = models.JSONField(
+        default=dict,
+        help_text='GSC queries/positions for this page at analysis time',
+    )
+    wp_meta = models.JSONField(
+        default=dict,
+        help_text='WordPress page meta: title, h1, meta_description, word_count, schema, content_snippet',
+    )
+
+    # ── AI-generated recommendations ─────────────────────────
+    geo_recommendations = models.JSONField(default=list)
+    seo_recommendations = models.JSONField(default=list)
+    cro_recommendations = models.JSONField(default=list)
+
+    # ── Layer scores (0-100) ─────────────────────────────────
+    geo_score = models.IntegerField(null=True, blank=True)
+    seo_score = models.IntegerField(null=True, blank=True)
+    cro_score = models.IntegerField(null=True, blank=True)
+    overall_score = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text='Weighted average: GEO 30%, SEO 40%, CRO 30%',
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending',
+        db_index=True,
+    )
+    error_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'page_analyses'
+        ordering = ['-created_at']
+        get_latest_by = 'created_at'
+        indexes = [
+            models.Index(fields=['site', 'status']),
+            models.Index(fields=['site', 'page_url']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return f"PageAnalysis({self.page_url}) — {self.status}"
+
+    def compute_overall_score(self) -> int:
+        """Return weighted average: GEO 30 %, SEO 40 %, CRO 30 %."""
+        scores = [
+            (self.geo_score, 0.30),
+            (self.seo_score, 0.40),
+            (self.cro_score, 0.30),
+        ]
+        weighted = sum(s * w for s, w in scores if s is not None)
+        weights = sum(w for s, w in scores if s is not None)
+        if not weights:
+            return 0
+        return round(weighted / weights)
+# DOMAIN 6: SILO HEALTH SCORING
 # ─────────────────────────────────────────────────────────────
 
 class SiloHealthScore(models.Model):
@@ -852,3 +953,63 @@ class SiloHealthScore(models.Model):
     
     def __str__(self):
         return f"{self.silo.name}: {self.health_score} ({self.health_status})"
+    Historical snapshot of a silo's health score.
+
+    A new record is written every time recalculation runs (on GSC connect,
+    conflict resolution, or on-demand).  The most recent record per silo is
+    the "current" score; older records form the history for trend charts.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.CASCADE,
+        related_name='silo_health_scores',
+    )
+    silo = models.ForeignKey(
+        SiloDefinition,
+        on_delete=models.CASCADE,
+        related_name='health_scores',
+    )
+
+    # Overall weighted score 0–100
+    score = models.DecimalField(max_digits=5, decimal_places=2)
+
+    # Component breakdown — stored as JSON for flexibility
+    # {
+    #   "keyword_clarity": 82.5,
+    #   "structural_integrity": 60.0,
+    #   "content_architecture": 75.0,
+    #   "internal_linking": 90.0,
+    # }
+    component_scores = models.JSONField(default=dict)
+
+    # Number of pages in silo at calculation time
+    page_count = models.IntegerField(default=0)
+
+    # Optional extra detail (e.g. {"reason": "no_pages_in_silo"})
+    details = models.JSONField(default=dict, blank=True)
+
+    # Trigger that caused this calculation
+    TRIGGER_CHOICES = [
+        ('gsc_connect', 'GSC Connection'),
+        ('conflict_resolution', 'Conflict Resolution'),
+        ('on_demand', 'On-Demand'),
+        ('scheduled', 'Scheduled'),
+    ]
+    trigger = models.CharField(max_length=30, choices=TRIGGER_CHOICES, default='on_demand')
+
+    calculated_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'silo_health_scores'
+        ordering = ['-calculated_at']
+        indexes = [
+            models.Index(fields=['site']),
+            models.Index(fields=['silo']),
+            models.Index(fields=['site', 'calculated_at']),
+            models.Index(fields=['silo', 'calculated_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.silo.name}: {self.score} @ {self.calculated_at:%Y-%m-%d %H:%M}"

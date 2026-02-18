@@ -35,6 +35,14 @@ from seo.silo_health_views import (
     silo_health_recalculate,
     site_health_summary,
 )
+from seo.page_analysis_views import (
+    analyze_page,
+    list_analyses,
+    get_analysis,
+    approve_recommendations,
+    apply_recommendations,
+)
+from seo.silo_health_views import silo_health_scores, silo_health_recalculate
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -75,4 +83,13 @@ urlpatterns = [
     path('<int:site_id>/silo-health/<uuid:silo_id>/', silo_health_detail, name='site-silo-health-detail'),
     path('<int:site_id>/silo-health/recalculate/', silo_health_recalculate, name='site-silo-health-recalculate'),
     path('<int:site_id>/health-summary/', site_health_summary, name='site-health-summary'),
+    # Pages Content Optimization — Three-Layer Model (GEO + SEO + CRO)
+    path('<int:site_id>/pages/analyze/', analyze_page, name='page-analyze'),
+    path('<int:site_id>/pages/analysis/', list_analyses, name='page-analysis-list'),
+    path('<int:site_id>/pages/analysis/<int:analysis_id>/', get_analysis, name='page-analysis-detail'),
+    path('<int:site_id>/pages/analysis/<int:analysis_id>/approve/', approve_recommendations, name='page-analysis-approve'),
+    path('<int:site_id>/pages/analysis/<int:analysis_id>/apply/', apply_recommendations, name='page-analysis-apply'),
+    # Silo Health Score v2
+    path('<int:site_id>/silo-health/', silo_health_scores, name='site-silo-health'),
+    path('<int:site_id>/silo-health/recalculate/', silo_health_recalculate, name='site-silo-health-recalculate'),
 ]

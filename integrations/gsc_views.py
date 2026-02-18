@@ -261,7 +261,14 @@ def connect_gsc_site(request, site_id):
         site.gsc_token_expires_at = timezone.now() + timedelta(hours=1)
     
     site.save()
-    
+
+    # Trigger silo health recalculation on GSC connect — non-blocking
+    try:
+        from seo.silo_health import run_silo_health_for_site
+        run_silo_health_for_site(site, trigger='gsc_connect')
+    except Exception as _sh_err:
+        logger.warning('Silo health recalculation failed after GSC connect (site %s): %s', site_id, _sh_err)
+
     return Response({
         'message': 'GSC connected successfully',
         'gsc_site_url': gsc_site_url,
