@@ -197,6 +197,9 @@ CORS_ALLOW_CREDENTIALS = True
 # Custom User Model
 AUTH_USER_MODEL = 'accounts.User'
 
+# Resend email configuration
+RESEND_API_KEY = os.getenv('RESEND_API_KEY', '')
+
 # Logging - ensure all output goes to stdout for DigitalOcean App Platform
 LOGGING = {
     'version': 1,

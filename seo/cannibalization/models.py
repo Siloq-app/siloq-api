@@ -59,7 +59,11 @@ class AnalysisRun(models.Model):
         default=0,
         help_text="WRONG_WINNER bucket count"
     )
-    
+    blog_overlap_count = models.IntegerField(
+        default=0,
+        help_text='BLOG_OVERLAP bucket count (blog vs service page conflicts)',
+    )
+
     # Badge counts
     confirmed_count = models.IntegerField(
         default=0,
@@ -117,6 +121,7 @@ class ClusterResult(models.Model):
         ('SEARCH_CONFLICT', 'Search Conflict'),
         ('SITE_DUPLICATION', 'Site Duplication'),
         ('WRONG_WINNER', 'Wrong Winner'),
+        ('BLOG_OVERLAP', 'Blog Overlap'),
     ]
     
     BADGE_CHOICES = [

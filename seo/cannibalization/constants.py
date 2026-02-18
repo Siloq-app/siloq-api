@@ -12,6 +12,7 @@ FOLDER_ROOTS = {
     'blog': ['blog', 'news', 'articles', 'post', 'posts'],
     'product': ['product', 'products', 'item', 'p'],
     'category_woo': ['product-category'],
+    'product_tag': ['product-tag'],
     'shop': ['shop'],
     'product_rentals': ['product-rentals'],
     'service': ['service', 'services', 'residential', 'commercial', 'solutions'],
@@ -19,6 +20,10 @@ FOLDER_ROOTS = {
     'portfolio': ['portfolio', 'work', 'projects', 'gallery'],
     'utility': ['cart', 'checkout', 'account', 'my-account', 'wp-admin', 'wp-content', 'wp-includes'],
 }
+
+# E-commerce specific patterns
+ECOMMERCE_PAGINATION_PATTERN = r'/page/\d+/?$'
+ECOMMERCE_PRODUCT_VARIANT_INDICATORS = ['color', 'size', 'variant', 'option']
 
 # Legacy suffix patterns
 LEGACY_SUFFIXES = [
@@ -105,6 +110,12 @@ CONFLICT_TYPES = {
         'description': 'Homepage splitting impressions with service/product page',
         'action_code': 'HOMEPAGE_DEOPTIMIZE',
     },
+    'HOMEPAGE_STEALING_SERVICE_KW': {
+        'bucket': 'SEARCH_CONFLICT',
+        'badge': 'CONFIRMED',
+        'description': 'Homepage ranking for service/product keyword instead of dedicated page',
+        'action_code': 'HOMEPAGE_DEOPTIMIZE',
+    },
     
     # WRONG_WINNER bucket (Phase 5)
     'INTENT_MISMATCH': {
@@ -131,6 +142,7 @@ CONFLICT_TYPES = {
         'description': 'Homepage ranking for specific service query',
         'action_code': 'HOMEPAGE_DEOPTIMIZE',
     },
+    },
 }
 
 # =============================================================================
@@ -142,6 +154,7 @@ BUCKET_SCORES = {
     'SEARCH_CONFLICT': 50,
     'SITE_DUPLICATION': 25,
     'WRONG_WINNER': 15,
+    'BLOG_OVERLAP': 12,  # Lower than WRONG_WINNER — supportive conflicts, not destructive
 }
 
 # Severity priority
@@ -192,16 +205,42 @@ ACTION_CODES = {
         'description': 'Homepage is cannibalizing a service/product page. De-optimize homepage for the service keyword (strip from title, H1, meta, body). Homepage should only target [Brand] + [broad category]. Then strengthen the correct service page.',
         'requires_user_input': False,
     },
+        'requires_user_input': False,
+    },
     'SLUG_PIVOT': {
         'label': 'Slug Pivot + Differentiate',
         'description': 'Competing pages have high slug similarity (Jaccard > 0.6). Differentiate content AND recommend URL slug change to reinforce the new keyword angle. Old slug gets 301 to new slug.',
         'requires_user_input': True,
+    },
+
     },
 }
 
 # =============================================================================
 # INTENT CLASSIFICATION
 # =============================================================================
+
+# Page types that signal informational intent (for blog/service overlap detection)
+INFORMATIONAL_PAGE_TYPES = {
+    'blog',
+    'portfolio',  # Portfolio posts are informational (not transactional landing pages)
+}
+
+# Page types that signal transactional intent
+TRANSACTIONAL_PAGE_TYPES = {
+    'service_hub',
+    'service_spoke',
+    'product',
+    'category_woo',
+    'category_shop',
+    'category_custom',
+    'shop_root',
+}
+
+# WordPress post_type signals
+# post_type='post' → informational (standard WP blog post)
+# post_type='page' → could be either; fall back to classified_type
+WP_INFORMATIONAL_POST_TYPES = {'post'}
 
 INTENT_MARKERS = {
     'transactional': [
@@ -289,3 +328,19 @@ SERVICE_KEYWORDS = [
     'maintenance', 'cleaning', 'restoration', 'consultation',
     'design', 'build', 'remodel', 'renovation',
 ]
+
+# =============================================================================
+# BLOG SERVICE OVERLAP THRESHOLDS
+# =============================================================================
+
+# Blog posts below this word count are candidates for MERGE_INTO_SERVICE
+THIN_BLOG_WORD_COUNT = 300
+
+# Minimum slug token overlap to consider blog/service conflict
+BLOG_SERVICE_MIN_TOKEN_OVERLAP = 1
+
+# Minimum number of blog posts targeting similar keywords to flag BLOG_CONSOLIDATION
+BLOG_CONSOLIDATION_MIN_COUNT = 3
+
+# Minimum slug token Jaccard similarity to group blogs for consolidation
+BLOG_CONSOLIDATION_JACCARD_THRESHOLD = 0.4
