@@ -16,6 +16,7 @@ from seo.models import (
     CannibalizationConflict, ConflictPage, ConflictResolution,
     RedirectRegistry, KeywordAssignment, KeywordAssignmentHistory,
 )
+from integrations.wordpress_webhook import send_webhook_to_wordpress
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +212,26 @@ def conflict_resolve(request, conflict_id):
                     redirect_obj.conflict = conflict
                     redirect_obj.save()
                 actions_taken['redirect_created'] = True
+
+            # Step 1b: Push redirect to WordPress via plugin webhook
+            if actions_taken['redirect_created'] and redirect_obj:
+                try:
+                    webhook_payload = {
+                        'source_url': loser_url,
+                        'target_url': winner_url,
+                        'redirect_type': redirect_type,
+                        'reason': f'conflict_resolution_{action_type}',
+                    }
+                    webhook_result = send_webhook_to_wordpress(site, 'redirect.create', webhook_payload)
+                    actions_taken['webhook_pushed'] = webhook_result.get('success', False)
+                    if not webhook_result.get('success'):
+                        logger.warning(
+                            'WordPress webhook failed for conflict %s redirect: %s',
+                            conflict_id, webhook_result.get('error', 'unknown')
+                        )
+                except Exception as webhook_err:
+                    logger.warning('WordPress webhook error for conflict %s: %s', conflict_id, str(webhook_err))
+                    actions_taken['webhook_pushed'] = False
 
             # Step 2: Reassign keyword
             if reassign_keyword and winner_url:
