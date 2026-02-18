@@ -15,6 +15,87 @@ import io
 from .constants import ACTION_CODES
 
 
+# Page type hierarchy for winner selection (spec v2.0)
+PAGE_TYPE_RANK = {
+    'category': 6,
+    'service': 5,
+    'product': 4,
+    'location': 3,
+    'blog': 2,
+    'landing': 1,
+    'homepage': 0,  # Never wins service/product conflicts
+    'other': 1,
+}
+
+
+def _calculate_winner_score(page, gsc_data_for_page=None):
+    """
+    Calculate winner score using the spec's priority chain (Spec v2.0 §Winner Selection).
+    Returns a tuple for lexicographic comparison (higher = better).
+    
+    Priority chain:
+    1. GSC PERFORMANCE (highest priority):
+       - Page with highest clicks wins
+       - If clicks tied → highest impressions wins
+       - If impressions tied → best (lowest) average position wins
+    
+    2. PAGE TYPE (tiebreaker when GSC is equal or zero):
+       - Service/Product page beats Blog post
+       - Category page beats Product page
+       - Any page with content beats a thin page
+    
+    3. CONTENT DEPTH (tiebreaker when page types equal):
+       - Higher word count wins
+       - More internal links pointing to it wins
+    
+    4. URL DEPTH (last resort):
+       - Shallower URL wins (fewer path segments)
+    
+    ABSOLUTE RULES:
+    - A page with 0 impressions AND 0 clicks NEVER wins over a page with ANY impressions or clicks
+    - The homepage NEVER wins a service/product keyword conflict (enforced after selection)
+    """
+    clicks = gsc_data_for_page.get('clicks', 0) if gsc_data_for_page else 0
+    impressions = gsc_data_for_page.get('impressions', 0) if gsc_data_for_page else 0
+    position = gsc_data_for_page.get('position', 999) if gsc_data_for_page else 999
+    
+    # Priority 1: GSC performance
+    # Binary flag: has ANY GSC signal (clicks > 0 OR impressions > 0)
+    has_gsc_signal = 1 if (clicks > 0 or impressions > 0) else 0
+    
+    # Priority 2: Page type rank
+    page_type = getattr(page, 'classified_type', 'other')
+    type_rank = PAGE_TYPE_RANK.get(page_type, 1)
+    
+    # Priority 3: Content depth
+    # Note: word_count might not be on PageClassification yet — using getattr with default
+    # TODO: Enhance Phase 1 to populate word_count from PageMetadata or SEOData
+    word_count = getattr(page, 'word_count', 0)
+    
+    # Internal links in (from PageMetadata.internal_links_in if available)
+    internal_links_in = getattr(page, 'internal_links_in', 0)
+    
+    # Priority 4: URL depth (inverted — fewer segments = better)
+    # Use depth field if available, otherwise calculate from normalized_path
+    if hasattr(page, 'depth') and page.depth is not None:
+        path_depth = page.depth
+    else:
+        path_depth = len(page.normalized_path.strip('/').split('/')) if page.normalized_path else 99
+    url_depth_score = 100 - min(path_depth, 100)
+    
+    # Return tuple for lexicographic comparison
+    return (
+        has_gsc_signal,      # Binary: has ANY GSC data (0 or 1)
+        clicks,              # Raw clicks
+        impressions,         # Raw impressions
+        -position,           # Negative position (lower position = better, so negate)
+        type_rank,           # Page type hierarchy (category > service > product > blog)
+        word_count,          # Content depth (word count)
+        internal_links_in,   # Internal link authority
+        url_depth_score,     # URL depth (shallower = better)
+    )
+
+
 def run_phase7(clustered_issues: List[Dict], dry_run: bool = True) -> Dict:
     """
     Phase 7: Generate fix recommendations.
@@ -81,11 +162,6 @@ def _generate_redirects(cluster: Dict) -> List[Dict]:
     if not pages:
         return redirects
     
-    # Check for thin content across pages
-    thin_pages = [p for p in pages if getattr(p, 'is_thin_content', False)]
-    critically_thin_pages = [p for p in pages if getattr(p, 'is_critically_thin', False)]
-    all_thin = len(thin_pages) == len(pages) if pages else False
-    
     # AUTO-SUGGEST REDIRECTS (user must still approve)
     
     # LEGACY_CLEANUP: Legacy → Clean version
@@ -106,97 +182,39 @@ def _generate_redirects(cluster: Dict) -> List[Dict]:
     elif cluster['conflict_type'] == 'TAXONOMY_CLASH':
         canonical = _suggest_canonical(pages, cluster)
         if canonical:
-            winner_word_count = getattr(canonical, 'word_count', 0)
-            winner_is_thin = getattr(canonical, 'is_thin_content', False)
-            
             for page in pages:
                 if page.page_id != canonical.page_id:
-                    reason = 'Taxonomy clash - suggested canonical'
-                    
-                    # Add thin content notes
-                    page_is_thin = getattr(page, 'is_thin_content', False)
-                    page_is_critically_thin = getattr(page, 'is_critically_thin', False)
-                    page_word_count = getattr(page, 'word_count', 0)
-                    
-                    if winner_is_thin and winner_word_count > 0:
-                        reason = f'Taxonomy clash - Suggested canonical has thin content ({winner_word_count} words). Enriching it with content from competing pages could improve performance. Recommend: MERGE content into winner.'
-                    elif page_is_critically_thin and page_word_count > 0:
-                        reason = f'Taxonomy clash - This page has critically thin content ({page_word_count} words). Recommend: REDIRECT (nothing worth merging).'
-                    elif page_is_thin and page_word_count > 0:
-                        reason = f'Taxonomy clash - This page has thin content ({page_word_count} words). Recommend: MERGE unique content into winner, then redirect.'
-                    elif all_thin:
-                        reason = 'Taxonomy clash - All competing pages have thin content. Consider merging ALL content into a single comprehensive page.'
-                    
                     redirects.append({
                         'source_url': page.url,
                         'target_url': canonical.url,
                         'confidence': 'medium',
-                        'reason': reason,
+                        'reason': 'Taxonomy clash - suggested canonical',
                     })
     
     # NEAR_DUPLICATE_CONTENT: Suggest canonical
     elif cluster['conflict_type'] == 'NEAR_DUPLICATE_CONTENT':
         canonical = _suggest_canonical(pages, cluster)
         if canonical:
-            winner_word_count = getattr(canonical, 'word_count', 0)
-            winner_is_thin = getattr(canonical, 'is_thin_content', False)
-            
             for page in pages:
                 if page.page_id != canonical.page_id:
-                    reason = 'Near-duplicate content'
-                    
-                    # Add thin content notes
-                    page_is_thin = getattr(page, 'is_thin_content', False)
-                    page_is_critically_thin = getattr(page, 'is_critically_thin', False)
-                    page_word_count = getattr(page, 'word_count', 0)
-                    
-                    if winner_is_thin and winner_word_count > 0:
-                        reason = f'Near-duplicate content - Suggested canonical has thin content ({winner_word_count} words). Enriching it with unique content from duplicates could improve performance. Recommend: MERGE content into winner.'
-                    elif page_is_critically_thin and page_word_count > 0:
-                        reason = f'Near-duplicate content - This page has critically thin content ({page_word_count} words). Recommend: REDIRECT (nothing worth merging).'
-                    elif page_is_thin and page_word_count > 0:
-                        reason = f'Near-duplicate content - This page has thin content ({page_word_count} words). Recommend: MERGE unique content into winner, then redirect.'
-                    elif all_thin:
-                        reason = 'Near-duplicate content - All pages have thin content. Consider merging ALL into a single comprehensive page.'
-                    
                     redirects.append({
                         'source_url': page.url,
                         'target_url': canonical.url,
                         'confidence': 'medium',
-                        'reason': reason,
+                        'reason': 'Near-duplicate content',
                     })
     
-    # GSC_CONFIRMED: Suggest winner based on clicks
+    # GSC_CONFIRMED: Suggest winner based on complete priority chain
     elif cluster['conflict_type'] == 'GSC_CONFIRMED':
         canonical = _suggest_gsc_winner(pages, cluster)
         if canonical:
-            # Check if winner or losers have thin content
-            winner_word_count = getattr(canonical, 'word_count', 0)
-            winner_is_thin = getattr(canonical, 'is_thin_content', False)
-            
             for page in pages:
                 if page.page_id != canonical.page_id:
-                    reason = 'GSC winner (most clicks)'
-                    
-                    # Add thin content notes
-                    page_is_thin = getattr(page, 'is_thin_content', False)
-                    page_is_critically_thin = getattr(page, 'is_critically_thin', False)
-                    page_word_count = getattr(page, 'word_count', 0)
-                    
-                    if winner_is_thin and winner_word_count > 0:
-                        reason = f'GSC winner (most clicks) - This page ranks despite thin content ({winner_word_count} words). Enriching it with content from the competing page could significantly improve its position. Recommend: MERGE content from loser into winner.'
-                    elif page_is_critically_thin and page_word_count > 0:
-                        reason = f'GSC winner (most clicks) - Loser page has critically thin content ({page_word_count} words). Nothing worth merging. Recommend: REDIRECT.'
-                    elif page_is_thin and page_word_count > 0:
-                        reason = f'GSC winner (most clicks) - Loser page has thin content ({page_word_count} words). Recommend: MERGE unique content into winner, then redirect.'
-                    elif all_thin:
-                        reason = 'GSC winner (most clicks) - Both competing pages have thin content. Neither is likely to rank well. Consider merging ALL content into a single comprehensive page.'
-                    
                     redirects.append({
                         'source_url': page.url,
                         'target_url': canonical.url,
                         'confidence': 'high',
-                        'reason': reason,
+                        'reason': 'GSC winner (priority chain: clicks → impressions → position → page type → content depth → URL depth)',
                     })
     
     # HOMEPAGE_DEOPTIMIZE: No redirects — de-optimize homepage, strengthen service page
@@ -255,90 +273,101 @@ def _find_clean_version(legacy_page, all_pages: list) -> Optional:
 def _suggest_canonical(pages: list, cluster: Dict) -> Optional:
     """
     Suggest canonical page from a set of duplicates.
-    
-    Criteria (in order):
-    1. Most GSC traffic (clicks + impressions) - if GSC data available
-    2. Shortest URL path (simpler = more canonical)
-    3. First alphabetically (stable tiebreaker)
-    
-    FIX: Pages with actual GSC impressions/clicks ALWAYS win over pages with zero traffic.
+    Uses the complete priority chain from spec v2.0.
     """
     if not pages:
         return None
     
-    # Check for GSC data
+    # Build URL → GSC metrics lookup
+    gsc_lookup = {}
     gsc_data = cluster.get('gsc_data', {})
     if gsc_data and 'gsc_rows' in gsc_data:
-        # Build URL → traffic metrics map
-        url_metrics = {}
         for row in gsc_data['gsc_rows']:
             url = row.get('normalized_url', '')
-            clicks = row.get('clicks', 0)
-            impressions = row.get('impressions', 0)
-            
-            if url not in url_metrics:
-                url_metrics[url] = {'clicks': 0, 'impressions': 0}
-            url_metrics[url]['clicks'] += clicks
-            url_metrics[url]['impressions'] += impressions
-        
-        # Find page with most traffic
-        # Priority: clicks first, then impressions, then shortest URL
-        best_page = None
-        max_score = (-1, -1)  # (clicks, impressions)
-        
-        for page in pages:
-            metrics = url_metrics.get(page.normalized_url, {'clicks': 0, 'impressions': 0})
-            score = (metrics['clicks'], metrics['impressions'])
-            
-            if score > max_score:
-                max_score = score
-                best_page = page
-        
-        # If we found a page with ANY GSC traffic (impressions or clicks), return it
-        if best_page and (max_score[0] > 0 or max_score[1] > 0):
-            return best_page
+            gsc_lookup[url] = {
+                'clicks': row.get('clicks', 0),
+                'impressions': row.get('impressions', 0),
+                'position': row.get('position', 999),
+            }
     
-    # Fallback: Shortest URL
-    pages_sorted = sorted(pages, key=lambda p: (len(p.normalized_path), p.normalized_path))
-    return pages_sorted[0] if pages_sorted else None
+    # Calculate scores for all pages
+    page_scores = []
+    for page in pages:
+        gsc_data_for_page = gsc_lookup.get(page.normalized_url)
+        score = _calculate_winner_score(page, gsc_data_for_page)
+        page_scores.append((page, score))
+    
+    # Sort by score (descending)
+    page_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    # Check if all pages have 0 GSC signals (needs manual review)
+    if all(score[0] == 0 for score in [s[1] for s in page_scores]):
+        # Flag this cluster for manual review in the parent function
+        cluster['needs_manual_review'] = True
+    
+    # Select winner
+    winner = page_scores[0][0] if page_scores else None
+    
+    # ABSOLUTE RULE: Homepage never wins service/product conflicts
+    if winner and winner.classified_type == 'homepage':
+        service_pages = [p for p in pages if p.classified_type in ('service', 'product', 'category')]
+        if service_pages:
+            # Recalculate winner from service/product/category pages only
+            service_scores = [(p, s) for p, s in page_scores if p.classified_type in ('service', 'product', 'category')]
+            if service_scores:
+                winner = service_scores[0][0]
+    
+    return winner
 
 
 def _suggest_gsc_winner(pages: list, cluster: Dict) -> Optional:
     """
-    Suggest winner based on GSC traffic (clicks + impressions).
-    
-    FIX: Prioritize clicks, then impressions. Page with ANY traffic beats page with zero.
+    Suggest winner based on GSC traffic using the complete priority chain.
+    This is the primary winner selection function for GSC_CONFIRMED conflicts.
     """
     gsc_data = cluster.get('gsc_data', {})
     if not gsc_data or 'gsc_rows' not in gsc_data:
+        # Fallback to canonical selection if no GSC data
         return _suggest_canonical(pages, cluster)
     
-    # Build URL → traffic metrics map
-    url_metrics = {}
+    # Build URL → GSC metrics lookup
+    gsc_lookup = {}
     for row in gsc_data['gsc_rows']:
         url = row.get('normalized_url', '')
-        clicks = row.get('clicks', 0)
-        impressions = row.get('impressions', 0)
-        
-        if url not in url_metrics:
-            url_metrics[url] = {'clicks': 0, 'impressions': 0}
-        url_metrics[url]['clicks'] += clicks
-        url_metrics[url]['impressions'] += impressions
+        gsc_lookup[url] = {
+            'clicks': row.get('clicks', 0),
+            'impressions': row.get('impressions', 0),
+            'position': row.get('position', 999),
+        }
     
-    # Find page with most traffic
-    # Priority: clicks first, then impressions
-    best_page = None
-    max_score = (-1, -1)  # (clicks, impressions)
-    
+    # Calculate scores for all pages
+    page_scores = []
     for page in pages:
-        metrics = url_metrics.get(page.normalized_url, {'clicks': 0, 'impressions': 0})
-        score = (metrics['clicks'], metrics['impressions'])
-        
-        if score > max_score:
-            max_score = score
-            best_page = page
+        gsc_data_for_page = gsc_lookup.get(page.normalized_url)
+        score = _calculate_winner_score(page, gsc_data_for_page)
+        page_scores.append((page, score))
     
-    return best_page or (pages[0] if pages else None)
+    # Sort by score (descending)
+    page_scores.sort(key=lambda x: x[1], reverse=True)
+    
+    # Check if all pages have 0 GSC signals (needs manual review)
+    if all(score[0] == 0 for score in [s[1] for s in page_scores]):
+        # Flag this cluster for manual review
+        cluster['needs_manual_review'] = True
+    
+    # Select winner
+    winner = page_scores[0][0] if page_scores else None
+    
+    # ABSOLUTE RULE: Homepage never wins service/product conflicts
+    if winner and winner.classified_type == 'homepage':
+        service_pages = [p for p in pages if p.classified_type in ('service', 'product', 'category')]
+        if service_pages:
+            # Recalculate winner from service/product/category pages only
+            service_scores = [(p, s) for p, s in page_scores if p.classified_type in ('service', 'product', 'category')]
+            if service_scores:
+                winner = service_scores[0][0]
+    
+    return winner
 
 
 def _generate_redirect_csv(redirect_plan: List[Dict]) -> str:
