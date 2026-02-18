@@ -299,6 +299,16 @@ def conflict_resolve(request, conflict_id):
             'error': {'code': 'RESOLUTION_FAILED', 'message': str(e), 'detail': None, 'status': 500}
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    # Trigger silo health recalculation after conflict resolution — non-blocking
+    try:
+        from seo.silo_health import run_silo_health_for_site
+        run_silo_health_for_site(site, trigger='conflict_resolution')
+    except Exception as _sh_err:
+        logger.warning(
+            'Silo health recalculation failed after conflict resolution (site %s): %s',
+            site.id, _sh_err,
+        )
+
     return Response({
         'data': {
             'resolution_id': str(resolution.id),

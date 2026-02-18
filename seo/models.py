@@ -724,3 +724,71 @@ class ValidationLog(models.Model):
 
     def __str__(self):
         return f"[{self.overall_status}] {self.proposed_keyword or self.proposed_title}"
+
+
+# ─────────────────────────────────────────────────────────────
+# DOMAIN 6: SILO HEALTH SCORING
+# ─────────────────────────────────────────────────────────────
+
+class SiloHealthScore(models.Model):
+    """
+    Historical snapshot of a silo's health score.
+
+    A new record is written every time recalculation runs (on GSC connect,
+    conflict resolution, or on-demand).  The most recent record per silo is
+    the "current" score; older records form the history for trend charts.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.CASCADE,
+        related_name='silo_health_scores',
+    )
+    silo = models.ForeignKey(
+        SiloDefinition,
+        on_delete=models.CASCADE,
+        related_name='health_scores',
+    )
+
+    # Overall weighted score 0–100
+    score = models.DecimalField(max_digits=5, decimal_places=2)
+
+    # Component breakdown — stored as JSON for flexibility
+    # {
+    #   "keyword_clarity": 82.5,
+    #   "structural_integrity": 60.0,
+    #   "content_architecture": 75.0,
+    #   "internal_linking": 90.0,
+    # }
+    component_scores = models.JSONField(default=dict)
+
+    # Number of pages in silo at calculation time
+    page_count = models.IntegerField(default=0)
+
+    # Optional extra detail (e.g. {"reason": "no_pages_in_silo"})
+    details = models.JSONField(default=dict, blank=True)
+
+    # Trigger that caused this calculation
+    TRIGGER_CHOICES = [
+        ('gsc_connect', 'GSC Connection'),
+        ('conflict_resolution', 'Conflict Resolution'),
+        ('on_demand', 'On-Demand'),
+        ('scheduled', 'Scheduled'),
+    ]
+    trigger = models.CharField(max_length=30, choices=TRIGGER_CHOICES, default='on_demand')
+
+    calculated_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'silo_health_scores'
+        ordering = ['-calculated_at']
+        indexes = [
+            models.Index(fields=['site']),
+            models.Index(fields=['silo']),
+            models.Index(fields=['site', 'calculated_at']),
+            models.Index(fields=['silo', 'calculated_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.silo.name}: {self.score} @ {self.calculated_at:%Y-%m-%d %H:%M}"
