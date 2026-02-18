@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('seo', '0009_page_classification'),
+        ('seo', '0010_flip_flop_detection'),
     ]
 
     operations = [

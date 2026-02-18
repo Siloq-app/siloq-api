@@ -12,6 +12,7 @@ FOLDER_ROOTS = {
     'blog': ['blog', 'news', 'articles', 'post', 'posts'],
     'product': ['product', 'products', 'item', 'p'],
     'category_woo': ['product-category'],
+    'product_tag': ['product-tag'],
     'shop': ['shop'],
     'product_rentals': ['product-rentals'],
     'service': ['service', 'services', 'residential', 'commercial', 'solutions'],
@@ -19,6 +20,10 @@ FOLDER_ROOTS = {
     'portfolio': ['portfolio', 'work', 'projects', 'gallery'],
     'utility': ['cart', 'checkout', 'account', 'my-account', 'wp-admin', 'wp-content', 'wp-includes'],
 }
+
+# E-commerce specific patterns
+ECOMMERCE_PAGINATION_PATTERN = r'/page/\d+/?$'
+ECOMMERCE_PRODUCT_VARIANT_INDICATORS = ['color', 'size', 'variant', 'option']
 
 # Legacy suffix patterns
 LEGACY_SUFFIXES = [
@@ -105,6 +110,12 @@ CONFLICT_TYPES = {
         'description': 'Homepage splitting impressions with service/product page',
         'action_code': 'HOMEPAGE_DEOPTIMIZE',
     },
+    'HOMEPAGE_STEALING_SERVICE_KW': {
+        'bucket': 'SEARCH_CONFLICT',
+        'badge': 'CONFIRMED',
+        'description': 'Homepage ranking for service/product keyword instead of dedicated page',
+        'action_code': 'HOMEPAGE_DEOPTIMIZE',
+    },
     
     # WRONG_WINNER bucket (Phase 5)
     'INTENT_MISMATCH': {
@@ -131,40 +142,6 @@ CONFLICT_TYPES = {
         'description': 'Homepage ranking for specific service query',
         'action_code': 'HOMEPAGE_DEOPTIMIZE',
     },
-    # HOMEPAGE_CANNIBALIZATION: Homepage competes with dedicated service/product pages.
-    # ABSOLUTE RULE — homepage NEVER wins a service/product keyword conflict.
-    # Emitted during Phase 4 GSC analysis when homepage impressions compete
-    # with service/product pages for the same queries.
-    # Two sub-patterns (captured via metadata):
-    #   - hoarding: homepage outranks the service page (homepage IS the primary)
-    #   - over-targeting: homepage splits impressions with service page
-    'HOMEPAGE_CANNIBALIZATION': {
-        'bucket': 'SEARCH_CONFLICT',
-        'badge': 'CONFIRMED',
-        'description': (
-            'Homepage is cannibalizing dedicated service/product pages. '
-            'Homepage ranks for (or splits impressions with) service/product keywords '
-            'that a dedicated page should own exclusively.'
-        ),
-        'action_code': 'DE_OPTIMIZE_HOMEPAGE',
-    },
-
-    # BLOG_OVERLAP bucket (phase_blog_service detection)
-    'BLOG_SERVICE_OVERLAP': {
-        'bucket': 'BLOG_OVERLAP',
-        'badge': 'POTENTIAL',
-        'description': 'Blog post targeting the same keyword as a service page',
-        'action_code': 'REWRITE_AS_SPOKE',
-        'risk_badge': 'Content Change',
-        'risk_badge_color': 'blue',
-    },
-    'BLOG_CONSOLIDATION': {
-        'bucket': 'BLOG_OVERLAP',
-        'badge': 'POTENTIAL',
-        'description': '3+ blog posts targeting similar keywords — consolidate into a pillar post',
-        'action_code': 'REWRITE_AS_SPOKE',
-        'risk_badge': 'Content Change',
-        'risk_badge_color': 'blue',
     },
 }
 
@@ -228,23 +205,6 @@ ACTION_CODES = {
         'description': 'Homepage is cannibalizing a service/product page. De-optimize homepage for the service keyword (strip from title, H1, meta, body). Homepage should only target [Brand] + [broad category]. Then strengthen the correct service page.',
         'requires_user_input': False,
     },
-    # DE_OPTIMIZE_HOMEPAGE is the canonical action code for HOMEPAGE_CANNIBALIZATION conflicts.
-    # It covers both "homepage hoarding" (homepage outranks service page) and
-    # "homepage over-targeting" (homepage splits impressions with service page).
-    'DE_OPTIMIZE_HOMEPAGE': {
-        'label': 'De-optimize Homepage for Service Keywords',
-        'description': (
-            'Homepage is ranking for service/product keywords that a dedicated page should own. '
-            'Action required:\n'
-            '1. Strip the conflicting keyword(s) from the homepage title tag, H1, meta description, '
-            'and body copy.\n'
-            '2. Homepage should target ONLY [Brand Name] + broad category (e.g., "Acme Plumbing — '
-            'Professional Plumbing Services").\n'
-            '3. Strengthen the correct service/product page: improve its title, meta, H1, and body '
-            'to clearly own the keyword.\n'
-            '4. Add a prominent internal link from the homepage to each de-optimized service page.\n'
-            'ABSOLUTE RULE: Homepage NEVER wins a service/product keyword conflict.'
-        ),
         'requires_user_input': False,
     },
     'SLUG_PIVOT': {
@@ -252,43 +212,7 @@ ACTION_CODES = {
         'description': 'Competing pages have high slug similarity (Jaccard > 0.6). Differentiate content AND recommend URL slug change to reinforce the new keyword angle. Old slug gets 301 to new slug.',
         'requires_user_input': True,
     },
-    'REWRITE_AS_SPOKE': {
-        'label': 'Rewrite as Supporting Spoke',
-        'description': (
-            'Blog post targets the same keyword as a service page. '
-            'Rewrite the blog post as a supporting spoke that links prominently to the service hub. '
-            'Shift the blog\'s angle to informational ("How to…", "What is…") and add a clear CTA '
-            'linking to the service page. Do NOT redirect the blog post.'
-        ),
-        'requires_user_input': False,
-        'risk_badge': 'Content Change',
-        'risk_badge_color': 'blue',
-        'is_destructive': False,
-    },
-    'ADD_INTERNAL_LINKS': {
-        'label': 'Add Internal Links to Service Page',
-        'description': (
-            'Blog post covers a topic closely related to a service page. '
-            'Keep the existing blog content but add a prominent internal link to the service page '
-            '(inline contextual link + sidebar/CTA block). '
-            'This passes authority to the service page without altering the blog.'
-        ),
-        'requires_user_input': False,
-        'risk_badge': 'Content Change',
-        'risk_badge_color': 'blue',
-        'is_destructive': False,
-    },
-    'MERGE_INTO_SERVICE': {
-        'label': 'Merge Thin Blog into Service Page',
-        'description': (
-            'Blog post is thin (<300 words) and targets a keyword owned by a service page. '
-            'Migrate any unique content into the service page, then 301-redirect the blog URL '
-            'to the service page. Net result: one stronger page instead of two weak ones.'
-        ),
-        'requires_user_input': True,
-        'risk_badge': 'Content Change',
-        'risk_badge_color': 'blue',
-        'is_destructive': False,
+
     },
 }
 

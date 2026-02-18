@@ -28,6 +28,7 @@ from seo.differentiate_views import (
 )
 from seo.redirect_views import create_redirect, list_redirects
 from integrations.gsc_views import connect_gsc_site, get_gsc_data, analyze_gsc_cannibalization
+from seo.silo_health_views import silo_health_scores, silo_health_recalculate
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -59,4 +60,7 @@ urlpatterns = [
     path('<int:site_id>/gsc/connect/', connect_gsc_site, name='site-gsc-connect'),
     path('<int:site_id>/gsc/data/', get_gsc_data, name='site-gsc-data'),
     path('<int:site_id>/gsc/analyze/', analyze_gsc_cannibalization, name='site-gsc-analyze'),
+    # Silo Health Score v2
+    path('<int:site_id>/silo-health/', silo_health_scores, name='site-silo-health'),
+    path('<int:site_id>/silo-health/recalculate/', silo_health_recalculate, name='site-silo-health-recalculate'),
 ]
