@@ -68,6 +68,8 @@ def _serialize_conflict(conflict):
                 'winner_score': float(p.winner_score),
                 'is_indexable': p.is_indexable,
                 'http_status': p.http_status,
+                'word_count': getattr(p, 'word_count', None),
+                'is_thin_content': getattr(p, 'is_thin_content', False),
             }
             for p in pages
         ],
