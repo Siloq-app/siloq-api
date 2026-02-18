@@ -16,7 +16,7 @@ from seo.models import (
     CannibalizationConflict, ConflictPage, ConflictResolution,
     RedirectRegistry, KeywordAssignment, KeywordAssignmentHistory,
 )
-from integrations.wordpress_webhook import send_webhook_to_wordpress, create_wordpress_redirect
+from integrations.wordpress_webhook import send_webhook_to_wordpress
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,17 @@ def _serialize_conflict(conflict):
     """Serialize a CannibalizationConflict with its pages."""
     pages = conflict.pages.all().order_by('-is_recommended_winner', '-gsc_impressions')
     winner = pages.filter(is_recommended_winner=True).first()
+    
+    # Build flip-flop data if detected
+    flip_flop = None
+    if conflict.flip_flop_detected:
+        flip_flop = {
+            'detected': True,
+            'correlation': float(conflict.flip_flop_correlation) if conflict.flip_flop_correlation else None,
+            'position_volatility': float(conflict.position_volatility) if conflict.position_volatility else None,
+            'daily_positions': conflict.metadata.get('daily_positions', {}) if conflict.metadata else {},
+        }
+    
     return {
         'id': str(conflict.id),
         'keyword': conflict.keyword,
@@ -50,6 +61,7 @@ def _serialize_conflict(conflict):
         'resolved_at': conflict.resolved_at.isoformat() if conflict.resolved_at else None,
         'max_impressions': conflict.max_impressions,
         'shared_gsc_queries': conflict.shared_gsc_queries,
+        'flip_flop': flip_flop,  # NEW: Flip-flop detection data
         'winner_recommendation': {
             'page_url': winner.page_url,
             'winner_score': float(winner.winner_score),
@@ -68,8 +80,6 @@ def _serialize_conflict(conflict):
                 'winner_score': float(p.winner_score),
                 'is_indexable': p.is_indexable,
                 'http_status': p.http_status,
-                'word_count': getattr(p, 'word_count', None),
-                'is_thin_content': getattr(p, 'is_thin_content', False),
             }
             for p in pages
         ],
@@ -215,28 +225,25 @@ def conflict_resolve(request, conflict_id):
                     redirect_obj.save()
                 actions_taken['redirect_created'] = True
 
-            # Step 1b: Push redirect to WordPress via REST API
+            # Step 1b: Push redirect to WordPress via plugin webhook
             if actions_taken['redirect_created'] and redirect_obj:
                 try:
-                    redirect_result = create_wordpress_redirect(
-                        site=site,
-                        source_url=loser_url,
-                        target_url=winner_url,
-                        redirect_type=redirect_type,
-                        reason=f'Conflict resolution: {action_type}',
-                    )
-                    actions_taken['wordpress_redirect_pushed'] = redirect_result.get('success', False)
-                    if redirect_result.get('success'):
-                        logger.info('Redirect successfully created in WordPress for conflict %s', conflict_id)
-                    else:
+                    webhook_payload = {
+                        'source_url': loser_url,
+                        'target_url': winner_url,
+                        'redirect_type': redirect_type,
+                        'reason': f'conflict_resolution_{action_type}',
+                    }
+                    webhook_result = send_webhook_to_wordpress(site, 'redirect.create', webhook_payload)
+                    actions_taken['webhook_pushed'] = webhook_result.get('success', False)
+                    if not webhook_result.get('success'):
                         logger.warning(
-                            'WordPress redirect creation failed for conflict %s: %s',
-                            conflict_id,
-                            redirect_result.get('error', 'unknown error')
+                            'WordPress webhook failed for conflict %s redirect: %s',
+                            conflict_id, webhook_result.get('error', 'unknown')
                         )
-                except Exception as redirect_err:
-                    logger.error('WordPress redirect API error for conflict %s: %s', conflict_id, str(redirect_err))
-                    actions_taken['wordpress_redirect_pushed'] = False
+                except Exception as webhook_err:
+                    logger.warning('WordPress webhook error for conflict %s: %s', conflict_id, str(webhook_err))
+                    actions_taken['webhook_pushed'] = False
 
             # Step 2: Reassign keyword
             if reassign_keyword and winner_url:
@@ -304,12 +311,11 @@ def conflict_resolve(request, conflict_id):
     }, status=status.HTTP_200_OK)
 
 
-@api_view(['PUT', 'POST'])
+@api_view(['PUT'])
 @permission_classes([IsAuthenticated])
 def conflict_dismiss(request, conflict_id):
     """
     PUT /api/v1/conflicts/{id}/dismiss
-    POST /api/v1/conflicts/{id}/dismiss
     Dismiss a conflict with reason.
     """
     conflict = get_object_or_404(CannibalizationConflict, id=conflict_id)
