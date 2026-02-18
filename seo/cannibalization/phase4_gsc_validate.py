@@ -5,6 +5,7 @@ Uses Google Search Console data to:
 1. Confirm static detection issues (upgrade POTENTIAL → CONFIRMED)
 2. Detect NEW conflicts not found in Phase 3
 3. Calculate severity based on impression distribution
+4. **NEW: Detect flip-flop behavior between competing pages**
 
 Logic:
 - Primary share >= 85% = NOT cannibalization (Google has decided)
@@ -13,8 +14,9 @@ Logic:
 - Upgrades matching SITE_DUPLICATION issues to SEARCH_CONFLICT bucket
 - Excludes branded queries
 - Filters noise (< 5% share AND 0 clicks)
+- **Flip-Flop Detection**: Negative correlation between daily positions signals alternating rankings
 """
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
 from .models import PageClassification
 from .utils import is_branded_query, classify_query_intent, is_plural_query
@@ -30,6 +32,7 @@ from .constants import (
 def run_phase4(
     classifications: List[PageClassification],
     gsc_data: List[Dict],
+    gsc_daily_data: List[Dict] = None,
     brand_name: str = None,
     homepage_title: str = None
 ) -> List[Dict]:
@@ -39,6 +42,7 @@ def run_phase4(
     Args:
         classifications: Page classifications from Phase 1
         gsc_data: List of GSC rows with keys: query, page, clicks, impressions, position
+        gsc_daily_data: List of GSC rows with date dimension for flip-flop detection
         brand_name: Site brand name (from onboarding)
         homepage_title: Fallback for brand detection
     
@@ -91,21 +95,123 @@ def run_phase4(
             'position': position,
         })
     
+    # Build daily position data lookup if available
+    daily_lookup = _build_daily_position_lookup(gsc_daily_data) if gsc_daily_data else {}
+    
     # Analyze each query group
     for query, rows in query_groups.items():
         if len(rows) < 2:
             continue
         
-        issue = _analyze_query_group(query, rows)
+        issue = _analyze_query_group(query, rows, daily_lookup)
         if issue:
             issues.append(issue)
     
     return issues
 
 
-def _analyze_query_group(query: str, rows: List[Dict]) -> Optional[Dict]:
+def _build_daily_position_lookup(gsc_daily_data: List[Dict]) -> Dict:
+    """
+    Build a lookup: (query, normalized_url) → [(date, position), ...]
+    
+    Args:
+        gsc_daily_data: GSC data with dimensions ['date', 'query', 'page']
+    
+    Returns:
+        Dict mapping (query, url) to list of (date, position) tuples
+    """
+    from .utils import normalize_full_url
+    
+    lookup = defaultdict(list)
+    for row in gsc_daily_data:
+        query = row.get('query', '').strip().lower()
+        page_url = row.get('page', '').strip()
+        date = row.get('date', '')
+        position = float(row.get('position', 0))
+        
+        if not query or not page_url or not date or position == 0:
+            continue
+        
+        normalized = normalize_full_url(page_url)
+        lookup[(query, normalized)].append((date, position))
+    
+    # Sort by date
+    for key in lookup:
+        lookup[key] = sorted(lookup[key], key=lambda x: x[0])
+    
+    return lookup
+
+
+def _calculate_flip_flop_score(daily_positions_a: List[Tuple[str, float]], 
+                                 daily_positions_b: List[Tuple[str, float]]) -> float:
+    """
+    Calculate Pearson correlation between two pages' daily positions.
+    
+    Args:
+        daily_positions_a/b: list of (date, position) tuples over 28 days
+    
+    Returns:
+        correlation: float (-1 to 1)
+        - Negative = flip-flop (when one goes up, other goes down)
+        - Near 0 = independent ranking
+        - Positive = move together
+    """
+    if len(daily_positions_a) < 7 or len(daily_positions_b) < 7:
+        return 0.0  # Not enough data
+    
+    # Align by date
+    dates_a = {d: p for d, p in daily_positions_a}
+    dates_b = {d: p for d, p in daily_positions_b}
+    common_dates = sorted(set(dates_a.keys()) & set(dates_b.keys()))
+    
+    if len(common_dates) < 7:
+        return 0.0
+    
+    positions_a = [dates_a[d] for d in common_dates]
+    positions_b = [dates_b[d] for d in common_dates]
+    
+    # Pure Python Pearson correlation (no numpy)
+    return _pearson_correlation(positions_a, positions_b)
+
+
+def _pearson_correlation(x: List[float], y: List[float]) -> float:
+    """
+    Calculate Pearson correlation coefficient.
+    Pure Python implementation (no numpy required).
+    """
+    n = len(x)
+    if n == 0:
+        return 0.0
+    
+    mean_x = sum(x) / n
+    mean_y = sum(y) / n
+    
+    std_x = (sum((xi - mean_x)**2 for xi in x) / n) ** 0.5
+    std_y = (sum((yi - mean_y)**2 for yi in y) / n) ** 0.5
+    
+    if std_x == 0 or std_y == 0:
+        return 0.0
+    
+    cov = sum((xi - mean_x) * (yi - mean_y) for xi, yi in zip(x, y)) / n
+    return cov / (std_x * std_y)
+
+
+def _calculate_position_volatility(daily_positions: List[Tuple[str, float]]) -> float:
+    """Calculate standard deviation of daily positions."""
+    if len(daily_positions) < 2:
+        return 0.0
+    
+    positions = [p for _, p in daily_positions]
+    n = len(positions)
+    mean = sum(positions) / n
+    variance = sum((p - mean) ** 2 for p in positions) / n
+    return variance ** 0.5
+
+
+def _analyze_query_group(query: str, rows: List[Dict], daily_lookup: Dict) -> Optional[Dict]:
     """
     Analyze a single query with multiple competing pages.
+    Now includes flip-flop detection.
     """
     # Sort by impressions descending
     rows = sorted(rows, key=lambda r: r['impressions'], reverse=True)
@@ -136,8 +242,41 @@ def _analyze_query_group(query: str, rows: List[Dict]) -> Optional[Dict]:
     if secondary['share'] < SECONDARY_SHARE_THRESHOLD:
         return None
     
-    # Calculate severity
-    severity = _calculate_severity(rows)
+    # **NEW: Flip-Flop Detection**
+    flip_flop_data = None
+    correlation = 0.0
+    
+    if daily_lookup and len(rows) >= 2:
+        primary_url = primary['normalized_url']
+        secondary_url = secondary['normalized_url']
+        
+        daily_a = daily_lookup.get((query, primary_url), [])
+        daily_b = daily_lookup.get((query, secondary_url), [])
+        
+        if daily_a and daily_b:
+            correlation = _calculate_flip_flop_score(daily_a, daily_b)
+            
+            # Calculate position volatility for each page
+            volatility_a = _calculate_position_volatility(daily_a)
+            volatility_b = _calculate_position_volatility(daily_b)
+            
+            flip_flop_data = {
+                'detected': correlation < -0.5,
+                'correlation': round(correlation, 3),
+                'primary_volatility': round(volatility_a, 2),
+                'secondary_volatility': round(volatility_b, 2),
+                'daily_positions': {
+                    primary['page_url']: [
+                        {'date': d, 'position': round(p, 1)} for d, p in daily_a
+                    ],
+                    secondary['page_url']: [
+                        {'date': d, 'position': round(p, 1)} for d, p in daily_b
+                    ],
+                }
+            }
+    
+    # Calculate severity (with flip-flop override)
+    severity = _calculate_severity(rows, correlation)
     
     # Classify query and pages
     query_intent, has_local = classify_query_intent(query)
@@ -153,6 +292,10 @@ def _analyze_query_group(query: str, rows: List[Dict]) -> Optional[Dict]:
     else:
         conflict_type = 'GSC_CONFIRMED'
     
+    # Override conflict type if flip-flop detected
+    if flip_flop_data and flip_flop_data['detected']:
+        conflict_type = 'GSC_FLIP_FLOP'
+    
     # Build issue
     issue = {
         'conflict_type': conflict_type,
@@ -166,6 +309,7 @@ def _analyze_query_group(query: str, rows: List[Dict]) -> Optional[Dict]:
             'total_impressions': total_imps,
             'total_clicks': sum(r['clicks'] for r in rows),
             'page_count': len(rows),
+            'flip_flop': flip_flop_data,  # NEW: Flip-flop detection data
             'gsc_rows': [
                 {
                     'url': r['page_url'],
@@ -184,29 +328,52 @@ def _analyze_query_group(query: str, rows: List[Dict]) -> Optional[Dict]:
     return issue
 
 
-def _calculate_severity(rows: List[Dict]) -> str:
+def _calculate_severity(rows: List[Dict], correlation: float = 0.0) -> str:
     """
-    Calculate severity based on impression distribution.
+    Calculate severity based on impression distribution and flip-flop correlation.
     
+    FLIP-FLOP OVERRIDE: If correlation < -0.5, minimum severity is HIGH
     SEVERE: 3+ pages each with 10%+ share
-    HIGH: Secondary page has 35%+ share
+    HIGH: Secondary page has 35%+ share OR flip-flop detected
     MEDIUM: Secondary page has 15-35% share
     LOW: Minor split
+    
+    Args:
+        rows: List of page data with 'share' key
+        correlation: Pearson correlation from flip-flop detection
     """
     # Count pages with 10%+ share
     pages_10_plus = sum(1 for r in rows if r['share'] >= 0.10)
     
     if pages_10_plus >= 3:
-        return 'SEVERE'
-    
-    if len(rows) >= 2:
+        severity = 'SEVERE'
+    elif len(rows) >= 2:
         secondary_share = rows[1]['share']
         if secondary_share >= 0.35:
-            return 'HIGH'
+            severity = 'HIGH'
         elif secondary_share >= 0.15:
-            return 'MEDIUM'
+            severity = 'MEDIUM'
+        else:
+            severity = 'LOW'
+    else:
+        severity = 'LOW'
     
-    return 'LOW'
+    # **Flip-Flop Override**: Strong negative correlation = minimum HIGH severity
+    if correlation < -0.5:
+        severity_rank = {'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'SEVERE': 4}
+        current_rank = severity_rank.get(severity, 1)
+        if current_rank < 3:  # Less than HIGH
+            severity = 'HIGH'
+    
+    # Lower severity if pages rank independently (correlation near 0)
+    if -0.3 < correlation < 0.3 and correlation != 0.0:
+        severity_rank = {'LOW': 1, 'MEDIUM': 2, 'HIGH': 3, 'SEVERE': 4}
+        current_rank = severity_rank.get(severity, 1)
+        if current_rank > 1:  # Can be lowered
+            rank_order = ['LOW', 'MEDIUM', 'HIGH', 'SEVERE']
+            severity = rank_order[current_rank - 2]  # Lower by one tier
+    
+    return severity
 
 
 def upgrade_static_issues(
