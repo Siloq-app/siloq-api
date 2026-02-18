@@ -299,11 +299,12 @@ def conflict_resolve(request, conflict_id):
     }, status=status.HTTP_200_OK)
 
 
-@api_view(['PUT'])
+@api_view(['PUT', 'POST'])
 @permission_classes([IsAuthenticated])
 def conflict_dismiss(request, conflict_id):
     """
     PUT /api/v1/conflicts/{id}/dismiss
+    POST /api/v1/conflicts/{id}/dismiss
     Dismiss a conflict with reason.
     """
     conflict = get_object_or_404(CannibalizationConflict, id=conflict_id)
