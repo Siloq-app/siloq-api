@@ -12,6 +12,7 @@ FOLDER_ROOTS = {
     'blog': ['blog', 'news', 'articles', 'post', 'posts'],
     'product': ['product', 'products', 'item', 'p'],
     'category_woo': ['product-category'],
+    'product_tag': ['product-tag'],
     'shop': ['shop'],
     'product_rentals': ['product-rentals'],
     'service': ['service', 'services', 'residential', 'commercial', 'solutions'],
@@ -19,6 +20,10 @@ FOLDER_ROOTS = {
     'portfolio': ['portfolio', 'work', 'projects', 'gallery'],
     'utility': ['cart', 'checkout', 'account', 'my-account', 'wp-admin', 'wp-content', 'wp-includes'],
 }
+
+# E-commerce specific patterns
+ECOMMERCE_PAGINATION_PATTERN = r'/page/\d+/?$'
+ECOMMERCE_PRODUCT_VARIANT_INDICATORS = ['color', 'size', 'variant', 'option']
 
 # Legacy suffix patterns
 LEGACY_SUFFIXES = [
@@ -105,6 +110,12 @@ CONFLICT_TYPES = {
         'description': 'Homepage splitting impressions with service/product page',
         'action_code': 'HOMEPAGE_DEOPTIMIZE',
     },
+    'HOMEPAGE_STEALING_SERVICE_KW': {
+        'bucket': 'SEARCH_CONFLICT',
+        'badge': 'CONFIRMED',
+        'description': 'Homepage ranking for service/product keyword instead of dedicated page',
+        'action_code': 'HOMEPAGE_DEOPTIMIZE',
+    },
     
     # WRONG_WINNER bucket (Phase 5)
     'INTENT_MISMATCH': {
@@ -130,6 +141,40 @@ CONFLICT_TYPES = {
         'badge': 'WRONG_WINNER',
         'description': 'Homepage ranking for specific service query',
         'action_code': 'HOMEPAGE_DEOPTIMIZE',
+    },
+    'HOMEPAGE_TOO_MANY_KEYWORDS': {
+        'bucket': 'WRONG_WINNER',
+        'badge': 'WRONG_WINNER',
+        'description': 'Homepage targeting too many non-brand keywords (>5)',
+        'action_code': 'HOMEPAGE_DEOPTIMIZE_MULTI',
+    },
+    
+    # BLOG vs SERVICE conflicts
+    'BLOG_SERVICE_OVERLAP': {
+        'bucket': 'WRONG_WINNER',
+        'badge': 'WRONG_WINNER',
+        'description': 'Blog post competing with service page for transactional keyword',
+        'action_code': 'REWRITE_AS_SPOKE',
+    },
+    'BLOG_CONSOLIDATION': {
+        'bucket': 'SITE_DUPLICATION',
+        'badge': 'POTENTIAL',
+        'description': 'Multiple blog posts targeting similar keywords',
+        'action_code': 'CONSOLIDATE_BLOGS',
+    },
+    
+    # E-COMMERCE bucket (safe pairs - informational only)
+    'ECOMMERCE_PRODUCT_VARIANT': {
+        'bucket': 'SITE_DUPLICATION',
+        'badge': 'INFO',
+        'description': 'Product variants (color/size) of same product',
+        'action_code': 'CANONICAL_TAG_RECOMMENDATION',
+    },
+    'ECOMMERCE_TAG_ARCHIVE': {
+        'bucket': 'SITE_DUPLICATION',
+        'badge': 'LOW',
+        'description': 'Product tag archive page (structural)',
+        'action_code': 'REVIEW_NOINDEX',
     },
 }
 
@@ -192,9 +237,44 @@ ACTION_CODES = {
         'description': 'Homepage is cannibalizing a service/product page. De-optimize homepage for the service keyword (strip from title, H1, meta, body). Homepage should only target [Brand] + [broad category]. Then strengthen the correct service page.',
         'requires_user_input': False,
     },
+    'HOMEPAGE_DEOPTIMIZE_MULTI': {
+        'label': 'De-optimize Homepage (Multiple Keywords)',
+        'description': 'Homepage is hoarding too many service/product keywords (>5 non-brand terms). Strip all specific keywords from homepage. Create dedicated pages for each service/product. Homepage should only target brand and broad category terms.',
+        'requires_user_input': False,
+    },
     'SLUG_PIVOT': {
         'label': 'Slug Pivot + Differentiate',
         'description': 'Competing pages have high slug similarity (Jaccard > 0.6). Differentiate content AND recommend URL slug change to reinforce the new keyword angle. Old slug gets 301 to new slug.',
+        'requires_user_input': True,
+    },
+    'CANONICAL_TAG_RECOMMENDATION': {
+        'label': 'Add Canonical Tag',
+        'description': 'Product variants should use canonical tag pointing to main product. This preserves all variant URLs while consolidating SEO authority.',
+        'requires_user_input': False,
+    },
+    'REVIEW_NOINDEX': {
+        'label': 'Review for Noindex',
+        'description': 'Tag archives and pagination pages should typically be noindexed to prevent thin content issues.',
+        'requires_user_input': True,
+    },
+    'REWRITE_AS_SPOKE': {
+        'label': 'Rewrite Blog as Spoke Article',
+        'description': 'Blog post should support the service page, not compete. Rewrite with informational angle and add prominent internal links to the service page.',
+        'requires_user_input': False,
+    },
+    'ADD_INTERNAL_LINKS': {
+        'label': 'Add Internal Links to Service Page',
+        'description': 'Blog keeps its content but adds prominent links to the service page early in the article. Differentiate the blog angle (informational vs transactional).',
+        'requires_user_input': False,
+    },
+    'MERGE': {
+        'label': 'Merge into Service Page',
+        'description': 'Blog post is thin (<300 words). Merge its content into the service page and redirect.',
+        'requires_user_input': False,
+    },
+    'CONSOLIDATE_BLOGS': {
+        'label': 'Consolidate Blog Posts',
+        'description': 'Multiple blog posts targeting similar keywords. Consolidate into one comprehensive article and redirect others.',
         'requires_user_input': True,
     },
 }
