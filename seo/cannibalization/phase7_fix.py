@@ -81,6 +81,11 @@ def _generate_redirects(cluster: Dict) -> List[Dict]:
     if not pages:
         return redirects
     
+    # Check for thin content across pages
+    thin_pages = [p for p in pages if getattr(p, 'is_thin_content', False)]
+    critically_thin_pages = [p for p in pages if getattr(p, 'is_critically_thin', False)]
+    all_thin = len(thin_pages) == len(pages) if pages else False
+    
     # AUTO-SUGGEST REDIRECTS (user must still approve)
     
     # LEGACY_CLEANUP: Legacy → Clean version
@@ -101,39 +106,97 @@ def _generate_redirects(cluster: Dict) -> List[Dict]:
     elif cluster['conflict_type'] == 'TAXONOMY_CLASH':
         canonical = _suggest_canonical(pages, cluster)
         if canonical:
+            winner_word_count = getattr(canonical, 'word_count', 0)
+            winner_is_thin = getattr(canonical, 'is_thin_content', False)
+            
             for page in pages:
                 if page.page_id != canonical.page_id:
+                    reason = 'Taxonomy clash - suggested canonical'
+                    
+                    # Add thin content notes
+                    page_is_thin = getattr(page, 'is_thin_content', False)
+                    page_is_critically_thin = getattr(page, 'is_critically_thin', False)
+                    page_word_count = getattr(page, 'word_count', 0)
+                    
+                    if winner_is_thin and winner_word_count > 0:
+                        reason = f'Taxonomy clash - Suggested canonical has thin content ({winner_word_count} words). Enriching it with content from competing pages could improve performance. Recommend: MERGE content into winner.'
+                    elif page_is_critically_thin and page_word_count > 0:
+                        reason = f'Taxonomy clash - This page has critically thin content ({page_word_count} words). Recommend: REDIRECT (nothing worth merging).'
+                    elif page_is_thin and page_word_count > 0:
+                        reason = f'Taxonomy clash - This page has thin content ({page_word_count} words). Recommend: MERGE unique content into winner, then redirect.'
+                    elif all_thin:
+                        reason = 'Taxonomy clash - All competing pages have thin content. Consider merging ALL content into a single comprehensive page.'
+                    
                     redirects.append({
                         'source_url': page.url,
                         'target_url': canonical.url,
                         'confidence': 'medium',
-                        'reason': 'Taxonomy clash - suggested canonical',
+                        'reason': reason,
                     })
     
     # NEAR_DUPLICATE_CONTENT: Suggest canonical
     elif cluster['conflict_type'] == 'NEAR_DUPLICATE_CONTENT':
         canonical = _suggest_canonical(pages, cluster)
         if canonical:
+            winner_word_count = getattr(canonical, 'word_count', 0)
+            winner_is_thin = getattr(canonical, 'is_thin_content', False)
+            
             for page in pages:
                 if page.page_id != canonical.page_id:
+                    reason = 'Near-duplicate content'
+                    
+                    # Add thin content notes
+                    page_is_thin = getattr(page, 'is_thin_content', False)
+                    page_is_critically_thin = getattr(page, 'is_critically_thin', False)
+                    page_word_count = getattr(page, 'word_count', 0)
+                    
+                    if winner_is_thin and winner_word_count > 0:
+                        reason = f'Near-duplicate content - Suggested canonical has thin content ({winner_word_count} words). Enriching it with unique content from duplicates could improve performance. Recommend: MERGE content into winner.'
+                    elif page_is_critically_thin and page_word_count > 0:
+                        reason = f'Near-duplicate content - This page has critically thin content ({page_word_count} words). Recommend: REDIRECT (nothing worth merging).'
+                    elif page_is_thin and page_word_count > 0:
+                        reason = f'Near-duplicate content - This page has thin content ({page_word_count} words). Recommend: MERGE unique content into winner, then redirect.'
+                    elif all_thin:
+                        reason = 'Near-duplicate content - All pages have thin content. Consider merging ALL into a single comprehensive page.'
+                    
                     redirects.append({
                         'source_url': page.url,
                         'target_url': canonical.url,
                         'confidence': 'medium',
-                        'reason': 'Near-duplicate content',
+                        'reason': reason,
                     })
     
     # GSC_CONFIRMED: Suggest winner based on clicks
     elif cluster['conflict_type'] == 'GSC_CONFIRMED':
         canonical = _suggest_gsc_winner(pages, cluster)
         if canonical:
+            # Check if winner or losers have thin content
+            winner_word_count = getattr(canonical, 'word_count', 0)
+            winner_is_thin = getattr(canonical, 'is_thin_content', False)
+            
             for page in pages:
                 if page.page_id != canonical.page_id:
+                    reason = 'GSC winner (most clicks)'
+                    
+                    # Add thin content notes
+                    page_is_thin = getattr(page, 'is_thin_content', False)
+                    page_is_critically_thin = getattr(page, 'is_critically_thin', False)
+                    page_word_count = getattr(page, 'word_count', 0)
+                    
+                    if winner_is_thin and winner_word_count > 0:
+                        reason = f'GSC winner (most clicks) - This page ranks despite thin content ({winner_word_count} words). Enriching it with content from the competing page could significantly improve its position. Recommend: MERGE content from loser into winner.'
+                    elif page_is_critically_thin and page_word_count > 0:
+                        reason = f'GSC winner (most clicks) - Loser page has critically thin content ({page_word_count} words). Nothing worth merging. Recommend: REDIRECT.'
+                    elif page_is_thin and page_word_count > 0:
+                        reason = f'GSC winner (most clicks) - Loser page has thin content ({page_word_count} words). Recommend: MERGE unique content into winner, then redirect.'
+                    elif all_thin:
+                        reason = 'GSC winner (most clicks) - Both competing pages have thin content. Neither is likely to rank well. Consider merging ALL content into a single comprehensive page.'
+                    
                     redirects.append({
                         'source_url': page.url,
                         'target_url': canonical.url,
                         'confidence': 'high',
-                        'reason': 'GSC winner (most clicks)',
+                        'reason': reason,
                     })
     
     # HOMEPAGE_DEOPTIMIZE: No redirects — de-optimize homepage, strengthen service page
