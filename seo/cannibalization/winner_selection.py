@@ -112,10 +112,17 @@ def calculate_winner_score_for_conflict_page(page_data: dict) -> float:
 def select_recommended_winner(pages_data: list) -> dict:
     """
     Select the recommended winner from a list of conflicting pages.
-    
+
+    ABSOLUTE RULE: Homepage NEVER wins service/product keyword conflicts.
+    If the scoring algorithm nominates the homepage as winner AND any
+    service, product, or category page is present in the conflict, the
+    homepage is demoted and the highest-scoring dedicated page wins.
+    This rule applies to all conflict types, including HOMEPAGE_CANNIBALIZATION
+    conflicts produced by phase4b_homepage.
+
     Args:
         pages_data: List of dicts, each containing page data for calculate_winner_score_for_conflict_page()
-    
+
     Returns:
         Dict with keys:
             - winner_index: int (index of winning page in pages_data)
