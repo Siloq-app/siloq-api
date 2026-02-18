@@ -80,8 +80,9 @@ def run_analysis(site_id: int, include_gsc: bool = True, gsc_days: int = 90) -> 
         wrong_winner_issues = []
         
         if include_gsc:
-            # Fetch GSC data
+            # Fetch GSC data (aggregate + daily for flip-flop detection)
             gsc_data = _fetch_gsc_data(site, gsc_days)
+            gsc_daily_data = _fetch_gsc_daily_data(site, days=28)  # 28 days for flip-flop correlation
             
             if gsc_data:
                 # Set GSC date range
@@ -95,10 +96,11 @@ def run_analysis(site_id: int, include_gsc: bool = True, gsc_days: int = 90) -> 
                 brand_name = _get_brand_name(site)
                 homepage_title = _get_homepage_title(site)
                 
-                # Phase 4: GSC validation
+                # Phase 4: GSC validation (now with flip-flop detection)
                 gsc_issues = phase4_gsc_validate.run_phase4(
                     classifications,
                     gsc_data,
+                    gsc_daily_data,  # NEW: Pass daily data for flip-flop detection
                     brand_name,
                     homepage_title
                 )
@@ -292,6 +294,39 @@ def _fetch_gsc_data(site: Site, days: int = 90) -> list:
     except Exception as e:
         # Log error but don't fail the entire analysis
         print(f"GSC fetch error: {e}")
+        return []
+
+
+def _fetch_gsc_daily_data(site: Site, days: int = 28) -> list:
+    """
+    Fetch daily GSC data for flip-flop detection.
+    
+    Returns list of dicts with keys: date, query, page, position, clicks, impressions
+    """
+    try:
+        # Import GSC views helper
+        from integrations.gsc_views import fetch_gsc_daily_data, _get_valid_access_token
+        
+        # Get valid access token
+        access_token = _get_valid_access_token(site)
+        if not access_token or not site.gsc_site_url:
+            return []
+        
+        # Fetch daily data with date dimension
+        daily_data = fetch_gsc_daily_data(
+            access_token=access_token,
+            site_url=site.gsc_site_url,
+            days=days,
+        )
+        
+        return daily_data
+    
+    except ImportError:
+        # GSC integration not available
+        return []
+    except Exception as e:
+        # Log error but don't fail the entire analysis
+        print(f"GSC daily data fetch error: {e}")
         return []
 
 
