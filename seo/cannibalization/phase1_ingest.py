@@ -111,6 +111,23 @@ def classify_page(analysis_run, site, page: Page) -> Optional[PageClassification
     # Extract service keyword
     service_kw = extract_service_keyword(normalized_path) or ''
     
+    # Detect thin content from SEOData
+    word_count = 0
+    is_thin = False
+    is_critically_thin = False
+    
+    if hasattr(page, 'seo_data'):
+        try:
+            seo_data = page.seo_data
+            word_count = seo_data.word_count if seo_data else 0
+        except Exception:
+            word_count = 0
+    
+    # Set thin content flags
+    if word_count > 0:
+        is_thin = word_count < 300
+        is_critically_thin = word_count < 100
+    
     classification = PageClassification(
         analysis_run=analysis_run,
         site=site,
@@ -128,6 +145,9 @@ def classify_page(analysis_run, site, page: Page) -> Optional[PageClassification
         geo_node=geo_node,
         service_keyword=service_kw,
         slug_tokens_json=slug_tokens,
+        word_count=word_count,
+        is_thin_content=is_thin,
+        is_critically_thin=is_critically_thin,
     )
     
     return classification
