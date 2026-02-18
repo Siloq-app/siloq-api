@@ -194,9 +194,11 @@ def _suggest_canonical(pages: list, cluster: Dict) -> Optional:
     Suggest canonical page from a set of duplicates.
     
     Criteria (in order):
-    1. Most GSC clicks (if GSC data available)
+    1. Most GSC traffic (clicks + impressions) - if GSC data available
     2. Shortest URL path (simpler = more canonical)
     3. First alphabetically (stable tiebreaker)
+    
+    FIX: Pages with actual GSC impressions/clicks ALWAYS win over pages with zero traffic.
     """
     if not pages:
         return None
@@ -204,23 +206,33 @@ def _suggest_canonical(pages: list, cluster: Dict) -> Optional:
     # Check for GSC data
     gsc_data = cluster.get('gsc_data', {})
     if gsc_data and 'gsc_rows' in gsc_data:
-        # Build URL → clicks map
-        url_clicks = {}
+        # Build URL → traffic metrics map
+        url_metrics = {}
         for row in gsc_data['gsc_rows']:
             url = row.get('normalized_url', '')
             clicks = row.get('clicks', 0)
-            url_clicks[url] = url_clicks.get(url, 0) + clicks
+            impressions = row.get('impressions', 0)
+            
+            if url not in url_metrics:
+                url_metrics[url] = {'clicks': 0, 'impressions': 0}
+            url_metrics[url]['clicks'] += clicks
+            url_metrics[url]['impressions'] += impressions
         
-        # Find page with most clicks
+        # Find page with most traffic
+        # Priority: clicks first, then impressions, then shortest URL
         best_page = None
-        max_clicks = -1
+        max_score = (-1, -1)  # (clicks, impressions)
+        
         for page in pages:
-            clicks = url_clicks.get(page.normalized_url, 0)
-            if clicks > max_clicks:
-                max_clicks = clicks
+            metrics = url_metrics.get(page.normalized_url, {'clicks': 0, 'impressions': 0})
+            score = (metrics['clicks'], metrics['impressions'])
+            
+            if score > max_score:
+                max_score = score
                 best_page = page
         
-        if best_page and max_clicks > 0:
+        # If we found a page with ANY GSC traffic (impressions or clicks), return it
+        if best_page and (max_score[0] > 0 or max_score[1] > 0):
             return best_page
     
     # Fallback: Shortest URL
@@ -229,25 +241,38 @@ def _suggest_canonical(pages: list, cluster: Dict) -> Optional:
 
 
 def _suggest_gsc_winner(pages: list, cluster: Dict) -> Optional:
-    """Suggest winner based on GSC clicks."""
+    """
+    Suggest winner based on GSC traffic (clicks + impressions).
+    
+    FIX: Prioritize clicks, then impressions. Page with ANY traffic beats page with zero.
+    """
     gsc_data = cluster.get('gsc_data', {})
     if not gsc_data or 'gsc_rows' not in gsc_data:
         return _suggest_canonical(pages, cluster)
     
-    # Build URL → clicks map
-    url_clicks = {}
+    # Build URL → traffic metrics map
+    url_metrics = {}
     for row in gsc_data['gsc_rows']:
         url = row.get('normalized_url', '')
         clicks = row.get('clicks', 0)
-        url_clicks[url] = url_clicks.get(url, 0) + clicks
+        impressions = row.get('impressions', 0)
+        
+        if url not in url_metrics:
+            url_metrics[url] = {'clicks': 0, 'impressions': 0}
+        url_metrics[url]['clicks'] += clicks
+        url_metrics[url]['impressions'] += impressions
     
-    # Find page with most clicks
+    # Find page with most traffic
+    # Priority: clicks first, then impressions
     best_page = None
-    max_clicks = -1
+    max_score = (-1, -1)  # (clicks, impressions)
+    
     for page in pages:
-        clicks = url_clicks.get(page.normalized_url, 0)
-        if clicks > max_clicks:
-            max_clicks = clicks
+        metrics = url_metrics.get(page.normalized_url, {'clicks': 0, 'impressions': 0})
+        score = (metrics['clicks'], metrics['impressions'])
+        
+        if score > max_score:
+            max_score = score
             best_page = page
     
     return best_page or (pages[0] if pages else None)
