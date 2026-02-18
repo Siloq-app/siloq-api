@@ -142,39 +142,6 @@ CONFLICT_TYPES = {
         'description': 'Homepage ranking for specific service query',
         'action_code': 'HOMEPAGE_DEOPTIMIZE',
     },
-    'HOMEPAGE_TOO_MANY_KEYWORDS': {
-        'bucket': 'WRONG_WINNER',
-        'badge': 'WRONG_WINNER',
-        'description': 'Homepage targeting too many non-brand keywords (>5)',
-        'action_code': 'HOMEPAGE_DEOPTIMIZE_MULTI',
-    },
-    
-    # BLOG vs SERVICE conflicts
-    'BLOG_SERVICE_OVERLAP': {
-        'bucket': 'WRONG_WINNER',
-        'badge': 'WRONG_WINNER',
-        'description': 'Blog post competing with service page for transactional keyword',
-        'action_code': 'REWRITE_AS_SPOKE',
-    },
-    'BLOG_CONSOLIDATION': {
-        'bucket': 'SITE_DUPLICATION',
-        'badge': 'POTENTIAL',
-        'description': 'Multiple blog posts targeting similar keywords',
-        'action_code': 'CONSOLIDATE_BLOGS',
-    },
-    
-    # E-COMMERCE bucket (safe pairs - informational only)
-    'ECOMMERCE_PRODUCT_VARIANT': {
-        'bucket': 'SITE_DUPLICATION',
-        'badge': 'INFO',
-        'description': 'Product variants (color/size) of same product',
-        'action_code': 'CANONICAL_TAG_RECOMMENDATION',
-    },
-    'ECOMMERCE_TAG_ARCHIVE': {
-        'bucket': 'SITE_DUPLICATION',
-        'badge': 'LOW',
-        'description': 'Product tag archive page (structural)',
-        'action_code': 'REVIEW_NOINDEX',
     },
 }
 
@@ -187,6 +154,7 @@ BUCKET_SCORES = {
     'SEARCH_CONFLICT': 50,
     'SITE_DUPLICATION': 25,
     'WRONG_WINNER': 15,
+    'BLOG_OVERLAP': 12,  # Lower than WRONG_WINNER — supportive conflicts, not destructive
 }
 
 # Severity priority
@@ -237,9 +205,6 @@ ACTION_CODES = {
         'description': 'Homepage is cannibalizing a service/product page. De-optimize homepage for the service keyword (strip from title, H1, meta, body). Homepage should only target [Brand] + [broad category]. Then strengthen the correct service page.',
         'requires_user_input': False,
     },
-    'HOMEPAGE_DEOPTIMIZE_MULTI': {
-        'label': 'De-optimize Homepage (Multiple Keywords)',
-        'description': 'Homepage is hoarding too many service/product keywords (>5 non-brand terms). Strip all specific keywords from homepage. Create dedicated pages for each service/product. Homepage should only target brand and broad category terms.',
         'requires_user_input': False,
     },
     'SLUG_PIVOT': {
@@ -247,41 +212,35 @@ ACTION_CODES = {
         'description': 'Competing pages have high slug similarity (Jaccard > 0.6). Differentiate content AND recommend URL slug change to reinforce the new keyword angle. Old slug gets 301 to new slug.',
         'requires_user_input': True,
     },
-    'CANONICAL_TAG_RECOMMENDATION': {
-        'label': 'Add Canonical Tag',
-        'description': 'Product variants should use canonical tag pointing to main product. This preserves all variant URLs while consolidating SEO authority.',
-        'requires_user_input': False,
-    },
-    'REVIEW_NOINDEX': {
-        'label': 'Review for Noindex',
-        'description': 'Tag archives and pagination pages should typically be noindexed to prevent thin content issues.',
-        'requires_user_input': True,
-    },
-    'REWRITE_AS_SPOKE': {
-        'label': 'Rewrite Blog as Spoke Article',
-        'description': 'Blog post should support the service page, not compete. Rewrite with informational angle and add prominent internal links to the service page.',
-        'requires_user_input': False,
-    },
-    'ADD_INTERNAL_LINKS': {
-        'label': 'Add Internal Links to Service Page',
-        'description': 'Blog keeps its content but adds prominent links to the service page early in the article. Differentiate the blog angle (informational vs transactional).',
-        'requires_user_input': False,
-    },
-    'MERGE': {
-        'label': 'Merge into Service Page',
-        'description': 'Blog post is thin (<300 words). Merge its content into the service page and redirect.',
-        'requires_user_input': False,
-    },
-    'CONSOLIDATE_BLOGS': {
-        'label': 'Consolidate Blog Posts',
-        'description': 'Multiple blog posts targeting similar keywords. Consolidate into one comprehensive article and redirect others.',
-        'requires_user_input': True,
+
     },
 }
 
 # =============================================================================
 # INTENT CLASSIFICATION
 # =============================================================================
+
+# Page types that signal informational intent (for blog/service overlap detection)
+INFORMATIONAL_PAGE_TYPES = {
+    'blog',
+    'portfolio',  # Portfolio posts are informational (not transactional landing pages)
+}
+
+# Page types that signal transactional intent
+TRANSACTIONAL_PAGE_TYPES = {
+    'service_hub',
+    'service_spoke',
+    'product',
+    'category_woo',
+    'category_shop',
+    'category_custom',
+    'shop_root',
+}
+
+# WordPress post_type signals
+# post_type='post' → informational (standard WP blog post)
+# post_type='page' → could be either; fall back to classified_type
+WP_INFORMATIONAL_POST_TYPES = {'post'}
 
 INTENT_MARKERS = {
     'transactional': [
@@ -369,3 +328,19 @@ SERVICE_KEYWORDS = [
     'maintenance', 'cleaning', 'restoration', 'consultation',
     'design', 'build', 'remodel', 'renovation',
 ]
+
+# =============================================================================
+# BLOG SERVICE OVERLAP THRESHOLDS
+# =============================================================================
+
+# Blog posts below this word count are candidates for MERGE_INTO_SERVICE
+THIN_BLOG_WORD_COUNT = 300
+
+# Minimum slug token overlap to consider blog/service conflict
+BLOG_SERVICE_MIN_TOKEN_OVERLAP = 1
+
+# Minimum number of blog posts targeting similar keywords to flag BLOG_CONSOLIDATION
+BLOG_CONSOLIDATION_MIN_COUNT = 3
+
+# Minimum slug token Jaccard similarity to group blogs for consolidation
+BLOG_CONSOLIDATION_JACCARD_THRESHOLD = 0.4

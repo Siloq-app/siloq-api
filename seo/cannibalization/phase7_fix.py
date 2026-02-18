@@ -217,8 +217,11 @@ def _generate_redirects(cluster: Dict) -> List[Dict]:
                         'reason': 'GSC winner (priority chain: clicks → impressions → position → page type → content depth → URL depth)',
                     })
     
-    # HOMEPAGE_DEOPTIMIZE: No redirects — de-optimize homepage, strengthen service page
-    elif action_code == 'HOMEPAGE_DEOPTIMIZE':
+    # DE_OPTIMIZE_HOMEPAGE / HOMEPAGE_DEOPTIMIZE:
+    # No 301 redirects — de-optimize homepage content and strengthen service page.
+    # DE_OPTIMIZE_HOMEPAGE is the canonical action code for HOMEPAGE_CANNIBALIZATION.
+    # HOMEPAGE_DEOPTIMIZE is kept as a legacy alias.
+    elif action_code in ('DE_OPTIMIZE_HOMEPAGE', 'HOMEPAGE_DEOPTIMIZE'):
         # Find the homepage and service pages
         homepage = None
         service_pages = []
@@ -227,14 +230,36 @@ def _generate_redirects(cluster: Dict) -> List[Dict]:
                 homepage = page
             else:
                 service_pages.append(page)
-        
+
         if homepage and service_pages:
-            # No redirect — but generate de-optimization plan
+            # Pull per-keyword detail from gsc_data when available
+            gsc_data = cluster.get('gsc_data', {})
+            queries = gsc_data.get('queries', [])
+
+            if queries:
+                kw_list = ', '.join(repr(q) for q in queries[:5])
+                kw_suffix = f' (and {len(queries) - 5} more)' if len(queries) > 5 else ''
+                reason = (
+                    f'DE-OPTIMIZE homepage for keyword(s): {kw_list}{kw_suffix}. '
+                    f'Strip each keyword from homepage title tag, H1, meta description, and body copy. '
+                    f'Homepage should target ONLY [Brand Name] + broad category. '
+                    f'Strengthen {service_pages[0].url} — improve its title, meta, H1, and body to '
+                    f'clearly own these keywords. Add prominent internal link from homepage to service page.'
+                )
+            else:
+                reason = (
+                    f'DE-OPTIMIZE homepage for service keyword. '
+                    f'Strip keyword from title tag, H1, meta description, and body content. '
+                    f'Homepage should target only [Brand Name] + [broad category]. '
+                    f'Strengthen {service_pages[0].url} with internal links from homepage. '
+                    'ABSOLUTE RULE: Homepage NEVER wins a service/product keyword conflict.'
+                )
+
             redirects.append({
                 'source_url': homepage.url,
                 'target_url': service_pages[0].url,
                 'confidence': 'high',
-                'reason': 'DEOPTIMIZE homepage for service keyword. Strip keyword from title tag, H1, meta description, and body content. Homepage should target only [Brand Name] + [broad category]. Strengthen service page with internal links from homepage.',
+                'reason': reason,
             })
     
     # SLUG_PIVOT: Recommend URL change + 301 from old to new
