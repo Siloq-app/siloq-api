@@ -10,13 +10,15 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.db.models import Prefetch
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
+from django.utils import timezone
 
-from seo.models import SEOData
+from seo.models import SEOData, CannibalizationConflict, ConflictPage, ConflictResolution, RedirectRegistry, KeywordAssignment, KeywordAssignmentHistory
 from .models import Site
 from .serializers import SiteSerializer
 from .permissions import IsSiteOwner
 from .analysis import detect_cannibalization, analyze_site, calculate_health_score
+from integrations.wordpress_webhook import send_webhook_to_wordpress
 
 logger = logging.getLogger(__name__)
 
@@ -312,10 +314,60 @@ class SiteViewSet(viewsets.ModelViewSet):
         
         GET /api/v1/sites/{id}/pending-approvals/
         """
-        # For now, return empty - will be populated by analysis
+        site = self.get_object()
+        
+        # Query open cannibalization conflicts
+        conflicts = CannibalizationConflict.objects.filter(
+            site=site,
+            status='open'
+        ).prefetch_related('pages').order_by('-severity', '-adjusted_score')
+        
+        pending_actions = []
+        for conflict in conflicts:
+            pages = conflict.pages.all().order_by('-is_recommended_winner', '-gsc_impressions')
+            winner = pages.filter(is_recommended_winner=True).first()
+            losers = pages.filter(is_recommended_winner=False)
+            
+            # Determine action_type based on resolution_type or recommendation
+            action_type = conflict.resolution_type or 'redirect'
+            
+            # Generate description
+            loser_urls = [p.page_url for p in losers[:2]]
+            loser_text = ', '.join(loser_urls) if loser_urls else 'competing pages'
+            description = f"Resolve keyword cannibalization for '{conflict.keyword}': {loser_text}"
+            
+            # Map severity to risk level
+            risk = 'destructive' if conflict.severity in ('critical', 'high') else 'content_change' if conflict.severity == 'medium' else 'safe'
+            is_destructive = conflict.severity in ('critical', 'high')
+            
+            # Generate impact description
+            if action_type == 'redirect':
+                impact = f"Consolidate SEO signals by redirecting to {winner.page_url if winner else 'recommended page'}"
+            elif action_type == 'merge_redirect':
+                impact = "Merge content and redirect to strengthen target page"
+            elif action_type == 'canonical':
+                impact = "Set canonical tag to clarify preferred version"
+            else:
+                impact = "Resolve conflict following Siloq recommendation"
+            
+            pending_actions.append({
+                'id': conflict.id,
+                'action_type': action_type,
+                'type': 'redirect' if action_type in ('redirect', 'merge_redirect') else 'meta_update',
+                'description': description,
+                'risk': risk,
+                'impact': impact,
+                'is_destructive': is_destructive,
+                'status': 'pending',
+                'keyword': conflict.keyword,
+                'severity': conflict.severity,
+                'winner_url': winner.page_url if winner else None,
+                'loser_urls': [p.page_url for p in losers],
+            })
+        
         return Response({
-            'pending_approvals': [],
-            'total': 0,
+            'pending_approvals': pending_actions,
+            'total': len(pending_actions),
         })
 
     @action(detail=True, methods=['get'])
@@ -686,10 +738,139 @@ class SiteViewSet(viewsets.ModelViewSet):
         
         POST /api/v1/sites/{id}/approvals/{action_id}/approve/
         """
+        site = self.get_object()
+        conflict = get_object_or_404(CannibalizationConflict, id=action_id, site=site)
+        
+        if conflict.status == 'resolved':
+            return Response({
+                'error': 'Conflict is already resolved'
+            }, status=status.HTTP_409_CONFLICT)
+        
+        # Get winner and losers
+        pages = conflict.pages.all().order_by('-is_recommended_winner', '-gsc_impressions')
+        winner = pages.filter(is_recommended_winner=True).first()
+        losers = pages.filter(is_recommended_winner=False)
+        
+        if not winner:
+            return Response({
+                'error': 'No winner recommendation found for this conflict'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Determine action_type from conflict or use default
+        action_type = conflict.resolution_type or 'redirect'
+        winner_url = winner.page_url
+        loser_url = losers.first().page_url if losers.exists() else None
+        
+        if not loser_url:
+            return Response({
+                'error': 'No loser page found to redirect'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        actions_taken = {
+            'redirect_created': False,
+            'internal_links_updated': 0,
+            'keyword_reassigned': False,
+        }
+        
+        try:
+            with transaction.atomic():
+                redirect_obj = None
+                
+                # Step 1: Create redirect if applicable
+                if action_type in ('redirect', 'merge_redirect'):
+                    redirect_obj, created = RedirectRegistry.objects.get_or_create(
+                        site=site,
+                        source_url=loser_url,
+                        defaults={
+                            'target_url': winner_url,
+                            'redirect_type': 301,
+                            'reason': f'conflict_resolution_{action_type}',
+                            'conflict': conflict,
+                            'status': 'active',
+                            'created_by': request.user.email or 'siloq_system',
+                        },
+                    )
+                    if not created:
+                        redirect_obj.target_url = winner_url
+                        redirect_obj.redirect_type = 301
+                        redirect_obj.conflict = conflict
+                        redirect_obj.save()
+                    actions_taken['redirect_created'] = True
+                    
+                    # Push redirect to WordPress
+                    try:
+                        webhook_payload = {
+                            'source_url': loser_url,
+                            'target_url': winner_url,
+                            'redirect_type': 301,
+                            'reason': f'conflict_resolution_{action_type}',
+                        }
+                        webhook_result = send_webhook_to_wordpress(site, 'redirect.create', webhook_payload)
+                        actions_taken['webhook_pushed'] = webhook_result.get('success', False)
+                    except Exception as webhook_err:
+                        logger.warning('WordPress webhook error for conflict %s: %s', action_id, str(webhook_err))
+                        actions_taken['webhook_pushed'] = False
+                
+                # Step 2: Reassign keyword
+                try:
+                    ka = KeywordAssignment.objects.get(
+                        site=site, keyword=conflict.keyword, status='active'
+                    )
+                    previous_url = ka.page_url
+                    ka.page_url = winner_url
+                    ka.updated_at = timezone.now()
+                    ka.save()
+                    
+                    KeywordAssignmentHistory.objects.create(
+                        assignment=ka,
+                        site=site,
+                        keyword=conflict.keyword,
+                        previous_url=previous_url,
+                        new_url=winner_url,
+                        action='reassign',
+                        reason=f'Conflict resolution: {action_type}',
+                        performed_by=request.user.email or 'siloq_system',
+                    )
+                    actions_taken['keyword_reassigned'] = True
+                except KeywordAssignment.DoesNotExist:
+                    pass
+                
+                # Step 3: Log resolution
+                resolution = ConflictResolution.objects.create(
+                    conflict=conflict,
+                    site=site,
+                    action_type=action_type,
+                    winner_url=winner_url,
+                    loser_url=loser_url,
+                    redirect=redirect_obj,
+                    redirect_type=301 if redirect_obj else None,
+                    keyword_reassigned=actions_taken['keyword_reassigned'],
+                    previous_keyword_owner=loser_url,
+                    new_keyword_owner=winner_url,
+                    approved_by=request.user.email or 'siloq_system',
+                    internal_links_updated=actions_taken['internal_links_updated'],
+                )
+                
+                # Step 4: Update conflict status
+                conflict.status = 'resolved'
+                conflict.resolution_type = action_type
+                conflict.resolved_at = timezone.now()
+                conflict.resolved_by = request.user.email or 'siloq_system'
+                conflict.save()
+                
+        except Exception as e:
+            logger.exception('Conflict resolution failed for %s', action_id)
+            return Response({
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
         return Response({
             'message': 'Action approved',
             'action_id': int(action_id),
             'status': 'approved',
+            'resolution_id': str(resolution.id),
+            'actions_taken': actions_taken,
+            'resolved_at': conflict.resolved_at.isoformat(),
         })
 
     @action(detail=True, methods=['post'], url_path=r'approvals/(?P<action_id>\d+)/deny')
@@ -699,10 +880,31 @@ class SiteViewSet(viewsets.ModelViewSet):
         
         POST /api/v1/sites/{id}/approvals/{action_id}/deny/
         """
+        site = self.get_object()
+        conflict = get_object_or_404(CannibalizationConflict, id=action_id, site=site)
+        
+        reason = request.data.get('reason', 'User denied recommendation')
+        approved_by = request.user.email or 'siloq_system'
+        
+        with transaction.atomic():
+            ConflictResolution.objects.create(
+                conflict=conflict,
+                site=site,
+                action_type='dismiss',
+                approved_by=approved_by,
+                merge_brief=reason,
+            )
+            conflict.status = 'dismissed'
+            conflict.resolution_type = 'dismiss'
+            conflict.resolved_at = timezone.now()
+            conflict.resolved_by = approved_by
+            conflict.save()
+        
         return Response({
             'message': 'Action denied',
             'action_id': int(action_id),
             'status': 'denied',
+            'dismissed_at': conflict.resolved_at.isoformat(),
         })
 
     @action(detail=True, methods=['post'], url_path=r'approvals/(?P<action_id>\d+)/rollback')
