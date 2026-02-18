@@ -131,6 +131,41 @@ CONFLICT_TYPES = {
         'description': 'Homepage ranking for specific service query',
         'action_code': 'HOMEPAGE_DEOPTIMIZE',
     },
+    # HOMEPAGE_CANNIBALIZATION: Homepage competes with dedicated service/product pages.
+    # ABSOLUTE RULE — homepage NEVER wins a service/product keyword conflict.
+    # Emitted during Phase 4 GSC analysis when homepage impressions compete
+    # with service/product pages for the same queries.
+    # Two sub-patterns (captured via metadata):
+    #   - hoarding: homepage outranks the service page (homepage IS the primary)
+    #   - over-targeting: homepage splits impressions with service page
+    'HOMEPAGE_CANNIBALIZATION': {
+        'bucket': 'SEARCH_CONFLICT',
+        'badge': 'CONFIRMED',
+        'description': (
+            'Homepage is cannibalizing dedicated service/product pages. '
+            'Homepage ranks for (or splits impressions with) service/product keywords '
+            'that a dedicated page should own exclusively.'
+        ),
+        'action_code': 'DE_OPTIMIZE_HOMEPAGE',
+    },
+
+    # BLOG_OVERLAP bucket (phase_blog_service detection)
+    'BLOG_SERVICE_OVERLAP': {
+        'bucket': 'BLOG_OVERLAP',
+        'badge': 'POTENTIAL',
+        'description': 'Blog post targeting the same keyword as a service page',
+        'action_code': 'REWRITE_AS_SPOKE',
+        'risk_badge': 'Content Change',
+        'risk_badge_color': 'blue',
+    },
+    'BLOG_CONSOLIDATION': {
+        'bucket': 'BLOG_OVERLAP',
+        'badge': 'POTENTIAL',
+        'description': '3+ blog posts targeting similar keywords — consolidate into a pillar post',
+        'action_code': 'REWRITE_AS_SPOKE',
+        'risk_badge': 'Content Change',
+        'risk_badge_color': 'blue',
+    },
 }
 
 # =============================================================================
@@ -142,6 +177,7 @@ BUCKET_SCORES = {
     'SEARCH_CONFLICT': 50,
     'SITE_DUPLICATION': 25,
     'WRONG_WINNER': 15,
+    'BLOG_OVERLAP': 12,  # Lower than WRONG_WINNER — supportive conflicts, not destructive
 }
 
 # Severity priority
@@ -192,16 +228,95 @@ ACTION_CODES = {
         'description': 'Homepage is cannibalizing a service/product page. De-optimize homepage for the service keyword (strip from title, H1, meta, body). Homepage should only target [Brand] + [broad category]. Then strengthen the correct service page.',
         'requires_user_input': False,
     },
+    # DE_OPTIMIZE_HOMEPAGE is the canonical action code for HOMEPAGE_CANNIBALIZATION conflicts.
+    # It covers both "homepage hoarding" (homepage outranks service page) and
+    # "homepage over-targeting" (homepage splits impressions with service page).
+    'DE_OPTIMIZE_HOMEPAGE': {
+        'label': 'De-optimize Homepage for Service Keywords',
+        'description': (
+            'Homepage is ranking for service/product keywords that a dedicated page should own. '
+            'Action required:\n'
+            '1. Strip the conflicting keyword(s) from the homepage title tag, H1, meta description, '
+            'and body copy.\n'
+            '2. Homepage should target ONLY [Brand Name] + broad category (e.g., "Acme Plumbing — '
+            'Professional Plumbing Services").\n'
+            '3. Strengthen the correct service/product page: improve its title, meta, H1, and body '
+            'to clearly own the keyword.\n'
+            '4. Add a prominent internal link from the homepage to each de-optimized service page.\n'
+            'ABSOLUTE RULE: Homepage NEVER wins a service/product keyword conflict.'
+        ),
+        'requires_user_input': False,
+    },
     'SLUG_PIVOT': {
         'label': 'Slug Pivot + Differentiate',
         'description': 'Competing pages have high slug similarity (Jaccard > 0.6). Differentiate content AND recommend URL slug change to reinforce the new keyword angle. Old slug gets 301 to new slug.',
         'requires_user_input': True,
+    },
+    'REWRITE_AS_SPOKE': {
+        'label': 'Rewrite as Supporting Spoke',
+        'description': (
+            'Blog post targets the same keyword as a service page. '
+            'Rewrite the blog post as a supporting spoke that links prominently to the service hub. '
+            'Shift the blog\'s angle to informational ("How to…", "What is…") and add a clear CTA '
+            'linking to the service page. Do NOT redirect the blog post.'
+        ),
+        'requires_user_input': False,
+        'risk_badge': 'Content Change',
+        'risk_badge_color': 'blue',
+        'is_destructive': False,
+    },
+    'ADD_INTERNAL_LINKS': {
+        'label': 'Add Internal Links to Service Page',
+        'description': (
+            'Blog post covers a topic closely related to a service page. '
+            'Keep the existing blog content but add a prominent internal link to the service page '
+            '(inline contextual link + sidebar/CTA block). '
+            'This passes authority to the service page without altering the blog.'
+        ),
+        'requires_user_input': False,
+        'risk_badge': 'Content Change',
+        'risk_badge_color': 'blue',
+        'is_destructive': False,
+    },
+    'MERGE_INTO_SERVICE': {
+        'label': 'Merge Thin Blog into Service Page',
+        'description': (
+            'Blog post is thin (<300 words) and targets a keyword owned by a service page. '
+            'Migrate any unique content into the service page, then 301-redirect the blog URL '
+            'to the service page. Net result: one stronger page instead of two weak ones.'
+        ),
+        'requires_user_input': True,
+        'risk_badge': 'Content Change',
+        'risk_badge_color': 'blue',
+        'is_destructive': False,
     },
 }
 
 # =============================================================================
 # INTENT CLASSIFICATION
 # =============================================================================
+
+# Page types that signal informational intent (for blog/service overlap detection)
+INFORMATIONAL_PAGE_TYPES = {
+    'blog',
+    'portfolio',  # Portfolio posts are informational (not transactional landing pages)
+}
+
+# Page types that signal transactional intent
+TRANSACTIONAL_PAGE_TYPES = {
+    'service_hub',
+    'service_spoke',
+    'product',
+    'category_woo',
+    'category_shop',
+    'category_custom',
+    'shop_root',
+}
+
+# WordPress post_type signals
+# post_type='post' → informational (standard WP blog post)
+# post_type='page' → could be either; fall back to classified_type
+WP_INFORMATIONAL_POST_TYPES = {'post'}
 
 INTENT_MARKERS = {
     'transactional': [
@@ -289,3 +404,19 @@ SERVICE_KEYWORDS = [
     'maintenance', 'cleaning', 'restoration', 'consultation',
     'design', 'build', 'remodel', 'renovation',
 ]
+
+# =============================================================================
+# BLOG SERVICE OVERLAP THRESHOLDS
+# =============================================================================
+
+# Blog posts below this word count are candidates for MERGE_INTO_SERVICE
+THIN_BLOG_WORD_COUNT = 300
+
+# Minimum slug token overlap to consider blog/service conflict
+BLOG_SERVICE_MIN_TOKEN_OVERLAP = 1
+
+# Minimum number of blog posts targeting similar keywords to flag BLOG_CONSOLIDATION
+BLOG_CONSOLIDATION_MIN_COUNT = 3
+
+# Minimum slug token Jaccard similarity to group blogs for consolidation
+BLOG_CONSOLIDATION_JACCARD_THRESHOLD = 0.4

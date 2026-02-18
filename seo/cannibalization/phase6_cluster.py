@@ -173,7 +173,17 @@ def _generate_cluster_key(issue: Dict) -> str:
     if conflict_type == 'GSC_CONFIRMED':
         query = metadata.get('query', 'unknown')
         return f"{conflict_type}:{query}"
-    
+
+    # For homepage cannibalization: cluster by (homepage_path, service_path) pair
+    # so all stolen queries for the same homepage/service-page pair land together.
+    if conflict_type in ('HOMEPAGE_CANNIBALIZATION', 'GSC_HOMEPAGE_HOARDING', 'GSC_HOMEPAGE_SPLIT'):
+        homepage_url = metadata.get('homepage_url', '')
+        service_url = metadata.get('service_page_url', metadata.get('query', 'unknown'))
+        from urllib.parse import urlparse
+        hp_path = urlparse(homepage_url).path.rstrip('/') or '/'
+        svc_path = urlparse(service_url).path.rstrip('/') or 'unknown'
+        return f"{conflict_type}:{hp_path}::{svc_path}"
+
     # For wrong winner types: cluster by query
     if conflict_type in ['INTENT_MISMATCH', 'GEOGRAPHIC_MISMATCH', 'PAGE_TYPE_MISMATCH', 'HOMEPAGE_HOARDING']:
         query = metadata.get('query', 'unknown')
@@ -192,7 +202,11 @@ def _generate_cluster_key(issue: Dict) -> str:
 def _get_bucket(issue: Dict) -> str:
     """Get bucket for issue."""
     conflict_type = issue['conflict_type']
-    
+
+    # Homepage cannibalization conflicts are always SEARCH_CONFLICT (GSC-proven)
+    if conflict_type == 'HOMEPAGE_CANNIBALIZATION':
+        return 'SEARCH_CONFLICT'
+
     # Check if GSC validated
     if issue.get('gsc_validated') or conflict_type.startswith('GSC_'):
         return 'SEARCH_CONFLICT'
@@ -200,6 +214,10 @@ def _get_bucket(issue: Dict) -> str:
     # Wrong winner types
     if conflict_type in ['INTENT_MISMATCH', 'GEOGRAPHIC_MISMATCH', 'PAGE_TYPE_MISMATCH', 'HOMEPAGE_HOARDING']:
         return 'WRONG_WINNER'
+
+    # Honour explicitly set bucket from the issuing phase
+    if 'bucket' in issue:
+        return issue['bucket']
     
     # Default to site duplication
     return 'SITE_DUPLICATION'
@@ -207,6 +225,16 @@ def _get_bucket(issue: Dict) -> str:
 
 def _get_badge(issue: Dict) -> str:
     """Get badge for issue."""
+    conflict_type = issue['conflict_type']
+
+    # HOMEPAGE_CANNIBALIZATION is always CONFIRMED (GSC data proves it)
+    if conflict_type == 'HOMEPAGE_CANNIBALIZATION':
+        return 'CONFIRMED'
+
+    # Honour explicitly set badge from the issuing phase
+    if 'badge' in issue:
+        return issue['badge']
+
     bucket = _get_bucket(issue)
     
     if bucket == 'SEARCH_CONFLICT':
@@ -233,6 +261,10 @@ def _get_action_code(issue: Dict) -> str:
         'GEOGRAPHIC_MISMATCH': 'REWRITE_LOCAL_EVIDENCE',
         'PAGE_TYPE_MISMATCH': 'STRENGTHEN_CORRECT_PAGE',
         'HOMEPAGE_HOARDING': 'STRENGTHEN_CORRECT_PAGE',
+        # Homepage cannibalization — dedicated action code
+        'HOMEPAGE_CANNIBALIZATION': 'DE_OPTIMIZE_HOMEPAGE',
+        'GSC_HOMEPAGE_HOARDING': 'DE_OPTIMIZE_HOMEPAGE',
+        'GSC_HOMEPAGE_SPLIT': 'DE_OPTIMIZE_HOMEPAGE',
     }
     
     return action_map.get(conflict_type, 'REVIEW_AND_REDIRECT')
@@ -292,7 +324,26 @@ def _generate_recommendation(cluster: Dict) -> str:
     conflict_type = cluster['conflict_type']
     action_code = cluster['action_code']
     page_count = len(cluster['pages'])
-    
+
+    # Homepage Cannibalization: pull the per-keyword recommendation built in
+    # _detect_homepage_cannibalization() — it names exact keywords + service URL.
+    if conflict_type in ('HOMEPAGE_CANNIBALIZATION', 'GSC_HOMEPAGE_HOARDING', 'GSC_HOMEPAGE_SPLIT'):
+        for issue in cluster.get('issues', []):
+            meta_rec = issue.get('metadata', {}).get('recommendation', '')
+            if meta_rec:
+                return meta_rec
+        # Fallback if no per-keyword recommendation is available
+        gsc_data = cluster.get('gsc_data', {})
+        queries = gsc_data.get('queries', [])
+        kw_preview = ', '.join(repr(q) for q in queries[:3])
+        kw_suffix = f' and {len(queries) - 3} more' if len(queries) > 3 else ''
+        return (
+            f"Homepage is competing with a service/product page for {kw_preview}{kw_suffix}. "
+            "De-optimize homepage: strip these keywords from title, H1, meta description, and body. "
+            "Homepage should target [Brand] + broad category only. "
+            "Strengthen the correct service page to own these keywords."
+        )
+
     recommendations = {
         'TAXONOMY_CLASH': f"Choose ONE canonical folder structure for these {page_count} pages. Redirect duplicates via 301.",
         'LEGACY_CLEANUP': f"Redirect {page_count} legacy pages to their clean versions via 301.",

@@ -146,17 +146,34 @@ def select_recommended_winner(pages_data: list) -> dict:
     winner_index, winner_score = scores[0]
     winner_page = pages_data[winner_index]
     
-    # ABSOLUTE RULE: Homepage never wins service/product conflicts
+    # =========================================================================
+    # ABSOLUTE RULE: Homepage NEVER wins a service/product/location conflict.
+    #
+    # This rule cannot be overridden by GSC data, click counts, or impressions.
+    # If the scoring algorithm selects the homepage as the winner AND there is
+    # at least one service, service_hub, service_spoke, product, category,
+    # category_woo, category_shop, or location page in the conflict, the
+    # homepage is demoted and the highest-scoring non-homepage page wins.
+    #
+    # Enforces the Siloq SEO spec: homepage targets only [Brand] + broad
+    # category.  It must never own service/product/location keywords.
+    # =========================================================================
+    _NEVER_LOSE_TO_HOMEPAGE = frozenset({
+        'service', 'service_hub', 'service_spoke',
+        'product', 'category', 'category_woo', 'category_shop',
+        'location',
+    })
+
     homepage_override = False
     if winner_page.get('page_type') == 'homepage':
-        # Check if there are service/product/category pages in the conflict
+        # Check if any page that must beat the homepage is in the conflict
         service_pages = [
             (i, score) for i, score in scores
-            if pages_data[i].get('page_type') in ('service', 'service_hub', 'service_spoke', 'product', 'category', 'category_woo', 'category_shop')
+            if pages_data[i].get('page_type') in _NEVER_LOSE_TO_HOMEPAGE
         ]
-        
+
         if service_pages:
-            # Override winner with highest-scoring service/product/category page
+            # Demote homepage; promote highest-scoring non-homepage page
             winner_index, winner_score = service_pages[0]
             homepage_override = True
     
