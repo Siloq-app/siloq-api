@@ -188,6 +188,17 @@ class ClusterResult(models.Model):
     recommendation = models.TextField(blank=True)
     suggested_canonical_url = models.URLField(blank=True)
     
+    # Structural warning vs active conflict classification
+    conflict_subtype = models.CharField(
+        max_length=30,
+        default='active_conflict',
+        help_text="'structural_warning' (0 GSC impressions) or 'active_conflict'"
+    )
+    note = models.TextField(
+        blank=True,
+        help_text="Informational note for structural warnings"
+    )
+    
     # Status
     status = models.CharField(
         max_length=20,
