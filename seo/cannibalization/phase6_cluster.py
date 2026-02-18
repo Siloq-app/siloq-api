@@ -42,6 +42,8 @@ def run_phase6(all_issues: List[Dict]) -> List[Dict]:
         'severity': None,
         'action_code': None,
         'gsc_data': {},
+        'conflict_subtype': 'active_conflict',
+        'note': '',
     })
     
     for issue in all_issues:
@@ -61,6 +63,11 @@ def run_phase6(all_issues: List[Dict]) -> List[Dict]:
         issue_severity = issue.get('severity', 'LOW')
         if cluster['severity'] is None or _severity_rank(issue_severity) > _severity_rank(cluster['severity']):
             cluster['severity'] = issue_severity
+        
+        # Propagate structural_warning subtype and note
+        if issue.get('conflict_subtype') == 'structural_warning':
+            cluster['conflict_subtype'] = 'structural_warning'
+            cluster['note'] = issue.get('note', '')
         
         # Collect pages
         for page in issue.get('pages', []):
@@ -114,6 +121,9 @@ def run_phase6(all_issues: List[Dict]) -> List[Dict]:
             'pages': all_pages,
             'gsc_data': cluster['gsc_data'] if cluster['gsc_data'] else None,
             'recommendation': _generate_recommendation(cluster),
+            'conflict_subtype': cluster['conflict_subtype'],
+            'note': cluster['note'],
+            'issues': cluster['issues'],
         }
         
         clustered_issues.append(result)
