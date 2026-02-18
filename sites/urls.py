@@ -27,6 +27,7 @@ from seo.differentiate_views import (
     apply_differentiation,
 )
 from seo.redirect_views import create_redirect, list_redirects
+from integrations.gsc_views import connect_gsc_site, get_gsc_data, analyze_gsc_cannibalization
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -54,4 +55,8 @@ urlpatterns = [
     # Conflict Differentiation (AI-powered)
     path('<int:site_id>/conflicts/differentiate/', differentiate_conflict, name='conflict-differentiate'),
     path('<int:site_id>/conflicts/apply-differentiation/', apply_differentiation, name='conflict-apply-differentiation'),
+    # Google Search Console (site-specific)
+    path('<int:site_id>/gsc/connect/', connect_gsc_site, name='site-gsc-connect'),
+    path('<int:site_id>/gsc/data/', get_gsc_data, name='site-gsc-data'),
+    path('<int:site_id>/gsc/analyze/', analyze_gsc_cannibalization, name='site-gsc-analyze'),
 ]
