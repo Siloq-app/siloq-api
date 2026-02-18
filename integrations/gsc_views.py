@@ -428,6 +428,36 @@ def _get_valid_access_token(site) -> str:
     return site.gsc_access_token
 
 
+def fetch_gsc_daily_data(
+    access_token: str,
+    site_url: str,
+    days: int = 28
+) -> list:
+    """
+    Fetch daily position data for flip-flop detection.
+    
+    Args:
+        access_token: Valid GSC access token
+        site_url: GSC property URL
+        days: Number of days to fetch (default 28 for flip-flop detection)
+    
+    Returns:
+        List of dicts with keys: date, query, page, position, clicks, impressions
+    """
+    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    
+    # Fetch with date dimension included
+    return _fetch_search_analytics(
+        access_token=access_token,
+        site_url=site_url,
+        start_date=start_date,
+        end_date=end_date,
+        dimensions=['date', 'query', 'page'],
+        row_limit=25000,  # Higher limit for daily data
+    )
+
+
 def _fetch_search_analytics(
     access_token: str,
     site_url: str,
