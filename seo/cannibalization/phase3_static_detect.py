@@ -26,6 +26,46 @@ from .utils import (
 from .constants import CONFLICT_TYPES
 
 
+# Import helper to check product siblings
+def _are_product_siblings_check(page_a: PageClassification, page_b: PageClassification) -> bool:
+    """
+    Check if two pages are product siblings (spec v2.0).
+    Copied from phase2_safe_filters to avoid circular import.
+    """
+    STOP_WORDS = {'the', 'a', 'an', 'and', 'or', 'for', 'in', 'on', 'at', 'to', 'of', 'is', 'it', 'by', 'with'}
+    
+    # Check if pages share a common slug segment
+    a_segments = set(page_a.normalized_path.strip('/').split('/'))
+    b_segments = set(page_b.normalized_path.strip('/').split('/'))
+    shared_segments = a_segments & b_segments
+    
+    if not shared_segments:
+        return False
+    
+    # Same parent — use existing logic
+    if page_a.parent_path == page_b.parent_path:
+        if page_a.slug_last == page_b.slug_last:
+            return False
+        sim = slug_similarity(page_a.normalized_path, page_b.normalized_path)
+        return sim < 0.80
+    
+    # Different parent paths — check titles for distinct products
+    shared_tokens = set()
+    for seg in shared_segments:
+        shared_tokens.update(seg.lower().split('-'))
+    
+    a_title_tokens = set(page_a.title.lower().split()) - shared_tokens - STOP_WORDS
+    b_title_tokens = set(page_b.title.lower().split()) - shared_tokens - STOP_WORDS
+    
+    if a_title_tokens and b_title_tokens:
+        overlap = a_title_tokens & b_title_tokens
+        union = a_title_tokens | b_title_tokens
+        if len(union) > 0 and len(overlap) / len(union) < 0.5:
+            return True
+    
+    return False
+
+
 def run_phase3(
     classifications: List[PageClassification],
     safe_pairs: Set[FrozenSet[int]]
@@ -73,6 +113,9 @@ def _detect_taxonomy_clash(
         /shop/jazz-shoes/
         /product-category/jazz-shoes/
         → Taxonomy clash on "jazz-shoes"
+    
+    Special case: Product siblings (different parent paths, shared slug token, 
+    distinct title keywords) are classified as INFO with cross-linking recommendation.
     """
     issues = []
     
@@ -111,15 +154,40 @@ def _detect_taxonomy_clash(
                 filtered_pages.append(page)
         
         if len(filtered_pages) >= 2:
-            issues.append({
-                'conflict_type': 'TAXONOMY_CLASH',
-                'severity': 'HIGH',
-                'pages': filtered_pages,
-                'metadata': {
-                    'shared_slug': slug,
-                    'folder_count': len(folder_groups),
-                },
-            })
+            # Before flagging as HIGH conflict, check if these are product siblings
+            # with different parent paths (the "cheer" case)
+            all_siblings = True
+            for i in range(len(filtered_pages)):
+                for j in range(i + 1, len(filtered_pages)):
+                    if not _are_product_siblings_check(filtered_pages[i], filtered_pages[j]):
+                        all_siblings = False
+                        break
+                if not all_siblings:
+                    break
+            
+            if all_siblings and len(filtered_pages) >= 2:
+                # These are product siblings — classify as INFO with cross-linking
+                issues.append({
+                    'conflict_type': 'PRODUCT_SIBLINGS',
+                    'severity': 'INFO',
+                    'pages': filtered_pages,
+                    'metadata': {
+                        'shared_slug': slug,
+                        'folder_count': len(folder_groups),
+                        'recommendation': 'Add cross-links between related products',
+                    },
+                })
+            else:
+                # Normal taxonomy clash — HIGH severity
+                issues.append({
+                    'conflict_type': 'TAXONOMY_CLASH',
+                    'severity': 'HIGH',
+                    'pages': filtered_pages,
+                    'metadata': {
+                        'shared_slug': slug,
+                        'folder_count': len(folder_groups),
+                    },
+                })
     
     return issues
 
