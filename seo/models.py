@@ -727,6 +727,60 @@ class ValidationLog(models.Model):
 
 
 # ─────────────────────────────────────────────────────────────
+# DOMAIN 6: SLUG CHANGE ENGINE
+# ─────────────────────────────────────────────────────────────
+
+class SlugChangeLog(models.Model):
+    """
+    Tracks slug changes with automatic 301 redirect creation.
+    Safety: Redirect MUST be created before slug change.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    site = models.ForeignKey(Site, on_delete=models.CASCADE, related_name='slug_changes')
+    page_id = models.IntegerField(help_text="WordPress post/page ID")
+    old_url = models.CharField(max_length=2048)
+    old_slug = models.CharField(max_length=500)
+    new_url = models.CharField(max_length=2048)
+    new_slug = models.CharField(max_length=500)
+    redirect = models.ForeignKey(RedirectRegistry, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='slug_changes')
+    redirect_status = models.CharField(max_length=20, default='pending',
+        choices=[
+            ('pending', 'Pending'),
+            ('created', 'Created'),
+            ('failed', 'Failed'),
+            ('verified', 'Verified'),
+        ])
+    slug_change_status = models.CharField(max_length=20, default='pending',
+        choices=[
+            ('pending', 'Pending'),
+            ('completed', 'Completed'),
+            ('failed', 'Failed'),
+            ('rolled_back', 'Rolled Back'),
+        ])
+    reason = models.CharField(max_length=100, default='seo_optimization')
+    error_message = models.TextField(blank=True, null=True)
+    changed_by = models.CharField(max_length=255, default='siloq_system')
+    changed_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'slug_change_log'
+        indexes = [
+            models.Index(fields=['site']),
+            models.Index(fields=['page_id']),
+            models.Index(fields=['site', 'page_id']),
+            models.Index(fields=['old_url']),
+            models.Index(fields=['new_url']),
+            models.Index(fields=['changed_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.old_slug} → {self.new_slug} ({self.slug_change_status})"
+
+
+# ─────────────────────────────────────────────────────────────
+# DOMAIN 7: SILO HEALTH SCORING (v2)
 # DOMAIN 6: PAGE CONTENT OPTIMIZATION (Three-Layer Model)
 # ─────────────────────────────────────────────────────────────
 
@@ -832,6 +886,73 @@ class PageAnalysis(models.Model):
 
 class SiloHealthScore(models.Model):
     """
+    Silo Health Score v2 — 4-component weighted formula for silo quality.
+    
+    Components (each 0-100):
+    1. Internal Link Density (25%) — ratio of internal links between pages within silo vs ideal
+    2. Keyword Coherence (25%) — how well pages target related (not competing) keywords
+    3. Content Coverage (25%) — whether the silo covers all expected subtopics
+    4. Conflict Ratio (25%) — inverse of cannibalization conflicts within silo
+    
+    Overall score = weighted average of the 4 components (0-100).
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    site = models.ForeignKey(Site, on_delete=models.CASCADE, related_name='silo_health_scores')
+    silo = models.ForeignKey(SiloDefinition, on_delete=models.CASCADE, related_name='health_scores')
+    
+    # Overall score (0-100)
+    health_score = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    
+    # Component scores (0-100 each)
+    internal_link_density_score = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    keyword_coherence_score = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    content_coverage_score = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    conflict_ratio_score = models.DecimalField(max_digits=5, decimal_places=2, default=0)
+    
+    # Raw metrics used for calculation
+    total_pages = models.IntegerField(default=0)
+    total_internal_links = models.IntegerField(default=0)
+    ideal_internal_links = models.IntegerField(default=0)
+    unique_keywords = models.IntegerField(default=0)
+    competing_keywords = models.IntegerField(default=0)
+    expected_subtopics = models.IntegerField(default=0)
+    covered_subtopics = models.IntegerField(default=0)
+    open_conflicts = models.IntegerField(default=0)
+    resolved_conflicts = models.IntegerField(default=0)
+    
+    # Health status
+    health_status = models.CharField(max_length=20, default='unknown', choices=[
+        ('excellent', 'Excellent'),    # 90-100
+        ('good', 'Good'),               # 75-89
+        ('fair', 'Fair'),               # 60-74
+        ('poor', 'Poor'),               # 40-59
+        ('critical', 'Critical'),       # 0-39
+        ('unknown', 'Unknown'),
+    ])
+    
+    # Recommendations
+    recommended_actions = models.JSONField(default=list, blank=True)
+    
+    # Change tracking
+    previous_score = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    score_change = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    
+    # Timestamps
+    scored_at = models.DateTimeField(auto_now_add=True)
+    calculation_metadata = models.JSONField(default=dict, blank=True)
+    
+    class Meta:
+        db_table = 'silo_health_scores'
+        indexes = [
+            models.Index(fields=['site', 'silo']),
+            models.Index(fields=['site', 'scored_at']),
+            models.Index(fields=['health_status']),
+            models.Index(fields=['scored_at']),
+        ]
+        ordering = ['-scored_at']
+    
+    def __str__(self):
+        return f"{self.silo.name}: {self.health_score} ({self.health_status})"
     Historical snapshot of a silo's health score.
 
     A new record is written every time recalculation runs (on GSC connect,
