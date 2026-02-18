@@ -131,6 +131,17 @@ def run_analysis(site_id: int, include_gsc: bool = True, gsc_days: int = 90) -> 
                 )
         
         # =====================================================================
+        # BLOG vs SERVICE PAGE DETECTION (runs with or without GSC data)
+        # =====================================================================
+        # This phase runs unconditionally because it can detect structural
+        # overlaps even without GSC data.  When GSC data is available it
+        # upgrades matching pairs from POTENTIAL → CONFIRMED.
+        blog_service_issues = phase_blog_service.run_phase_blog_service(
+            classifications,
+            gsc_data=gsc_data or None,
+        )
+
+        # =====================================================================
         # SEVERITY GATE: Cap structural-only conflicts at MEDIUM
         # =====================================================================
         # Issues from Phase 3 (static detection) that were NOT upgraded by
