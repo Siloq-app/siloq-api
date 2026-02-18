@@ -115,9 +115,53 @@ def run_analysis(site_id: int, include_gsc: bool = True, gsc_days: int = 90) -> 
                 )
         
         # =====================================================================
+        # SEVERITY GATE: Cap structural-only conflicts at MEDIUM
+        # =====================================================================
+        # Issues from Phase 3 (static detection) that were NOT upgraded by
+        # Phase 4 GSC validation are "structural warnings" — title/slug
+        # overlap with zero search traffic proof.  These must never be
+        # HIGH or CRITICAL because flagging zero-impression overlaps as
+        # HIGH erodes user trust.
+        all_issues = static_issues + gsc_issues + wrong_winner_issues
+
+        for issue in all_issues:
+            # Only touch SITE_DUPLICATION / POTENTIAL issues (Phase 3)
+            bucket = issue.get('bucket', 'SITE_DUPLICATION')
+            badge  = issue.get('badge', 'POTENTIAL')
+
+            # Skip anything already GSC-validated or from Phase 4/5
+            if issue.get('gsc_validated'):
+                issue['conflict_subtype'] = 'active_conflict'
+                continue
+            if bucket == 'SEARCH_CONFLICT' or badge in ('CONFIRMED', 'WRONG_WINNER'):
+                issue['conflict_subtype'] = 'active_conflict'
+                continue
+
+            # Check whether ANY page in this issue has GSC impressions
+            has_gsc_data = False
+            for page in issue.get('pages', []):
+                # PageClassification objects won't have gsc_impressions,
+                # but dict-style pages (from serialisation) might.
+                if hasattr(page, '__getitem__'):
+                    if page.get('gsc_impressions', 0) > 0 or page.get('impressions', 0) > 0:
+                        has_gsc_data = True
+                        break
+
+            if not has_gsc_data:
+                # Structural warning — cap severity
+                if issue.get('severity', '').upper() in ('HIGH', 'SEVERE', 'CRITICAL'):
+                    issue['severity'] = 'MEDIUM'
+                issue['conflict_subtype'] = 'structural_warning'
+                issue['note'] = (
+                    'No search traffic data yet. Monitor \u2014 if both '
+                    'pages start ranking, they may compete.'
+                )
+            else:
+                issue['conflict_subtype'] = 'active_conflict'
+
+        # =====================================================================
         # PHASE 6: Clustering
         # =====================================================================
-        all_issues = static_issues + gsc_issues + wrong_winner_issues
         clustered_issues = phase6_cluster.run_phase6(all_issues)
         
         # =====================================================================
@@ -164,6 +208,15 @@ def run_analysis(site_id: int, include_gsc: bool = True, gsc_days: int = 90) -> 
                     if canonical_page:
                         suggested_canonical = canonical_page.url
                 
+                # Propagate structural_warning metadata from issues
+                conflict_subtype = 'active_conflict'
+                note = ''
+                for iss in cluster.get('issues', []):
+                    if iss.get('conflict_subtype') == 'structural_warning':
+                        conflict_subtype = 'structural_warning'
+                        note = iss.get('note', '')
+                        break
+
                 cluster_obj = ClusterResult(
                     analysis_run=analysis_run,
                     cluster_key=cluster['cluster_key'],
@@ -181,6 +234,8 @@ def run_analysis(site_id: int, include_gsc: bool = True, gsc_days: int = 90) -> 
                     gsc_data_json=gsc_data_json,
                     recommendation=cluster['recommendation'],
                     suggested_canonical_url=suggested_canonical,
+                    conflict_subtype=conflict_subtype,
+                    note=note,
                 )
                 cluster_objects.append(cluster_obj)
             
