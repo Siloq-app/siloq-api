@@ -209,6 +209,14 @@ ACTION_CODES = {
         'description': 'Competing pages have high slug similarity (Jaccard > 0.6). Differentiate content AND recommend URL slug change to reinforce the new keyword angle. Old slug gets 301 to new slug.',
         'requires_user_input': True,
     },
+    'BRAND_LINE_URL_RESTRUCTURE': {
+        'label': 'Restructure Brand Line URLs',
+        'description': (
+            'Pages in the same brand line are using flat URLs. '
+            'Restructure to hub + nested pattern for clear silo hierarchy.'
+        ),
+        'requires_user_input': False,
+    },
 
 }
 
