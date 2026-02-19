@@ -142,7 +142,6 @@ CONFLICT_TYPES = {
         'description': 'Homepage ranking for specific service query',
         'action_code': 'HOMEPAGE_DEOPTIMIZE',
     },
-    },
 }
 
 # =============================================================================
