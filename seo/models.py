@@ -855,6 +855,7 @@ class PageAnalysis(models.Model):
     error_message = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    generated_schema = models.JSONField(default=dict, blank=True)
 
     class Meta:
         db_table = 'page_analyses'
