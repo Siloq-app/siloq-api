@@ -295,3 +295,12 @@ def _classify_page_intent(path: str, title: str, page_type: str) -> str:
     
     # Default to ambiguous
     return 'ambiguous'
+
+def get_intent_type(path: str, title: str = '', page_type: str = 'page') -> str:
+    """
+    Public wrapper for _classify_page_intent.
+    Used by phase_blog_service and other phases needing intent classification.
+    
+    Returns: 'informational', 'transactional', 'navigational', 'listicle', or 'ambiguous'
+    """
+    return _classify_page_intent(path, title, page_type)
