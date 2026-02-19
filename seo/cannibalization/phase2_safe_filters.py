@@ -76,7 +76,12 @@ def _is_safe_pair(page_a: PageClassification, page_b: PageClassification) -> boo
     # FILTER 7: Product tag archives
     if _is_product_tag_archive(page_a) or _is_product_tag_archive(page_b):
         return True
-    
+
+    # FILTER 8: Brand line variants (Rule 2D — entity-aware)
+    # Requires Phase 0.5 entity extraction to have run first.
+    if _is_brand_line_variant(page_a, page_b):
+        return True
+
     return False
 
 
@@ -299,3 +304,135 @@ def _is_product_tag_archive(page: PageClassification) -> bool:
         return True
     
     return False
+
+
+# =============================================================================
+# Rule 2D: Brand Line Variant Exemption (entity-aware)
+# =============================================================================
+
+def _is_brand_line_variant(
+    pc_a: PageClassification, pc_b: PageClassification
+) -> bool:
+    """
+    Rule 2D: Pages sharing a brand_line entity but with different product_name
+    entities are variants within a brand line — NOT competitors.
+
+    Example:
+        "Chasse Performance VIP Jacket" vs "Chasse Performance All Star Jacket"
+        - brand_line MATCH:    "Chasse Performance"
+        - product_name DIFFER: "VIP Jacket" vs "All Star Jacket"
+        → EXEMPT (return True → safe pair)
+
+    Requires Phase 0.5 entity extraction to have populated
+    PageClassification.entities before this filter runs.
+
+    Returns True only when:
+    1. Both pages have at least one shared brand_line entity.
+    2. Both pages have at least one product_name entity.
+    3. There is NO overlap between their product_name sets.
+       (If they share a product_name they could still be duplicates.)
+    """
+    entities_a = pc_a.entities or []
+    entities_b = pc_b.entities or []
+
+    # Nothing to compare if entities haven't been extracted yet
+    if not entities_a or not entities_b:
+        return False
+
+    brand_lines_a = {e['text'].lower() for e in entities_a if e.get('type') == 'brand_line'}
+    brand_lines_b = {e['text'].lower() for e in entities_b if e.get('type') == 'brand_line'}
+    product_names_a = {e['text'].lower() for e in entities_a if e.get('type') == 'product_name'}
+    product_names_b = {e['text'].lower() for e in entities_b if e.get('type') == 'product_name'}
+
+    # Shared brand line AND different product names → brand line variant
+    shared_brand_lines = brand_lines_a & brand_lines_b
+    if shared_brand_lines and product_names_a and product_names_b:
+        if not (product_names_a & product_names_b):  # No shared product names
+            return True
+
+    return False
+
+
+# =============================================================================
+# Feature 3: Crystallized Couture URL Audit — Brand Line URL Restructure
+# =============================================================================
+
+def audit_brand_line_urls(classifications: list) -> list:
+    """
+    Audit pages grouped by shared brand_line entity for flat URL patterns.
+
+    E-commerce sites often create product pages at the root level:
+        /chasse-performance-vip-jacket/
+        /chasse-performance-all-star-jacket/
+
+    These should be restructured into a hub + nested silo:
+        /chasse-performance/              ← hub
+        /chasse-performance/vip-jacket/   ← product spoke
+        /chasse-performance/all-star-jacket/
+
+    Returns a list of BRAND_LINE_URL_RESTRUCTURE recommendation dicts,
+    one per brand line that has 2+ pages with flat URLs.
+    """
+    from django.utils.text import slugify
+
+    # Group pages by brand_line entities
+    brand_line_groups: dict = {}  # brand_line_text → [PageClassification, ...]
+    for pc in classifications:
+        for entity in (pc.entities or []):
+            if entity.get('type') == 'brand_line':
+                key = entity['text'].lower()
+                brand_line_groups.setdefault(key, []).append(pc)
+
+    recommendations = []
+    for brand_line_text, pages in brand_line_groups.items():
+        if len(pages) < 2:
+            continue  # Need at least 2 pages to form a group worth restructuring
+
+        # Check if any page uses a flat URL (depth 1 = single path segment)
+        flat_pages = [p for p in pages if p.depth == 1]
+        if len(flat_pages) < 2:
+            continue  # Only flag groups where 2+ pages are flat
+
+        # Build hub and spoke URL suggestions
+        brand_line_slug = slugify(brand_line_text)
+        hub_url = f'/{brand_line_slug}/'
+
+        spoke_suggestions = []
+        for pc in flat_pages:
+            # Try to derive a product name from entities
+            product_name = ''
+            for ent in (pc.entities or []):
+                if ent.get('type') == 'product_name':
+                    product_name = ent['text']
+                    break
+            if not product_name:
+                # Fallback: strip brand line tokens from the slug
+                product_name = pc.slug_last.replace(brand_line_slug, '').strip('-') or pc.slug_last
+
+            spoke_url = f'{hub_url}{slugify(product_name)}/'
+            spoke_suggestions.append({
+                'old_url': pc.url,
+                'new_url': spoke_url,
+                'redirect': '301',
+            })
+
+        recommendations.append({
+            'conflict_type': 'BRAND_LINE_URL_RESTRUCTURE',
+            'bucket': 'SITE_DUPLICATION',
+            'badge': 'POTENTIAL',
+            'severity': 'LOW',
+            'action_code': 'BRAND_LINE_URL_RESTRUCTURE',
+            'conflict_subtype': 'structural_warning',
+            'brand_line': brand_line_text,
+            'pages': flat_pages,
+            'recommendation': (
+                f'Pages in the "{brand_line_text}" brand line use flat URLs. '
+                f'Restructure into a hub + nested silo. '
+                f'Create hub page at {hub_url} and move product pages under it. '
+                f'Apply 301 redirects from old flat URLs to new nested URLs.'
+            ),
+            'hub_url': hub_url,
+            'spoke_suggestions': spoke_suggestions,
+        })
+
+    return recommendations

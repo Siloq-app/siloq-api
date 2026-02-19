@@ -17,6 +17,7 @@ from django.utils import timezone
 from django.db import transaction
 from sites.models import Site
 from .models import AnalysisRun, ClusterResult, PageClassification
+from . import phase0_entity_extraction
 from . import phase1_ingest
 from . import phase2_safe_filters
 from . import phase3_static_detect
@@ -64,7 +65,16 @@ def run_analysis(site_id: int, include_gsc: bool = True, gsc_days: int = 90) -> 
         if not classifications:
             analysis_run.mark_failed("No pages found to analyze")
             return analysis_run
-        
+
+        # =====================================================================
+        # PHASE 0.5: Entity Extraction (pre-filtering)
+        # Extracts named entities (brand, brand_line, product_name, etc.) from
+        # every page in ONE batched Claude API call.  Results are stored on
+        # each PageClassification.entities so that Phase 2 Rule 2D and Phase 3
+        # can use entity-aware comparisons instead of raw token matching.
+        # =====================================================================
+        phase0_entity_extraction.run_phase0_entity_extraction(classifications)
+
         # =====================================================================
         # PHASE 2: Safe Filters
         # =====================================================================

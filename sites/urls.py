@@ -37,6 +37,7 @@ from seo.page_analysis_views import (
     approve_recommendations,
     apply_recommendations,
 )
+from seo.entity_extraction_views import extract_entities
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -75,6 +76,8 @@ urlpatterns = [
     # Silo Health
     path('<int:site_id>/silo-health/', silo_health_scores, name='site-silo-health'),
     path('<int:site_id>/silo-health/recalculate/', silo_health_recalculate, name='site-silo-health-recalculate'),
+    # Phase 0.5: Entity Extraction
+    path('<int:site_id>/pages/extract-entities/', extract_entities, name='page-extract-entities'),
     # Pages Content Optimization — Three-Layer Model (GEO + SEO + CRO)
     path('<int:site_id>/pages/analyze/', analyze_page, name='page-analyze'),
     path('<int:site_id>/pages/analysis/', list_analyses, name='page-analysis-list'),

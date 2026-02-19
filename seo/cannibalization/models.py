@@ -278,6 +278,16 @@ class PageClassification(models.Model):
         help_text="List of slug tokens for similarity comparison"
     )
     
+    # Phase 0.5: Named entity extraction
+    entities = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            'Named entities extracted by Phase 0.5: '
+            '[{"text": "Chasse Performance", "type": "brand_line", "confidence": 0.95}, ...]'
+        ),
+    )
+
     # Thin content detection
     word_count = models.IntegerField(
         default=0,
