@@ -245,7 +245,7 @@ def _extract_h1(html: str) -> str:
     return ''
 
 
-def _build_analysis_prompt(absolute_url: str, gsc_data: dict, wp_meta: dict) -> str:
+def _build_analysis_prompt(absolute_url: str, gsc_data: dict, wp_meta: dict, site=None) -> str:
     """
     Build the user-side message for the AI analysis call.
     Assembles all available page signals into a structured context block.
@@ -260,6 +260,33 @@ def _build_analysis_prompt(absolute_url: str, gsc_data: dict, wp_meta: dict) -> 
 
     h2_headings = wp_meta.get('h2_headings', [])
     h2_summary = ', '.join(f'"{h}"' for h in h2_headings[:6]) if h2_headings else 'None detected'
+
+    # Entity profile context (if available)
+    entity_context = ''
+    if site:
+        try:
+            from seo.models import SiteEntityProfile
+            profile = SiteEntityProfile.objects.get(site=site)
+            if profile.business_name:
+                reviews_text = ''
+                if profile.gbp_reviews:
+                    top_reviews = profile.gbp_reviews[:3]
+                    reviews_text = '\n'.join([
+                        f'  - "{r["text"][:200]}" — {r["author"]} ({r["rating"]}★)'
+                        for r in top_reviews if r.get("text")
+                    ])
+                entity_context = f"""
+=== BUSINESS ENTITY PROFILE ===
+Business: {profile.business_name}
+Location: {profile.city}, {profile.state}
+Phone: {profile.phone}
+Services: {', '.join(profile.categories[:5]) if profile.categories else 'Not specified'}
+Service Area: {', '.join(profile.service_cities[:5]) if profile.service_cities else 'Not specified'}
+Google Rating: {profile.gbp_star_rating}★ ({profile.gbp_review_count} reviews)
+{f'Real Customer Reviews (USE THESE for CRO testimonial recommendations):{chr(10)}{reviews_text}' if reviews_text else 'No GBP reviews synced yet — for CRO testimonial recommendations, tell the user to connect their Google Business Profile in Settings.'}
+"""
+        except Exception:
+            pass
 
     return f"""Analyze this page against the Three-Layer Content Model.
 
@@ -278,7 +305,7 @@ Focus keyword: {wp_meta.get('focus_keyword') or 'Not set'}
 
 === CONTENT PREVIEW (first 1500 chars) ===
 {(wp_meta.get('content_snippet') or 'Content not available')[:1500]}
-
+{entity_context}
 === GOOGLE SEARCH CONSOLE DATA (last 90 days) ===
 Total clicks: {gsc_data.get('total_clicks', 0)}
 Total impressions: {gsc_data.get('total_impressions', 0)}
@@ -442,16 +469,56 @@ def _apply_recommendation_to_wordpress(site: Site, analysis: PageAnalysis, rec: 
     }
 
 
-def _generate_schema_for_recommendations(ai_result: dict, wp_meta: dict, absolute_url: str) -> dict:
-    """Generate JSON-LD schema markup based on AI GEO recommendations."""
-    import re as _re
-    geo_recs = ai_result.get('geo_recommendations', [])
+def _get_entity_profile(site) -> dict:
+    """Fetch Site Entity Profile data for schema generation. Returns empty dict if not set up."""
+    try:
+        from seo.models import SiteEntityProfile
+        profile = SiteEntityProfile.objects.get(site=site)
+        return {
+            'business_name': profile.business_name,
+            'description': profile.description,
+            'phone': profile.phone,
+            'email': profile.email,
+            'street_address': profile.street_address,
+            'city': profile.city,
+            'state': profile.state,
+            'zip_code': profile.zip_code,
+            'country': profile.country,
+            'founding_year': profile.founding_year,
+            'founder_name': profile.founder_name,
+            'price_range': profile.price_range,
+            'categories': profile.categories,
+            'service_cities': profile.service_cities,
+            'hours': profile.hours,
+            'social_urls': profile.same_as_urls,
+            'gbp_star_rating': profile.gbp_star_rating,
+            'gbp_review_count': profile.gbp_review_count,
+            'gbp_reviews': profile.gbp_reviews[:5],
+            'certifications': profile.certifications,
+        }
+    except Exception:
+        return {}
 
-    # Extract FAQ Q&A pairs from GEO recommendation "after" text
+
+def _generate_schema_for_recommendations(ai_result: dict, wp_meta: dict, absolute_url: str, site=None) -> dict:
+    """
+    Generate comprehensive JSON-LD schema based on page type, AI recommendations,
+    and Site Entity Profile data. Schema type is determined automatically from page type.
+    """
+    import re as _re
+
+    geo_recs = ai_result.get('geo_recommendations', [])
+    entity = _get_entity_profile(site) if site else {}
+
+    business_name = entity.get('business_name') or wp_meta.get('title', '').split('|')[0].strip() or ''
+    description = entity.get('description') or wp_meta.get('meta_description', '') or ''
+    url_lower = absolute_url.lower()
+    path = url_lower.rstrip('/').split('/')
+
+    # ── Extract FAQ pairs from GEO recommendations ────────────────────────
     faq_pairs = []
     for rec in geo_recs:
         after_text = rec.get('after', '')
-        # Match Q: .../A: ... patterns, also **Q:** **A:** markdown style
         pairs = _re.findall(
             r'(?:Q:|Question:|\*\*Q:\*\*|^\d+\.\s)(.+?)(?:\n|$).*?(?:A:|Answer:|\*\*A:\*\*)(.+?)(?=\n\n|\n(?:Q:|Question:|\*\*Q:)|\Z)',
             after_text, _re.DOTALL | _re.IGNORECASE | _re.MULTILINE
@@ -459,6 +526,129 @@ def _generate_schema_for_recommendations(ai_result: dict, wp_meta: dict, absolut
         for q, a in pairs:
             faq_pairs.append({'q': q.strip()[:200], 'a': a.strip()[:500]})
 
+    # ── Determine page type ───────────────────────────────────────────────
+    is_homepage = path[-1] in ('', '/') or absolute_url.rstrip('/') == absolute_url.split('/')[2]
+    is_service  = any(x in url_lower for x in ['/services/', '/service/'])
+    is_blog     = any(x in url_lower for x in ['/blog/', '/post/', '/news/', '/article/'])
+    is_about    = 'about' in url_lower
+    is_contact  = 'contact' in url_lower
+    is_location = any(x in url_lower for x in ['/location/', '/locations/', '/area/', '-ks-', '-mo-', '-tx-', '-ca-'])
+
+    # ── Build base organization block ─────────────────────────────────────
+    org_block = {
+        '@type': 'LocalBusiness',
+        'name': business_name,
+        'description': description,
+        'url': absolute_url.split('/services/')[0].split('/blog/')[0].rstrip('/') + '/',
+    }
+    if entity.get('phone'):
+        org_block['telephone'] = entity['phone']
+    if entity.get('email'):
+        org_block['email'] = entity['email']
+    if entity.get('street_address') and entity.get('city'):
+        org_block['address'] = {
+            '@type': 'PostalAddress',
+            'streetAddress': entity['street_address'],
+            'addressLocality': entity['city'],
+            'addressRegion': entity.get('state', ''),
+            'postalCode': entity.get('zip_code', ''),
+            'addressCountry': entity.get('country', 'US'),
+        }
+    if entity.get('service_cities'):
+        org_block['areaServed'] = entity['service_cities']
+    if entity.get('social_urls'):
+        org_block['sameAs'] = entity['social_urls']
+    if entity.get('gbp_star_rating') and entity.get('gbp_review_count'):
+        org_block['aggregateRating'] = {
+            '@type': 'AggregateRating',
+            'ratingValue': str(entity['gbp_star_rating']),
+            'reviewCount': str(entity['gbp_review_count']),
+        }
+    if entity.get('hours'):
+        org_block['openingHoursSpecification'] = [
+            {'@type': 'OpeningHoursSpecification', 'dayOfWeek': day.capitalize(), 'description': hours_text}
+            for day, hours_text in entity['hours'].items()
+        ]
+
+    # ── Homepage schema ───────────────────────────────────────────────────
+    if is_homepage:
+        schema = {'@context': 'https://schema.org', **org_block}
+        if entity.get('founding_year'):
+            schema['foundingDate'] = str(entity['founding_year'])
+        if entity.get('founder_name'):
+            schema['founder'] = {'@type': 'Person', 'name': entity['founder_name']}
+        return {'schema_type': 'LocalBusiness', 'json_ld': schema}
+
+    # ── Service page schema ───────────────────────────────────────────────
+    if is_service:
+        title = wp_meta.get('title', business_name)
+        graph = [
+            {
+                '@type': 'Service',
+                'name': title,
+                'description': description or title,
+                'url': absolute_url,
+                'provider': {'@type': 'LocalBusiness', 'name': business_name},
+            }
+        ]
+        if entity.get('service_cities'):
+            graph[0]['areaServed'] = entity['service_cities']
+        if faq_pairs:
+            graph.append({
+                '@type': 'FAQPage',
+                'mainEntity': [
+                    {'@type': 'Question', 'name': p['q'],
+                     'acceptedAnswer': {'@type': 'Answer', 'text': p['a']}}
+                    for p in faq_pairs[:10]
+                ]
+            })
+        graph.append({'@type': 'BreadcrumbList', 'itemListElement': _build_breadcrumbs(absolute_url)})
+        return {'schema_type': 'Service+FAQ', 'json_ld': {'@context': 'https://schema.org', '@graph': graph}}
+
+    # ── Blog post schema ──────────────────────────────────────────────────
+    if is_blog:
+        schema = {
+            '@context': 'https://schema.org',
+            '@type': 'Article',
+            'headline': wp_meta.get('title', ''),
+            'description': description,
+            'url': absolute_url,
+            'publisher': {'@type': 'Organization', 'name': business_name},
+        }
+        if faq_pairs:
+            schema['hasPart'] = {
+                '@type': 'FAQPage',
+                'mainEntity': [
+                    {'@type': 'Question', 'name': p['q'],
+                     'acceptedAnswer': {'@type': 'Answer', 'text': p['a']}}
+                    for p in faq_pairs[:5]
+                ]
+            }
+        return {'schema_type': 'Article', 'json_ld': schema}
+
+    # ── About page ────────────────────────────────────────────────────────
+    if is_about:
+        schema = {'@context': 'https://schema.org', **org_block}
+        return {'schema_type': 'Organization', 'json_ld': schema}
+
+    # ── Contact page ──────────────────────────────────────────────────────
+    if is_contact:
+        schema = {
+            '@context': 'https://schema.org',
+            '@type': 'ContactPage',
+            'url': absolute_url,
+            'name': f'Contact {business_name}',
+        }
+        if entity.get('phone') or entity.get('email'):
+            schema['mainEntity'] = {
+                '@type': 'ContactPoint',
+                'telephone': entity.get('phone', ''),
+                'email': entity.get('email', ''),
+                'contactType': 'customer service',
+            }
+        return {'schema_type': 'ContactPage', 'json_ld': schema}
+
+    # ── FAQ fallback for any page with FAQ recs ───────────────────────────
     if faq_pairs:
         return {
             'schema_type': 'FAQPage',
@@ -466,32 +656,31 @@ def _generate_schema_for_recommendations(ai_result: dict, wp_meta: dict, absolut
                 '@context': 'https://schema.org',
                 '@type': 'FAQPage',
                 'mainEntity': [
-                    {
-                        '@type': 'Question',
-                        'name': p['q'],
-                        'acceptedAnswer': {'@type': 'Answer', 'text': p['a']}
-                    }
+                    {'@type': 'Question', 'name': p['q'],
+                     'acceptedAnswer': {'@type': 'Answer', 'text': p['a']}}
                     for p in faq_pairs[:10]
                 ]
             }
         }
 
-    # Service page schema
-    is_service = any(x in absolute_url.lower() for x in ['/services/', '/service/'])
-    title = wp_meta.get('title', '')
-    if is_service and title:
-        return {
-            'schema_type': 'Service',
-            'json_ld': {
-                '@context': 'https://schema.org',
-                '@type': 'Service',
-                'name': title,
-                'description': wp_meta.get('meta_description', '') or title,
-                'url': absolute_url,
-            }
-        }
-
     return {}
+
+
+def _build_breadcrumbs(url: str) -> list:
+    """Build BreadcrumbList itemListElement from URL path."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    parts = [p for p in parsed.path.strip('/').split('/') if p]
+    items = [{'@type': 'ListItem', 'position': 1, 'name': 'Home', 'item': base + '/'}]
+    for i, part in enumerate(parts, 2):
+        items.append({
+            '@type': 'ListItem',
+            'position': i,
+            'name': part.replace('-', ' ').title(),
+            'item': base + '/' + '/'.join(parts[:i-1]) + '/',
+        })
+    return items
 
 
 # ── View: POST /api/v1/sites/{site_id}/pages/analyze/ ─────────────────────────
@@ -531,7 +720,7 @@ def analyze_page(request, site_id: int):
         wp_meta = _fetch_wp_meta_for_page(site, absolute_url)
 
         # Step 3: Build AI prompt
-        user_message = _build_analysis_prompt(absolute_url, gsc_data, wp_meta)
+        user_message = _build_analysis_prompt(absolute_url, gsc_data, wp_meta, site=site)
 
         # Step 4: Call AI
         ai_result = _call_ai_for_analysis(user_message)
@@ -548,7 +737,7 @@ def analyze_page(request, site_id: int):
 
         # Step 6: Persist
         analysis.page_title = wp_meta.get('title', '')
-        analysis.generated_schema = _generate_schema_for_recommendations(ai_result, wp_meta, absolute_url)
+        analysis.generated_schema = _generate_schema_for_recommendations(ai_result, wp_meta, absolute_url, site=site)
         analysis.gsc_data = gsc_data
         analysis.wp_meta = wp_meta
         analysis.geo_score = geo_score
