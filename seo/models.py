@@ -954,3 +954,81 @@ class SiloHealthScore(models.Model):
     
     def __str__(self):
         return f"{self.silo.name}: {self.health_score} ({self.health_status})"
+
+
+class SiteEntityProfile(models.Model):
+    """
+    Single source of truth for business data used in schema generation.
+    One profile per site — all schema for all pages references this.
+    """
+    site = models.OneToOneField(
+        'sites.Site',
+        on_delete=models.CASCADE,
+        related_name='entity_profile',
+    )
+
+    # Core business info
+    business_name = models.CharField(max_length=255, blank=True)
+    description = models.TextField(blank=True)
+    phone = models.CharField(max_length=50, blank=True)
+    email = models.EmailField(blank=True)
+    founding_year = models.IntegerField(null=True, blank=True)
+    founder_name = models.CharField(max_length=255, blank=True)
+    num_employees = models.CharField(max_length=50, blank=True)  # e.g. "10-50"
+    price_range = models.CharField(max_length=20, blank=True)    # e.g. "$$"
+    languages = models.JSONField(default=list, blank=True)        # ["English", "Spanish"]
+    payment_methods = models.JSONField(default=list, blank=True)  # ["Cash", "Visa", "Check"]
+
+    # Address
+    street_address = models.CharField(max_length=255, blank=True)
+    city = models.CharField(max_length=100, blank=True)
+    state = models.CharField(max_length=100, blank=True)
+    zip_code = models.CharField(max_length=20, blank=True)
+    country = models.CharField(max_length=100, blank=True, default='US')
+    latitude = models.FloatField(null=True, blank=True)
+    longitude = models.FloatField(null=True, blank=True)
+
+    # Service area
+    service_cities = models.JSONField(default=list, blank=True)   # ["Kansas City", "Lee's Summit"]
+    service_zips = models.JSONField(default=list, blank=True)
+    service_radius_miles = models.IntegerField(null=True, blank=True)
+
+    # Business hours (JSON: {"monday": "9:00 AM - 5:00 PM", ...})
+    hours = models.JSONField(default=dict, blank=True)
+
+    # Categories & certifications
+    categories = models.JSONField(default=list, blank=True)        # ["Bathroom Remodeling", "Tile Installation"]
+    certifications = models.JSONField(default=list, blank=True)
+    license_numbers = models.JSONField(default=list, blank=True)
+
+    # Social profiles (for sameAs schema)
+    url_facebook = models.URLField(blank=True)
+    url_instagram = models.URLField(blank=True)
+    url_linkedin = models.URLField(blank=True)
+    url_twitter = models.URLField(blank=True)
+    url_youtube = models.URLField(blank=True)
+    url_tiktok = models.URLField(blank=True)
+
+    # GBP / Google Places
+    gbp_url = models.URLField(blank=True)
+    google_place_id = models.CharField(max_length=255, blank=True)
+    gbp_star_rating = models.FloatField(null=True, blank=True)
+    gbp_review_count = models.IntegerField(null=True, blank=True)
+    gbp_reviews = models.JSONField(default=list, blank=True)  # [{text, author, rating, date}, ...]
+    gbp_last_synced = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Entity Profile: {self.business_name or self.site}"
+
+    @property
+    def same_as_urls(self):
+        """Return list of non-empty social/profile URLs for sameAs schema."""
+        return [
+            u for u in [
+                self.url_facebook, self.url_instagram, self.url_linkedin,
+                self.url_twitter, self.url_youtube, self.url_tiktok,
+            ] if u
+        ]

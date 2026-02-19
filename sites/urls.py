@@ -38,6 +38,7 @@ from seo.page_analysis_views import (
     apply_recommendations,
 )
 from seo.entity_extraction_views import extract_entities
+from seo.entity_profile_views import entity_profile, sync_gbp
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -84,4 +85,7 @@ urlpatterns = [
     path('<int:site_id>/pages/analysis/<int:analysis_id>/', get_analysis, name='page-analysis-detail'),
     path('<int:site_id>/pages/analysis/<int:analysis_id>/approve/', approve_recommendations, name='page-analysis-approve'),
     path('<int:site_id>/pages/analysis/<int:analysis_id>/apply/', apply_recommendations, name='page-analysis-apply'),
+    # Site Entity Profile
+    path('<int:site_id>/entity-profile/', entity_profile, name='site-entity-profile'),
+    path('<int:site_id>/entity-profile/sync-gbp/', sync_gbp, name='site-entity-profile-sync-gbp'),
 ]
