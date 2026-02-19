@@ -124,6 +124,11 @@ def sync_gbp(request, site_id):
     place_id = request.data.get('place_id') or profile.google_place_id
     gbp_url = request.data.get('gbp_url') or profile.gbp_url
 
+    # If input looks like a bare Place ID (starts with ChIJ or similar), use directly
+    raw_input = request.data.get('place_id') or request.data.get('gbp_url') or ''
+    if raw_input and not raw_input.startswith('http') and len(raw_input) > 10:
+        place_id = raw_input
+
     # Resolve place_id from URL if needed
     if not place_id and gbp_url:
         try:
@@ -144,25 +149,25 @@ def sync_gbp(request, site_id):
             if coord_match:
                 location_bias = f"point:{coord_match.group(1)},{coord_match.group(2)}"
 
-            find_params = {
-                'input': search_input,
-                'inputtype': 'textquery',
-                'fields': 'place_id',
+            # Use Text Search (more reliable for local businesses than findplacefromtext)
+            text_params: dict = {
+                'query': search_input,
                 'key': GOOGLE_PLACES_API_KEY,
             }
-            if location_bias:
-                find_params['locationbias'] = location_bias
+            if coord_match:
+                text_params['location'] = f"{coord_match.group(1)},{coord_match.group(2)}"
+                text_params['radius'] = '50000'  # 50km — wide enough to catch any local biz
 
             find_resp = requests.get(
-                'https://maps.googleapis.com/maps/api/place/findplacefromtext/json',
-                params=find_params,
+                'https://maps.googleapis.com/maps/api/place/textsearch/json',
+                params=text_params,
                 timeout=10,
             )
             result_json = find_resp.json()
-            logger.info('findplacefromtext status: %s', result_json.get('status'))
-            candidates = result_json.get('candidates', [])
-            if candidates:
-                place_id = candidates[0].get('place_id')
+            logger.info('textsearch status: %s, results: %d', result_json.get('status'), len(result_json.get('results', [])))
+            results = result_json.get('results', [])
+            if results:
+                place_id = results[0].get('place_id')
         except Exception as e:
             logger.warning('Place ID lookup failed: %s', e)
 
