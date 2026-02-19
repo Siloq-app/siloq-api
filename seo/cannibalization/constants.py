@@ -204,15 +204,12 @@ ACTION_CODES = {
         'description': 'Homepage is cannibalizing a service/product page. De-optimize homepage for the service keyword (strip from title, H1, meta, body). Homepage should only target [Brand] + [broad category]. Then strengthen the correct service page.',
         'requires_user_input': False,
     },
-        'requires_user_input': False,
-    },
     'SLUG_PIVOT': {
         'label': 'Slug Pivot + Differentiate',
         'description': 'Competing pages have high slug similarity (Jaccard > 0.6). Differentiate content AND recommend URL slug change to reinforce the new keyword angle. Old slug gets 301 to new slug.',
         'requires_user_input': True,
     },
 
-    },
 }
 
 # =============================================================================
