@@ -386,29 +386,42 @@ def _apply_recommendation_to_wordpress(site: Site, analysis: PageAnalysis, rec: 
     """
     Push a single approved recommendation to WordPress via the Siloq plugin webhook.
 
-    The WP plugin handles the 'content.apply_optimization' event and updates
-    the post fields accordingly.
+    Uses the 'page.update_meta' event which the WP plugin handles natively.
+    Maps recommendation field names to the payload keys the plugin expects.
 
     Returns a dict with 'success' (bool), 'rec_id' (str), and 'error' (str|None).
     """
-    payload = {
-        'page_url': analysis.page_url,
-        'analysis_id': analysis.id,
-        'recommendation': {
-            'id': rec.get('id'),
-            'layer': rec.get('layer'),
-            'field': rec.get('field'),
-            'after': rec.get('after'),
-        },
-    }
+    field = rec.get('field', '')
+    after = rec.get('after', '')
+    rec_id = rec.get('id')
+
+    # Fields not yet automatable via page.update_meta
+    if field == 'content_body':
+        logger.info('Skipping content_body rec %s — manual application required', rec_id)
+        return {'rec_id': rec_id, 'success': False, 'error': 'content_body updates require manual application in WordPress'}
+    if field == 'schema':
+        logger.info('Skipping schema rec %s — not yet automated', rec_id)
+        return {'rec_id': rec_id, 'success': False, 'error': 'schema updates not yet automated'}
+
+    # Build page.update_meta payload — WP plugin expects {url, title?, meta_description?, h1?}
+    data: dict = {'url': analysis.page_url}
+    if field == 'title':
+        data['title'] = after
+    elif field == 'meta_description':
+        data['meta_description'] = after
+    elif field == 'h1':
+        data['h1'] = after
+    else:
+        # Pass through any other string fields (future proofing)
+        data[field] = after
 
     result = send_webhook_to_wordpress(
         site=site,
-        event_type='content.apply_optimization',
-        data=payload,
+        event_type='page.update_meta',
+        data=data,
     )
     return {
-        'rec_id': rec.get('id'),
+        'rec_id': rec_id,
         'success': result.get('success', False),
         'error': result.get('error'),
     }
