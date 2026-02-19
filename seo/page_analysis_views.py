@@ -400,8 +400,22 @@ def _apply_recommendation_to_wordpress(site: Site, analysis: PageAnalysis, rec: 
         logger.info('Skipping content_body rec %s — manual application required', rec_id)
         return {'rec_id': rec_id, 'success': False, 'error': 'content_body updates require manual application in WordPress'}
     if field == 'schema':
-        logger.info('Skipping schema rec %s — not yet automated', rec_id)
-        return {'rec_id': rec_id, 'success': False, 'error': 'schema updates not yet automated'}
+        schema_data = getattr(analysis, 'generated_schema', {}) or {}
+        if not schema_data.get('json_ld'):
+            return {'rec_id': rec_id, 'success': False, 'error': 'No schema generated for this analysis — re-run Analyze first'}
+        result = send_webhook_to_wordpress(
+            site=site,
+            event_type='schema.updated',
+            data={
+                'url': analysis.page_url,
+                'schema_markup': schema_data['json_ld'],
+            }
+        )
+        return {
+            'rec_id': rec_id,
+            'success': result.get('success', False),
+            'error': result.get('error'),
+        }
 
     # Build page.update_meta payload — WP plugin expects {url, title?, meta_description?, h1?}
     data: dict = {'url': analysis.page_url}
@@ -425,6 +439,58 @@ def _apply_recommendation_to_wordpress(site: Site, analysis: PageAnalysis, rec: 
         'success': result.get('success', False),
         'error': result.get('error'),
     }
+
+
+def _generate_schema_for_recommendations(ai_result: dict, wp_meta: dict, absolute_url: str) -> dict:
+    """Generate JSON-LD schema markup based on AI GEO recommendations."""
+    import re as _re
+    geo_recs = ai_result.get('geo_recommendations', [])
+
+    # Extract FAQ Q&A pairs from GEO recommendation "after" text
+    faq_pairs = []
+    for rec in geo_recs:
+        after_text = rec.get('after', '')
+        # Match Q: .../A: ... patterns, also **Q:** **A:** markdown style
+        pairs = _re.findall(
+            r'(?:Q:|Question:|\*\*Q:\*\*|^\d+\.\s)(.+?)(?:\n|$).*?(?:A:|Answer:|\*\*A:\*\*)(.+?)(?=\n\n|\n(?:Q:|Question:|\*\*Q:)|\Z)',
+            after_text, _re.DOTALL | _re.IGNORECASE | _re.MULTILINE
+        )
+        for q, a in pairs:
+            faq_pairs.append({'q': q.strip()[:200], 'a': a.strip()[:500]})
+
+    if faq_pairs:
+        return {
+            'schema_type': 'FAQPage',
+            'json_ld': {
+                '@context': 'https://schema.org',
+                '@type': 'FAQPage',
+                'mainEntity': [
+                    {
+                        '@type': 'Question',
+                        'name': p['q'],
+                        'acceptedAnswer': {'@type': 'Answer', 'text': p['a']}
+                    }
+                    for p in faq_pairs[:10]
+                ]
+            }
+        }
+
+    # Service page schema
+    is_service = any(x in absolute_url.lower() for x in ['/services/', '/service/'])
+    title = wp_meta.get('title', '')
+    if is_service and title:
+        return {
+            'schema_type': 'Service',
+            'json_ld': {
+                '@context': 'https://schema.org',
+                '@type': 'Service',
+                'name': title,
+                'description': wp_meta.get('meta_description', '') or title,
+                'url': absolute_url,
+            }
+        }
+
+    return {}
 
 
 # ── View: POST /api/v1/sites/{site_id}/pages/analyze/ ─────────────────────────
@@ -481,6 +547,7 @@ def analyze_page(request, site_id: int):
 
         # Step 6: Persist
         analysis.page_title = wp_meta.get('title', '')
+        analysis.generated_schema = _generate_schema_for_recommendations(ai_result, wp_meta, absolute_url)
         analysis.gsc_data = gsc_data
         analysis.wp_meta = wp_meta
         analysis.geo_score = geo_score
