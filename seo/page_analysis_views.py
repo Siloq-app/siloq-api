@@ -523,6 +523,11 @@ def list_analyses(request, site_id: int):
         .order_by('-created_at')
     )
 
+    # Filter by page_url if provided as query param
+    page_url_filter = request.query_params.get('page_url')
+    if page_url_filter:
+        analyses = analyses.filter(page_url=page_url_filter)
+
     return Response({
         'count': analyses.count(),
         'results': [_serialize_analysis_summary(a) for a in analyses],
@@ -674,6 +679,10 @@ def _serialize_analysis(analysis: PageAnalysis) -> dict:
         'status': analysis.status,
         'error_message': analysis.error_message or None,
         # Flat fields — match the frontend PageAnalysis interface
+        'geo_score': analysis.geo_score,
+        'seo_score': analysis.seo_score,
+        'cro_score': analysis.cro_score,
+        'overall_score': analysis.overall_score,
         'geo_recommendations': geo_recs,
         'seo_recommendations': seo_recs,
         'cro_recommendations': cro_recs,
@@ -704,8 +713,11 @@ def _serialize_analysis(analysis: PageAnalysis) -> dict:
 
 
 def _serialize_analysis_summary(analysis: PageAnalysis) -> dict:
-    """Compact serialization for list views — omits recommendation details."""
-    all_recs = _all_recommendations(analysis)
+    """Compact serialization for list views — includes flat fields matching PageAnalysis interface."""
+    geo_recs = analysis.geo_recommendations or []
+    seo_recs = analysis.seo_recommendations or []
+    cro_recs = analysis.cro_recommendations or []
+    all_recs = list(geo_recs) + list(seo_recs) + list(cro_recs)
     pending_count = sum(1 for r in all_recs if r.get('status') == 'pending')
     approved_count = sum(1 for r in all_recs if r.get('status') == 'approved')
     applied_count = sum(1 for r in all_recs if r.get('status') == 'applied')
@@ -715,6 +727,15 @@ def _serialize_analysis_summary(analysis: PageAnalysis) -> dict:
         'page_url': analysis.page_url,
         'page_title': analysis.page_title,
         'status': analysis.status,
+        # Flat score fields — match frontend PageAnalysis interface
+        'geo_score': analysis.geo_score,
+        'seo_score': analysis.seo_score,
+        'cro_score': analysis.cro_score,
+        'overall_score': analysis.overall_score,
+        # Flat recommendation fields
+        'geo_recommendations': geo_recs,
+        'seo_recommendations': seo_recs,
+        'cro_recommendations': cro_recs,
         'scores': {
             'geo': analysis.geo_score,
             'seo': analysis.seo_score,
