@@ -670,9 +670,51 @@ def apply_recommendations(request, site_id: int, analysis_id: int):
 
     analysis.save(update_fields=['geo_recommendations', 'seo_recommendations', 'cro_recommendations'])
 
+    # ── Verification: re-fetch WP page and confirm changes landed ──────────
+    verified = []
+    unverified = []
+    verification_details = {}
+
+    if applied:
+        import time as _time
+        _time.sleep(3)
+        try:
+            wp_meta_after = _fetch_wp_meta_for_page(site, analysis.page_url)
+            content_after = ' '.join([
+                wp_meta_after.get('title', ''),
+                wp_meta_after.get('meta_description', ''),
+                wp_meta_after.get('h1', ''),
+                wp_meta_after.get('content_snippet', ''),
+            ]).lower()
+
+            # Build lookup of rec_id -> rec dict
+            all_recs = {}
+            for layer_key in ('geo_recommendations', 'seo_recommendations', 'cro_recommendations'):
+                for rec in getattr(analysis, layer_key):
+                    all_recs[rec.get('id')] = rec
+
+            for rec_id in applied:
+                rec = all_recs.get(rec_id, {})
+                after_text = (rec.get('after') or '')[:80].lower().strip()
+                found = bool(after_text and after_text in content_after)
+                verification_details[rec_id] = {'found': found, 'field': rec.get('field', '')}
+                if found:
+                    verified.append(rec_id)
+                    rec['status'] = 'verified'
+                else:
+                    unverified.append(rec_id)
+                    rec['status'] = 'applied_unverified'
+
+            analysis.save(update_fields=['geo_recommendations', 'seo_recommendations', 'cro_recommendations'])
+        except Exception as exc:
+            logger.warning('Verification fetch failed: %s', exc)
+
     return Response({
         'applied': applied,
         'failed': failed,
+        'verified': verified,
+        'unverified': unverified,
+        'verification_details': verification_details,
         'analysis_id': analysis.id,
     })
 
