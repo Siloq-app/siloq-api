@@ -663,6 +663,9 @@ def apply_recommendations(request, site_id: int, analysis_id: int):
 
 def _serialize_analysis(analysis: PageAnalysis) -> dict:
     """Full serialization including all recommendations and input data."""
+    geo_recs = analysis.geo_recommendations or []
+    seo_recs = analysis.seo_recommendations or []
+    cro_recs = analysis.cro_recommendations or []
     return {
         'id': analysis.id,
         'site_id': analysis.site_id,
@@ -670,16 +673,21 @@ def _serialize_analysis(analysis: PageAnalysis) -> dict:
         'page_title': analysis.page_title,
         'status': analysis.status,
         'error_message': analysis.error_message or None,
+        # Flat fields — match the frontend PageAnalysis interface
+        'geo_recommendations': geo_recs,
+        'seo_recommendations': seo_recs,
+        'cro_recommendations': cro_recs,
         'scores': {
             'geo': analysis.geo_score,
             'seo': analysis.seo_score,
             'cro': analysis.cro_score,
             'overall': analysis.overall_score,
         },
+        # Nested alias kept for backwards compat
         'recommendations': {
-            'geo': analysis.geo_recommendations,
-            'seo': analysis.seo_recommendations,
-            'cro': analysis.cro_recommendations,
+            'geo': geo_recs,
+            'seo': seo_recs,
+            'cro': cro_recs,
         },
         'input_data': {
             'gsc_summary': {
