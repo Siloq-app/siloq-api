@@ -7,6 +7,8 @@ POST /api/v1/sites/{site_id}/entity-profile/sync-gbp/  — sync from Google Plac
 """
 import logging
 import os
+import re
+import urllib.parse
 import requests
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -125,12 +127,40 @@ def sync_gbp(request, site_id):
     # Resolve place_id from URL if needed
     if not place_id and gbp_url:
         try:
+            # Extract business name from Google Maps URL
+            # Handles: https://www.google.com/maps/place/Business+Name/@lat,lng,...
+            # And:     https://maps.google.com/?cid=NNNN
+            # And:     https://goo.gl/maps/... (short links — passed as-is)
+            search_input = gbp_url  # fallback: use full URL as text query
+            location_bias = None
+
+            name_match = re.search(r'/maps/place/([^/@?]+)', gbp_url)
+            if name_match:
+                search_input = urllib.parse.unquote_plus(name_match.group(1))
+                logger.info('Extracted business name from URL: %s', search_input)
+
+            # Extract lat/lng for location bias (improves match accuracy)
+            coord_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', gbp_url)
+            if coord_match:
+                location_bias = f"point:{coord_match.group(1)},{coord_match.group(2)}"
+
+            find_params = {
+                'input': search_input,
+                'inputtype': 'textquery',
+                'fields': 'place_id',
+                'key': GOOGLE_PLACES_API_KEY,
+            }
+            if location_bias:
+                find_params['locationbias'] = location_bias
+
             find_resp = requests.get(
                 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json',
-                params={'input': gbp_url, 'inputtype': 'textquery', 'fields': 'place_id', 'key': GOOGLE_PLACES_API_KEY},
-                timeout=10
+                params=find_params,
+                timeout=10,
             )
-            candidates = find_resp.json().get('candidates', [])
+            result_json = find_resp.json()
+            logger.info('findplacefromtext status: %s', result_json.get('status'))
+            candidates = result_json.get('candidates', [])
             if candidates:
                 place_id = candidates[0].get('place_id')
         except Exception as e:
@@ -140,7 +170,7 @@ def sync_gbp(request, site_id):
         return Response({'error': 'Provide place_id or gbp_url'}, status=status.HTTP_400_BAD_REQUEST)
 
     # Fetch place details
-    fields = 'name,formatted_address,formatted_phone_number,opening_hours,rating,user_ratings_total,reviews,types,website,geometry'
+    fields = 'name,formatted_address,address_components,formatted_phone_number,opening_hours,rating,user_ratings_total,reviews,types,website,geometry'
     try:
         resp = requests.get(
             'https://maps.googleapis.com/maps/api/place/details/json',
@@ -167,7 +197,35 @@ def sync_gbp(request, site_id):
     if result.get('user_ratings_total') is not None:
         profile.gbp_review_count = result['user_ratings_total']
     if result.get('types'):
-        profile.categories = result['types']
+        profile.categories = [t for t in result['types'] if t not in ('point_of_interest', 'establishment')]
+
+    # Parse structured address components
+    addr_comps = result.get('address_components', [])
+    def _get_comp(types_list, short=False):
+        for comp in addr_comps:
+            if any(t in comp.get('types', []) for t in types_list):
+                return comp.get('short_name' if short else 'long_name', '')
+        return ''
+
+    if addr_comps:
+        street_num = _get_comp(['street_number'])
+        street_name = _get_comp(['route'])
+        if street_num and street_name:
+            profile.street_address = f"{street_num} {street_name}"
+        elif street_name:
+            profile.street_address = street_name
+        city = _get_comp(['locality']) or _get_comp(['sublocality'])
+        if city:
+            profile.city = city
+        state = _get_comp(['administrative_area_level_1'], short=True)
+        if state:
+            profile.state = state
+        zip_code = _get_comp(['postal_code'])
+        if zip_code:
+            profile.zip_code = zip_code
+        country = _get_comp(['country'], short=True)
+        if country:
+            profile.country = country
     if result.get('opening_hours', {}).get('weekday_text'):
         hours_dict = {}
         days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
