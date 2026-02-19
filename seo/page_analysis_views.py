@@ -55,6 +55,7 @@ RULES:
 - Prioritize recommendations by impact: high/medium/low
 - Maximum 3 recommendations per layer (total 9 max)
 - Only recommend things that will genuinely improve the page
+- ABSOLUTE RULE — NEVER FABRICATE TESTIMONIALS OR REVIEWS: Do NOT generate fake customer quotes, fake names, or invented social proof (e.g. "'Great service!' — Jane D."). This is a legal liability. For CRO recommendations involving testimonials or social proof: if real review data is provided in the context, use those actual quotes and real reviewer names. If no real review data is provided, write the recommendation as: "Connect your Google Business Profile in Settings to pull real customer reviews for this section" — never invent fake ones.
 
 OUTPUT FORMAT — respond with ONLY valid JSON:
 {
