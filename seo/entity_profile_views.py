@@ -121,58 +121,101 @@ def sync_gbp(request, site_id):
     if not GOOGLE_PLACES_API_KEY:
         return Response({'error': 'GOOGLE_PLACES_API_KEY not configured'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-    place_id = request.data.get('place_id') or profile.google_place_id
-    gbp_url = request.data.get('gbp_url') or profile.gbp_url
+    raw_input = (request.data.get('place_id') or request.data.get('gbp_url') or '').strip()
+    gbp_url = raw_input if raw_input.startswith('http') else (profile.gbp_url or '')
+    place_id = None
 
-    # If input looks like a bare Place ID (starts with ChIJ or similar), use directly
-    raw_input = request.data.get('place_id') or request.data.get('gbp_url') or ''
-    if raw_input and not raw_input.startswith('http') and len(raw_input) > 10:
+    # ── Strategy 1: bare Place ID (ChIJ... or similar) provided directly ──────
+    if raw_input and not raw_input.startswith('http'):
         place_id = raw_input
+        logger.info('Using provided Place ID: %s', place_id)
 
-    # Resolve place_id from URL if needed
+    # ── Strategy 2: extract Place ID from URL data parameter ─────────────────
+    # Google Maps URLs encode the Place ID in the data= segment as !1sChIJ...
+    if not place_id and gbp_url:
+        pid_match = re.search(r'!1s(ChIJ[^!&]+)', gbp_url)
+        if pid_match:
+            place_id = urllib.parse.unquote(pid_match.group(1))
+            logger.info('Extracted Place ID from URL data param: %s', place_id)
+
+    # ── Strategy 3: New Places API v2 (textQuery) ────────────────────────────
+    # Better NLP, finds small/new local businesses that the old API misses
     if not place_id and gbp_url:
         try:
-            # Extract business name from Google Maps URL
-            # Handles: https://www.google.com/maps/place/Business+Name/@lat,lng,...
-            # And:     https://maps.google.com/?cid=NNNN
-            # And:     https://goo.gl/maps/... (short links — passed as-is)
-            search_input = gbp_url  # fallback: use full URL as text query
-            location_bias = None
-
             name_match = re.search(r'/maps/place/([^/@?]+)', gbp_url)
-            if name_match:
-                search_input = urllib.parse.unquote_plus(name_match.group(1))
-                logger.info('Extracted business name from URL: %s', search_input)
-
-            # Extract lat/lng for location bias (improves match accuracy)
+            search_query = urllib.parse.unquote_plus(name_match.group(1)) if name_match else gbp_url
             coord_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', gbp_url)
-            if coord_match:
-                location_bias = f"point:{coord_match.group(1)},{coord_match.group(2)}"
 
-            # Use Text Search (more reliable for local businesses than findplacefromtext)
-            text_params: dict = {
-                'query': search_input,
-                'key': GOOGLE_PLACES_API_KEY,
-            }
+            v2_body: dict = {'textQuery': search_query}
+            if coord_match:
+                v2_body['locationBias'] = {
+                    'circle': {
+                        'center': {'latitude': float(coord_match.group(1)), 'longitude': float(coord_match.group(2))},
+                        'radius': 50000.0,
+                    }
+                }
+
+            logger.info('Places API v2 search: %s', search_query)
+            v2_resp = requests.post(
+                'https://places.googleapis.com/v1/places:searchText',
+                json=v2_body,
+                headers={
+                    'X-Goog-Api-Key': GOOGLE_PLACES_API_KEY,
+                    'X-Goog-FieldMask': 'places.id,places.displayName',
+                    'Content-Type': 'application/json',
+                },
+                timeout=10,
+            )
+            v2_data = v2_resp.json()
+            logger.info('Places API v2 status: %s, places: %d', v2_resp.status_code, len(v2_data.get('places', [])))
+            places = v2_data.get('places', [])
+            if places:
+                # v2 returns id as 'places/ChIJxxx' or just 'ChIJxxx' depending on field mask
+                raw_id = places[0].get('id', '')
+                place_id = raw_id.replace('places/', '') if raw_id.startswith('places/') else raw_id
+                logger.info('Found via v2: %s — %s', place_id, places[0].get('displayName', {}).get('text', ''))
+        except Exception as e:
+            logger.warning('Places API v2 lookup failed: %s', e)
+
+    # ── Strategy 4: Old textsearch fallback ──────────────────────────────────
+    if not place_id and gbp_url:
+        try:
+            name_match = re.search(r'/maps/place/([^/@?]+)', gbp_url)
+            search_query = urllib.parse.unquote_plus(name_match.group(1)) if name_match else gbp_url
+            coord_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', gbp_url)
+
+            text_params: dict = {'query': search_query, 'key': GOOGLE_PLACES_API_KEY}
             if coord_match:
                 text_params['location'] = f"{coord_match.group(1)},{coord_match.group(2)}"
-                text_params['radius'] = '50000'  # 50km — wide enough to catch any local biz
+                text_params['radius'] = '50000'
 
-            find_resp = requests.get(
+            old_resp = requests.get(
                 'https://maps.googleapis.com/maps/api/place/textsearch/json',
                 params=text_params,
                 timeout=10,
             )
-            result_json = find_resp.json()
-            logger.info('textsearch status: %s, results: %d', result_json.get('status'), len(result_json.get('results', [])))
-            results = result_json.get('results', [])
+            old_data = old_resp.json()
+            logger.info('textsearch (old) status: %s, results: %d', old_data.get('status'), len(old_data.get('results', [])))
+            results = old_data.get('results', [])
             if results:
                 place_id = results[0].get('place_id')
         except Exception as e:
-            logger.warning('Place ID lookup failed: %s', e)
+            logger.warning('textsearch fallback failed: %s', e)
 
     if not place_id:
-        return Response({'error': 'Provide place_id or gbp_url'}, status=status.HTTP_400_BAD_REQUEST)
+        name_hint = ''
+        if gbp_url:
+            m = re.search(r'/maps/place/([^/@?]+)', gbp_url)
+            if m:
+                name_hint = f' for "{urllib.parse.unquote_plus(m.group(1))}"'
+        return Response({
+            'error': (
+                f"Couldn't find this business on Google Maps{name_hint}. "
+                "Try pasting your Place ID directly instead — find it at: "
+                "https://developers.google.com/maps/documentation/javascript/examples/places-placeid-finder"
+            ),
+            'hint': 'place_id',
+        }, status=status.HTTP_404_NOT_FOUND)
 
     # Fetch place details
     fields = 'name,formatted_address,address_components,formatted_phone_number,opening_hours,rating,user_ratings_total,reviews,types,website,geometry'
