@@ -37,7 +37,7 @@ GSC_REDIRECT_URI = os.environ.get('GSC_REDIRECT_URI', 'https://api.siloq.ai/api/
 
 GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/auth'
 GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token'
-GSC_API_BASE = 'https://searchconsole.googleapis.com/v1'
+GSC_API_BASE = 'https://www.googleapis.com/webmasters/v3'
 
 GSC_SCOPES = [
     'https://www.googleapis.com/auth/webmasters.readonly',
@@ -154,25 +154,33 @@ def oauth_callback(request):
             site.gsc_connected_at = timezone.now()
             
             # Auto-detect the matching GSC site URL from user's properties
-            if access_token and site.url:
+            if access_token:
                 try:
                     headers = {'Authorization': f'Bearer {access_token}'}
                     gsc_resp = requests.get(f'{GSC_API_BASE}/sites', headers=headers, timeout=10)
+                    print(f"[GSC] Properties API response ({gsc_resp.status_code}): {gsc_resp.text[:500]}", flush=True)
                     if gsc_resp.status_code == 200:
                         gsc_sites = gsc_resp.json().get('siteEntry', [])
-                        site_domain = site.url.lower().replace('https://', '').replace('http://', '').replace('www.', '').rstrip('/')
-                        for gs in gsc_sites:
-                            gs_url = gs.get('siteUrl', '').lower().replace('www.', '')
-                            if site_domain in gs_url or gs_url.rstrip('/').endswith(site_domain):
-                                site.gsc_site_url = gs['siteUrl']
-                                logger.info(f"GSC OAuth: auto-matched site URL: {gs['siteUrl']}")
-                                break
+                        print(f"[GSC] Found {len(gsc_sites)} properties: {[gs.get('siteUrl') for gs in gsc_sites]}", flush=True)
+                        
+                        if site.url:
+                            site_domain = site.url.lower().replace('https://', '').replace('http://', '').replace('www.', '').rstrip('/')
+                            for gs in gsc_sites:
+                                gs_url = gs.get('siteUrl', '').lower().replace('www.', '')
+                                gs_domain = gs_url.replace('https://', '').replace('http://', '').replace('sc-domain:', '').rstrip('/')
+                                if site_domain == gs_domain or site_domain in gs_url or gs_url.rstrip('/').endswith(site_domain):
+                                    site.gsc_site_url = gs['siteUrl']
+                                    print(f"[GSC] Auto-matched: {gs['siteUrl']}", flush=True)
+                                    break
+                        
                         if not site.gsc_site_url and gsc_sites:
                             # Fallback: use first available GSC property
                             site.gsc_site_url = gsc_sites[0]['siteUrl']
-                            logger.info(f"GSC OAuth: no exact match, using first property: {site.gsc_site_url}")
+                            print(f"[GSC] No exact match, using first property: {site.gsc_site_url}", flush=True)
+                    else:
+                        print(f"[GSC] Properties API FAILED ({gsc_resp.status_code})", flush=True)
                 except Exception as e:
-                    logger.warning(f"GSC OAuth: failed to auto-detect site URL: {e}")
+                    print(f"[GSC] Auto-detect error: {e}", flush=True)
             
             site.save()
             print(f"[GSC] SUCCESS: saved tokens for site {site_id}. gsc_site_url={site.gsc_site_url}", flush=True)
@@ -187,7 +195,7 @@ def oauth_callback(request):
             return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_error=save_failed")
     
     # No site_id — redirect to site picker with temporary token
-    return redirect(f"{settings.FRONTEND_URL}/dashboard/gsc-connect?access_token={access_token}")
+    return redirect(f"{settings.FRONTEND_URL}/dashboard?tab=search-console&gsc_callback=true")
 
 
 @api_view(['GET'])
@@ -253,7 +261,14 @@ def connect_gsc_site(request, site_id):
         site.gsc_token_expires_at = timezone.now() + timedelta(hours=1)
     
     site.save()
-    
+
+    # Trigger silo health recalculation on GSC connect — non-blocking
+    try:
+        from seo.silo_health import run_silo_health_for_site
+        run_silo_health_for_site(site, trigger='gsc_connect')
+    except Exception as _sh_err:
+        logger.warning('Silo health recalculation failed after GSC connect (site %s): %s', site_id, _sh_err)
+
     return Response({
         'message': 'GSC connected successfully',
         'gsc_site_url': gsc_site_url,
@@ -296,11 +311,39 @@ def get_gsc_data(request, site_id):
         row_limit=5000,
     )
     
+    # Aggregate totals for dashboard metrics
+    total_clicks = sum(r.get('clicks', 0) for r in data)
+    total_impressions = sum(r.get('impressions', 0) for r in data)
+    avg_ctr = (total_clicks / total_impressions) if total_impressions > 0 else 0
+    positions = [r.get('position', 0) for r in data if r.get('position', 0) > 0]
+    avg_position = (sum(positions) / len(positions)) if positions else 0
+
+    # Calculate position volatility (std dev of positions)
+    if len(positions) > 1:
+        mean_pos = avg_position
+        variance = sum((p - mean_pos) ** 2 for p in positions) / len(positions)
+        position_volatility = round(variance ** 0.5, 1)
+    else:
+        position_volatility = 0
+
     return Response({
         'site_id': site.id,
         'gsc_site_url': site.gsc_site_url,
         'date_range': {'start': start_date, 'end': end_date},
         'row_count': len(data),
+        'totals': {
+            'clicks': total_clicks,
+            'impressions': total_impressions,
+            'ctr': round(avg_ctr, 4),
+            'position': round(avg_position, 1),
+            'avg_position': round(avg_position, 1),
+            'position_volatility': position_volatility,
+            'clicks_delta': 0,
+            'impressions_delta': 0,
+            'ctr_delta': 0,
+            'position_delta': 0,
+            'volatility_delta': 0,
+        },
         'data': data,
     })
 
@@ -392,6 +435,36 @@ def _get_valid_access_token(site) -> str:
     return site.gsc_access_token
 
 
+def fetch_gsc_daily_data(
+    access_token: str,
+    site_url: str,
+    days: int = 28
+) -> list:
+    """
+    Fetch daily position data for flip-flop detection.
+    
+    Args:
+        access_token: Valid GSC access token
+        site_url: GSC property URL
+        days: Number of days to fetch (default 28 for flip-flop detection)
+    
+    Returns:
+        List of dicts with keys: date, query, page, position, clicks, impressions
+    """
+    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    
+    # Fetch with date dimension included
+    return _fetch_search_analytics(
+        access_token=access_token,
+        site_url=site_url,
+        start_date=start_date,
+        end_date=end_date,
+        dimensions=['date', 'query', 'page'],
+        row_limit=25000,  # Higher limit for daily data
+    )
+
+
 def _fetch_search_analytics(
     access_token: str,
     site_url: str,
@@ -428,27 +501,37 @@ def _fetch_search_analytics(
     if response.status_code != 200:
         print(f"[GSC] API error for {site_url} (HTTP {response.status_code}): {response.text[:200]}", flush=True)
         
-        # If domain property fails, try URL property format and vice versa
-        alt_url = None
+        # Try alternate URL formats — Google is picky about exact property URL
+        domain = site_url.replace('https://', '').replace('http://', '').replace('sc-domain:', '').rstrip('/')
+        alternates = []
         if site_url.startswith('sc-domain:'):
-            domain = site_url.replace('sc-domain:', '')
-            alt_url = f'https://{domain}/'
-        elif site_url.startswith('http'):
-            domain = site_url.replace('https://', '').replace('http://', '').rstrip('/')
-            alt_url = f'sc-domain:{domain}'
+            alternates = [
+                f'https://{domain}',        # no trailing slash
+                f'https://{domain}/',        # with trailing slash
+                f'https://www.{domain}/',    # www variant
+            ]
+        else:
+            alternates = [
+                site_url.rstrip('/'),                    # no trailing slash
+                site_url.rstrip('/') + '/',              # with trailing slash
+                f'sc-domain:{domain}',                   # domain property
+                f'https://www.{domain}/',                # www variant
+            ]
+        # Remove the original URL we already tried
+        alternates = [u for u in alternates if u != site_url]
         
-        if alt_url:
+        for alt_url in alternates:
             print(f"[GSC] Trying alternate format: {alt_url}", flush=True)
             encoded_alt = quote(alt_url, safe='')
             alt_api_url = f'{GSC_API_BASE}/sites/{encoded_alt}/searchAnalytics/query'
             response = requests.post(alt_api_url, headers=headers, json=payload)
             if response.status_code == 200:
                 print(f"[GSC] Alternate format worked: {alt_url}", flush=True)
-                # Fall through to process response below
+                break
             else:
-                print(f"[GSC] Alternate also failed (HTTP {response.status_code})", flush=True)
-                return []
+                print(f"[GSC] Alternate failed (HTTP {response.status_code}): {alt_url}", flush=True)
         else:
+            print(f"[GSC] All URL formats failed for {domain}", flush=True)
             return []
     
     data = response.json()

@@ -10,15 +10,27 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.db.models import Prefetch
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
+from django.utils import timezone
 
-from seo.models import SEOData
+from seo.models import SEOData, CannibalizationConflict, ConflictPage, ConflictResolution, RedirectRegistry, KeywordAssignment, KeywordAssignmentHistory
 from .models import Site
 from .serializers import SiteSerializer
 from .permissions import IsSiteOwner
 from .analysis import detect_cannibalization, analyze_site, calculate_health_score
+from integrations.wordpress_webhook import send_webhook_to_wordpress, create_wordpress_redirect
 
 logger = logging.getLogger(__name__)
+
+
+def _get_page_field(pages, page_id, field, default=None):
+    """Look up a field on a page object by ID from a queryset."""
+    if not page_id:
+        return default
+    for page in pages:
+        if page.id == page_id:
+            return getattr(page, field, default)
+    return default
 
 
 class SiteViewSet(viewsets.ModelViewSet):
@@ -92,12 +104,25 @@ class SiteViewSet(viewsets.ModelViewSet):
         else:
             health_score = 0
 
+        # Count cannibalization conflicts for health ring
+        published_pages = list(site.pages.filter(status='publish', is_noindex=False))
+        from sites.analysis import detect_cannibalization
+        conflicts = detect_cannibalization(published_pages)
+        conflicted_queries = len(conflicts)
+
+        # Adjust health score: penalize for cannibalization
+        if conflicted_queries > 0 and total_pages > 0:
+            cannibal_penalty = min(40, conflicted_queries * 5)
+            health_score = max(0, health_score - cannibal_penalty)
+
         return Response({
             'site_id': site.id,
             'site_name': site.name,
             'health_score': round(health_score, 1),
             'total_pages': total_pages,
             'total_issues': total_issues,
+            'conflicted_queries': conflicted_queries,
+            'clean_queries': max(0, total_pages - conflicted_queries),
             'last_synced_at': site.last_synced_at,
         })
 
@@ -139,6 +164,13 @@ class SiteViewSet(viewsets.ModelViewSet):
             site.onboarding_complete = True
         
         site.save()
+
+        # Re-classify all pages when business profile changes (services may have changed)
+        try:
+            from seo.page_classifier import classify_all_pages
+            classify_all_pages(site.id)
+        except Exception:
+            logger.warning(f"Failed to re-classify pages for site {site.id} after profile update", exc_info=True)
         
         return Response({
             'business_type': site.business_type,
@@ -161,13 +193,47 @@ class SiteViewSet(viewsets.ModelViewSet):
         - gsc_data: impression/click data if GSC connected, null otherwise
         """
         site = self.get_object()
-        pages = site.pages.all().prefetch_related('seo_data')
+        pages = list(site.pages.filter(status='publish', is_noindex=False).prefetch_related('seo_data'))
         
         # Check if GSC is connected
         gsc_connected = bool(getattr(site, 'gsc_refresh_token', None))
         
-        # Detect cannibalization (static analysis)
-        issues = detect_cannibalization(pages)
+        # Build impression map from GSC if connected
+        impressions_map = {}
+        clicks_map = {}
+        position_map = {}
+        if gsc_connected:
+            try:
+                from integrations.gsc import refresh_access_token, fetch_search_analytics
+                tokens = refresh_access_token(site.gsc_refresh_token)
+                access_token = tokens.get('access_token', '')
+                if access_token and site.gsc_site_url:
+                    rows = fetch_search_analytics(
+                        access_token, site.gsc_site_url,
+                        dimensions=['page'], row_limit=5000,
+                    )
+                    for row in rows:
+                        page_url = row.get('keys', [''])[0] if row.get('keys') else row.get('page', '')
+                        # Normalize URL: strip trailing slash for consistent matching
+                        normalized = page_url.rstrip('/')
+                        impressions_map[normalized] = impressions_map.get(normalized, 0) + row.get('impressions', 0)
+                        clicks_map[normalized] = clicks_map.get(normalized, 0) + row.get('clicks', 0)
+                        # Keep best (lowest) position
+                        pos = row.get('position', 0)
+                        if normalized not in position_map or pos < position_map[normalized]:
+                            position_map[normalized] = pos
+                        # Also store WITH trailing slash so either format matches
+                        with_slash = normalized + '/'
+                        impressions_map[with_slash] = impressions_map[normalized]
+                        clicks_map[with_slash] = clicks_map[normalized]
+                        position_map[with_slash] = position_map[normalized]
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"GSC fetch failed for site {site.id}: {e}")
+                pass  # Gracefully degrade — run without impression data
+        
+        # Detect cannibalization (static analysis with optional impression weighting)
+        issues = detect_cannibalization(pages, impressions_map=impressions_map)
         
         # Format for API response
         formatted_issues = []
@@ -191,8 +257,11 @@ class SiteViewSet(viewsets.ModelViewSet):
                         'title': p.get('title', ''),
                         'page_type': p.get('page_type', ''),
                         'impression_share': p.get('impression_share') or p.get('share'),
-                        'clicks': p.get('clicks'),
-                        'position': p.get('position'),
+                        'impressions': p.get('impressions') or impressions_map.get(p.get('url', ''), 0) or impressions_map.get(p.get('url', '').rstrip('/'), 0),
+                        'clicks': p.get('clicks') or clicks_map.get(p.get('url', ''), 0) or clicks_map.get(p.get('url', '').rstrip('/'), 0),
+                        'position': p.get('position') or position_map.get(p.get('url', ''), None) or position_map.get(p.get('url', '').rstrip('/'), None),
+                        'is_noindex': _get_page_field(pages, p.get('id'), 'is_noindex', False),
+                        'post_type': _get_page_field(pages, p.get('id'), 'post_type', ''),
                     }
                     for p in issue.get('competing_pages', [])
                 ],
@@ -207,6 +276,7 @@ class SiteViewSet(viewsets.ModelViewSet):
             'issues': formatted_issues,
             'total': len(formatted_issues),
             'gsc_connected': gsc_connected,
+            'gsc_pages_with_data': len(impressions_map) if impressions_map else 0,
         })
 
     @action(detail=True, methods=['get'], url_path='health-summary')
@@ -230,11 +300,44 @@ class SiteViewSet(viewsets.ModelViewSet):
     def analyze(self, request, pk=None):
         """
         Run full analysis on a site.
-        
         POST /api/v1/sites/{id}/analyze/
         """
         site = self.get_object()
+
+        # --- Trial enforcement ---
+        try:
+            subscription = request.user.subscription
+            if subscription.tier == 'free_trial' and subscription.status == 'trialing':
+                pages_to_analyze = site.pages.filter(status='publish', is_noindex=False).count()
+                remaining = subscription.trial_pages_limit - subscription.trial_pages_used
+                if remaining <= 0:
+                    return Response({
+                        'error': 'Trial limit reached',
+                        'detail': f'Your free trial allows {subscription.trial_pages_limit} pages. '
+                                  f'Upgrade to Pro to analyze unlimited pages.',
+                        'trial_pages_used': subscription.trial_pages_used,
+                        'trial_pages_limit': subscription.trial_pages_limit,
+                        'upgrade_url': '/dashboard?tab=settings&section=subscription',
+                    }, status=status.HTTP_402_PAYMENT_REQUIRED)
+        except Exception:
+            pass  # No subscription record — let it through (superusers, etc.)
+        # --- End trial enforcement ---
+
         results = analyze_site(site)
+
+        # Increment trial pages used after successful analysis
+        try:
+            subscription = request.user.subscription
+            if subscription.tier == 'free_trial' and subscription.status == 'trialing':
+                analyzed = results.get('pages_analyzed', site.pages.filter(status='publish').count())
+                subscription.trial_pages_used = min(
+                    subscription.trial_pages_used + analyzed,
+                    subscription.trial_pages_limit
+                )
+                subscription.save(update_fields=['trial_pages_used'])
+        except Exception:
+            pass
+
         return Response(results)
 
     @action(detail=True, methods=['get'], url_path='pending-approvals')
@@ -244,10 +347,83 @@ class SiteViewSet(viewsets.ModelViewSet):
         
         GET /api/v1/sites/{id}/pending-approvals/
         """
-        # For now, return empty - will be populated by analysis
+        site = self.get_object()
+        
+        # Query open cannibalization conflicts
+        conflicts = CannibalizationConflict.objects.filter(
+            site=site,
+            status='open'
+        ).prefetch_related('pages').order_by('-severity', '-adjusted_score')
+        
+        pending_actions = []
+        for conflict in conflicts:
+            pages = conflict.pages.all().order_by('-is_recommended_winner', '-gsc_impressions')
+            winner = pages.filter(is_recommended_winner=True).first()
+            losers = pages.filter(is_recommended_winner=False)
+            
+            # Determine action_type based on resolution_type or recommendation
+            action_type = conflict.resolution_type or 'redirect'
+            
+            # Generate description with clear action details
+            loser_urls = [p.page_url for p in losers[:2]]
+            
+            # Create a clearer description based on action type
+            if action_type in ('redirect', 'merge_redirect'):
+                if winner and loser_urls:
+                    description = f"301 Redirect: {loser_urls[0]} → {winner.page_url}"
+                    if len(loser_urls) > 1:
+                        description += f" (+{len(loser_urls) - 1} more)"
+                else:
+                    description = f"Resolve keyword cannibalization for '{conflict.keyword}'"
+            elif action_type == 'canonical':
+                if winner and loser_urls:
+                    description = f"Set Canonical: {loser_urls[0]} → {winner.page_url}"
+                else:
+                    description = f"Set canonical tag for '{conflict.keyword}'"
+            elif action_type == 'differentiate':
+                description = f"Differentiate content for '{conflict.keyword}': {', '.join(loser_urls[:2]) if loser_urls else 'competing pages'}"
+            else:
+                loser_text = ', '.join(loser_urls[:2]) if loser_urls else 'competing pages'
+                description = f"Resolve keyword cannibalization for '{conflict.keyword}': {loser_text}"
+            
+            # Map severity to risk level
+            risk = 'destructive' if conflict.severity in ('critical', 'high') else 'redirect' if action_type in ('redirect', 'merge_redirect') else 'content_change' if conflict.severity == 'medium' else 'safe'
+            is_destructive = conflict.severity in ('critical', 'high')
+            
+            # Generate impact description with more specifics
+            if action_type == 'redirect':
+                total_impressions = sum(p.gsc_impressions or 0 for p in losers)
+                if total_impressions > 0:
+                    impact = f"Consolidate {total_impressions:,} monthly impressions to {winner.page_url if winner else 'recommended page'}"
+                else:
+                    impact = f"Consolidate SEO signals by redirecting to {winner.page_url if winner else 'recommended page'}"
+            elif action_type == 'merge_redirect':
+                impact = "Merge content and redirect to strengthen target page"
+            elif action_type == 'canonical':
+                impact = "Set canonical tag to clarify preferred version"
+            elif action_type == 'differentiate':
+                impact = "Rewrite content to target distinct user intents"
+            else:
+                impact = "Resolve conflict following Siloq recommendation"
+            
+            pending_actions.append({
+                'id': conflict.id,
+                'action_type': action_type,
+                'type': 'redirect' if action_type in ('redirect', 'merge_redirect') else 'meta_update',
+                'description': description,
+                'risk': risk,
+                'impact': impact,
+                'is_destructive': is_destructive,
+                'status': 'pending',
+                'keyword': conflict.keyword,
+                'severity': conflict.severity,
+                'winner_url': winner.page_url if winner else None,
+                'loser_urls': [p.page_url for p in losers],
+            })
+        
         return Response({
-            'pending_approvals': [],
-            'total': 0,
+            'pending_approvals': pending_actions,
+            'total': len(pending_actions),
         })
 
     @action(detail=True, methods=['get'])
@@ -263,8 +439,19 @@ class SiteViewSet(viewsets.ModelViewSet):
         from seo.models import Page
         pages = Page.objects.filter(site=site, is_noindex=False)
         
+        # Auto-classify if no pages have been classified yet (all still default 'supporting')
+        classified_count = pages.exclude(page_type_classification='supporting').count()
+        if classified_count == 0 and pages.count() > 0:
+            try:
+                from seo.page_classifier import classify_all_pages
+                classify_all_pages(site.id)
+                # Refresh queryset after classification
+                pages = Page.objects.filter(site=site, is_noindex=False)
+            except Exception:
+                logger.warning(f"Auto-classify failed for site {site.id}", exc_info=True)
+        
         money_pages = pages.filter(is_money_page=True).order_by('url')
-        all_pages = list(pages.values('id', 'title', 'url', 'status', 'post_type', 'is_money_page'))
+        all_pages = list(pages.values('id', 'title', 'url', 'status', 'post_type', 'is_money_page', 'page_type_classification', 'page_type_override'))
         
         silos = []
         assigned_ids = set()
@@ -290,6 +477,8 @@ class SiteViewSet(viewsets.ModelViewSet):
                     'title': mp.title,
                     'url': mp.url,
                     'status': mp.status or 'publish',
+                    'page_type_classification': mp.page_type_classification,
+                    'page_type_override': mp.page_type_override,
                 },
                 'topic_cluster': None,
                 'supporting_pages': [
@@ -333,6 +522,8 @@ class SiteViewSet(viewsets.ModelViewSet):
                         'title': target['title'],
                         'url': target['url'],
                         'status': target.get('status', 'publish'),
+                        'page_type_classification': target.get('page_type_classification', 'supporting'),
+                        'page_type_override': target.get('page_type_override', False),
                     },
                     'topic_cluster': None,
                     'supporting_pages': [
@@ -603,10 +794,147 @@ class SiteViewSet(viewsets.ModelViewSet):
         
         POST /api/v1/sites/{id}/approvals/{action_id}/approve/
         """
+        site = self.get_object()
+        conflict = get_object_or_404(CannibalizationConflict, id=action_id, site=site)
+        
+        if conflict.status == 'resolved':
+            return Response({
+                'error': 'Conflict is already resolved'
+            }, status=status.HTTP_409_CONFLICT)
+        
+        # Get winner and losers
+        pages = conflict.pages.all().order_by('-is_recommended_winner', '-gsc_impressions')
+        winner = pages.filter(is_recommended_winner=True).first()
+        losers = pages.filter(is_recommended_winner=False)
+        
+        if not winner:
+            return Response({
+                'error': 'No winner recommendation found for this conflict'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Determine action_type from conflict or use default
+        action_type = conflict.resolution_type or 'redirect'
+        winner_url = winner.page_url
+        loser_url = losers.first().page_url if losers.exists() else None
+        
+        if not loser_url:
+            return Response({
+                'error': 'No loser page found to redirect'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        actions_taken = {
+            'redirect_created': False,
+            'internal_links_updated': 0,
+            'keyword_reassigned': False,
+        }
+        
+        try:
+            with transaction.atomic():
+                redirect_obj = None
+                
+                # Step 1: Create redirect if applicable
+                if action_type in ('redirect', 'merge_redirect'):
+                    redirect_obj, created = RedirectRegistry.objects.get_or_create(
+                        site=site,
+                        source_url=loser_url,
+                        defaults={
+                            'target_url': winner_url,
+                            'redirect_type': 301,
+                            'reason': f'conflict_resolution_{action_type}',
+                            'conflict': conflict,
+                            'status': 'active',
+                            'created_by': request.user.email or 'siloq_system',
+                        },
+                    )
+                    if not created:
+                        redirect_obj.target_url = winner_url
+                        redirect_obj.redirect_type = 301
+                        redirect_obj.conflict = conflict
+                        redirect_obj.save()
+                    actions_taken['redirect_created'] = True
+                    
+                    # Push redirect to WordPress via REST API
+                    try:
+                        redirect_result = create_wordpress_redirect(
+                            site=site,
+                            source_url=loser_url,
+                            target_url=winner_url,
+                            redirect_type=301,
+                            reason=f'Conflict resolution: {action_type}',
+                        )
+                        actions_taken['wordpress_redirect_pushed'] = redirect_result.get('success', False)
+                        if redirect_result.get('success'):
+                            logger.info('Redirect successfully created in WordPress for conflict %s', action_id)
+                        else:
+                            logger.warning(
+                                'WordPress redirect creation failed for conflict %s: %s',
+                                action_id,
+                                redirect_result.get('error', 'unknown error')
+                            )
+                    except Exception as redirect_err:
+                        logger.error('WordPress redirect API error for conflict %s: %s', action_id, str(redirect_err))
+                        actions_taken['wordpress_redirect_pushed'] = False
+                
+                # Step 2: Reassign keyword
+                try:
+                    ka = KeywordAssignment.objects.get(
+                        site=site, keyword=conflict.keyword, status='active'
+                    )
+                    previous_url = ka.page_url
+                    ka.page_url = winner_url
+                    ka.updated_at = timezone.now()
+                    ka.save()
+                    
+                    KeywordAssignmentHistory.objects.create(
+                        assignment=ka,
+                        site=site,
+                        keyword=conflict.keyword,
+                        previous_url=previous_url,
+                        new_url=winner_url,
+                        action='reassign',
+                        reason=f'Conflict resolution: {action_type}',
+                        performed_by=request.user.email or 'siloq_system',
+                    )
+                    actions_taken['keyword_reassigned'] = True
+                except KeywordAssignment.DoesNotExist:
+                    pass
+                
+                # Step 3: Log resolution
+                resolution = ConflictResolution.objects.create(
+                    conflict=conflict,
+                    site=site,
+                    action_type=action_type,
+                    winner_url=winner_url,
+                    loser_url=loser_url,
+                    redirect=redirect_obj,
+                    redirect_type=301 if redirect_obj else None,
+                    keyword_reassigned=actions_taken['keyword_reassigned'],
+                    previous_keyword_owner=loser_url,
+                    new_keyword_owner=winner_url,
+                    approved_by=request.user.email or 'siloq_system',
+                    internal_links_updated=actions_taken['internal_links_updated'],
+                )
+                
+                # Step 4: Update conflict status
+                conflict.status = 'resolved'
+                conflict.resolution_type = action_type
+                conflict.resolved_at = timezone.now()
+                conflict.resolved_by = request.user.email or 'siloq_system'
+                conflict.save()
+                
+        except Exception as e:
+            logger.exception('Conflict resolution failed for %s', action_id)
+            return Response({
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
         return Response({
             'message': 'Action approved',
             'action_id': int(action_id),
             'status': 'approved',
+            'resolution_id': str(resolution.id),
+            'actions_taken': actions_taken,
+            'resolved_at': conflict.resolved_at.isoformat(),
         })
 
     @action(detail=True, methods=['post'], url_path=r'approvals/(?P<action_id>\d+)/deny')
@@ -616,10 +944,31 @@ class SiteViewSet(viewsets.ModelViewSet):
         
         POST /api/v1/sites/{id}/approvals/{action_id}/deny/
         """
+        site = self.get_object()
+        conflict = get_object_or_404(CannibalizationConflict, id=action_id, site=site)
+        
+        reason = request.data.get('reason', 'User denied recommendation')
+        approved_by = request.user.email or 'siloq_system'
+        
+        with transaction.atomic():
+            ConflictResolution.objects.create(
+                conflict=conflict,
+                site=site,
+                action_type='dismiss',
+                approved_by=approved_by,
+                merge_brief=reason,
+            )
+            conflict.status = 'dismissed'
+            conflict.resolution_type = 'dismiss'
+            conflict.resolved_at = timezone.now()
+            conflict.resolved_by = approved_by
+            conflict.save()
+        
         return Response({
             'message': 'Action denied',
             'action_id': int(action_id),
             'status': 'denied',
+            'dismissed_at': conflict.resolved_at.isoformat(),
         })
 
     @action(detail=True, methods=['post'], url_path=r'approvals/(?P<action_id>\d+)/rollback')
@@ -738,11 +1087,38 @@ class SiteViewSet(viewsets.ModelViewSet):
             row_limit=5000,
         )
         
+        # Aggregate totals for dashboard metrics
+        total_clicks = sum(r.get('clicks', 0) for r in data)
+        total_impressions = sum(r.get('impressions', 0) for r in data)
+        avg_ctr = (total_clicks / total_impressions) if total_impressions > 0 else 0
+        positions = [r.get('position', 0) for r in data if r.get('position', 0) > 0]
+        avg_position = (sum(positions) / len(positions)) if positions else 0
+        
+        if len(positions) > 1:
+            mean_pos = avg_position
+            variance = sum((p - mean_pos) ** 2 for p in positions) / len(positions)
+            position_volatility = round(variance ** 0.5, 1)
+        else:
+            position_volatility = 0
+        
         return Response({
             'site_id': site.id,
             'gsc_site_url': site.gsc_site_url,
             'date_range': {'start': start_date, 'end': end_date},
             'row_count': len(data),
+            'totals': {
+                'clicks': total_clicks,
+                'impressions': total_impressions,
+                'ctr': round(avg_ctr, 4),
+                'position': round(avg_position, 1),
+                'avg_position': round(avg_position, 1),
+                'position_volatility': position_volatility,
+                'clicks_delta': 0,
+                'impressions_delta': 0,
+                'ctr_delta': 0,
+                'position_delta': 0,
+                'volatility_delta': 0,
+            },
             'data': data,
         })
     
