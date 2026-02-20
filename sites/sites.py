@@ -1384,6 +1384,36 @@ class SiteViewSet(viewsets.ModelViewSet):
                        f"{already_marked} are already marked. Review and confirm below.",
         })
 
+    @action(detail=True, methods=['post'], url_path='classify-all')
+    def classify_all(self, request, pk=None):
+        """
+        POST /api/v1/sites/{id}/classify-all/
+        Run page type classification on all published, indexable pages.
+        Respects manual overrides (page_type_override is never touched).
+        """
+        from .analysis import classify_page_type
+        from seo.models import Page
+
+        site = self.get_object()
+        pages = site.pages.filter(status='publish', is_noindex=False)
+
+        updated = 0
+        for page in pages:
+            # Never overwrite a manual override
+            if page.page_type_override:
+                continue
+            classified = classify_page_type(page.url, getattr(page, 'post_type', None))
+            if classified != page.page_type_classification:
+                page.page_type_classification = classified
+                page.save(update_fields=['page_type_classification'])
+                updated += 1
+
+        return Response({
+            'status': 'classified',
+            'total_pages': pages.count(),
+            'updated': updated,
+        })
+
     @action(detail=True, methods=['post'], url_path='bulk-set-money-pages')
     def bulk_set_money_pages(self, request, pk=None):
         """
