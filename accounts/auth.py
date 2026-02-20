@@ -7,6 +7,7 @@ import os
 
 from dotenv import load_dotenv
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -288,3 +289,98 @@ def _verify_account_key(api_key):
             'unlimited_sites': True,
         }
     }, status=status.HTTP_200_OK)
+
+
+@csrf_exempt
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def request_password_reset(request):
+    """
+    POST /api/v1/auth/reset-password/
+    Body: { "email": "user@example.com" }
+
+    Sends a password reset link. Always returns 200 to prevent email enumeration.
+    Local dev: set EMAIL_BACKEND=console in .env — email prints to Django terminal.
+    Production: sent via Resend SMTP.
+    """
+    from django.contrib.auth.tokens import default_token_generator
+    from django.utils.encoding import force_bytes
+    from django.utils.http import urlsafe_base64_encode
+    from django.core.mail import send_mail
+    from django.conf import settings
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    email = request.data.get('email', '').strip().lower()
+
+    if not email:
+        return Response({'error': 'Email is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Silently succeed even if email not found (prevent enumeration)
+    try:
+        user = User.objects.get(email=email)
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'https://app.siloq.ai')
+        reset_url = f"{frontend_url}/reset-password?uid={uid}&token={token}"
+
+        send_mail(
+            subject='Reset your Siloq password',
+            message=(
+                f"Hi {user.email},\n\n"
+                f"Click the link below to reset your password. This link expires in 24 hours.\n\n"
+                f"{reset_url}\n\n"
+                f"If you didn't request this, you can ignore this email.\n\n"
+                f"— The Siloq Team"
+            ),
+            from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@siloq.ai'),
+            recipient_list=[user.email],
+            fail_silently=True,
+        )
+    except User.DoesNotExist:
+        pass  # Don't reveal whether the email exists
+
+    return Response({
+        'message': 'If that email is registered, a reset link has been sent.'
+    }, status=status.HTTP_200_OK)
+
+
+@csrf_exempt
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def confirm_password_reset(request):
+    """
+    POST /api/v1/auth/reset-password/confirm/
+    Body: { "uid": "...", "token": "...", "new_password": "..." }
+
+    Validates the reset token and sets the new password.
+    """
+    from django.contrib.auth.tokens import default_token_generator
+    from django.utils.encoding import force_str
+    from django.utils.http import urlsafe_base64_decode
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    uid = request.data.get('uid', '')
+    token = request.data.get('token', '')
+    new_password = request.data.get('new_password', '')
+
+    if not uid or not token or not new_password:
+        return Response({'error': 'uid, token, and new_password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if len(new_password) < 8:
+        return Response({'error': 'Password must be at least 8 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user_pk = force_str(urlsafe_base64_decode(uid))
+        user = User.objects.get(pk=user_pk)
+    except (User.DoesNotExist, ValueError, TypeError, OverflowError):
+        return Response({'error': 'Invalid reset link.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not default_token_generator.check_token(user, token):
+        return Response({'error': 'Reset link is invalid or has expired.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.set_password(new_password)
+    user.save()
+
+    return Response({'message': 'Password reset successfully. You can now log in.'}, status=status.HTTP_200_OK)
