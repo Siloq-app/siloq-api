@@ -32,6 +32,14 @@ GSC_CLIENT_ID = os.getenv('GSC_CLIENT_ID', '')
 GSC_CLIENT_SECRET = os.getenv('GSC_CLIENT_SECRET', '')
 GSC_REDIRECT_URI = os.getenv('GSC_REDIRECT_URI', 'https://app.siloq.ai/api/v1/gsc/callback/')
 
+# Stripe Billing
+STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', '')
+STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
+STRIPE_PRICE_PRO = os.getenv('STRIPE_PRICE_PRO', '')
+STRIPE_PRICE_BUILDER_PLUS = os.getenv('STRIPE_PRICE_BUILDER_PLUS', '')
+STRIPE_PRICE_ARCHITECT = os.getenv('STRIPE_PRICE_ARCHITECT', '')
+STRIPE_PRICE_EMPIRE = os.getenv('STRIPE_PRICE_EMPIRE', '')
+
 
 # Application definition
 
