@@ -13,11 +13,9 @@ from rest_framework import status
 
 from integrations.authentication import APIKeyAuthentication
 from integrations.permissions import IsAPIKeyAuthenticated
+from .models import ContentJob
 
 logger = logging.getLogger(__name__)
-
-# In-memory job storage (TODO: move to database for production)
-_jobs = {}
 
 
 @csrf_exempt
@@ -27,7 +25,7 @@ _jobs = {}
 def create_content_job(request):
     """
     Create a content generation job.
-    
+
     POST /api/v1/content-jobs/
     Headers: Authorization: Bearer <api_key>
     Body: { "page_id": "...", "wp_post_id": 123, "job_type": "content_generation" }
@@ -36,26 +34,20 @@ def create_content_job(request):
     page_id = request.data.get('page_id')
     wp_post_id = request.data.get('wp_post_id')
     job_type = request.data.get('job_type', 'content_generation')
-    
+
     job_id = str(uuid.uuid4())
-    
-    # Store job
-    _jobs[job_id] = {
-        'job_id': job_id,
-        'site_id': site.id,
-        'page_id': page_id,
-        'wp_post_id': wp_post_id,
-        'job_type': job_type,
-        'status': 'pending',
-        'result': None,
-    }
-    
-    # TODO: Queue async content generation with Celery/RQ
-    # For now, mark as pending - content will be generated when status is checked
-    # or via a background worker
-    
+
+    ContentJob.objects.create(
+        job_id=job_id,
+        site=site,
+        page_id=page_id,
+        wp_post_id=wp_post_id,
+        job_type=job_type,
+        status='pending',
+    )
+
     logger.info(f"Content job created: {job_id} for site {site.id}, page {page_id}")
-    
+
     return Response({
         'job_id': job_id,
         'status': 'pending',
@@ -70,26 +62,22 @@ def create_content_job(request):
 def get_content_job_status(request, job_id):
     """
     Get status of a content generation job.
-    
+
     GET /api/v1/content-jobs/{job_id}/
     Headers: Authorization: Bearer <api_key>
     """
-    job = _jobs.get(job_id)
-    
-    if not job:
-        return Response({
-            'error': 'Job not found',
-        }, status=status.HTTP_404_NOT_FOUND)
-    
-    # Verify the job belongs to this site
     site = request.auth['site']
-    if job.get('site_id') != site.id:
-        return Response({
-            'error': 'Job not found',
-        }, status=status.HTTP_404_NOT_FOUND)
-    
+
+    try:
+        job = ContentJob.objects.get(job_id=job_id, site=site)
+    except ContentJob.DoesNotExist:
+        return Response({'error': 'Job not found'}, status=status.HTTP_404_NOT_FOUND)
+
     return Response({
-        'job_id': job['job_id'],
-        'status': job['status'],
-        'result': job.get('result'),
+        'job_id': job.job_id,
+        'status': job.status,
+        'result': job.result,
+        'error': job.error,
+        'created_at': job.created_at,
+        'updated_at': job.updated_at,
     })
