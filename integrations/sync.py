@@ -17,7 +17,7 @@ from sites.models import Site, APIKey
 from seo.models import Page, SEOData
 from seo.serializers import PageSyncSerializer as SEOPageSyncSerializer
 from .models import Scan
-from .serializers import SEODataSyncSerializer
+from .serializers import SEODataSyncSerializer, ScanCreateSerializer, ScanSerializer
 from .permissions import IsAPIKeyAuthenticated, IsJWTOrAPIKeyAuthenticated
 from .authentication import APIKeyAuthentication
 
@@ -42,20 +42,35 @@ def verify_api_key(request):
     Verify API key endpoint for WordPress plugin Test Connection.
     
     POST /api/v1/auth/verify
-    Headers: Authorization: Bearer <api_key>   (api_key must be sk_siloq_...)
+    Headers: Authorization: Bearer <api_key>   (sk_siloq_ or ak_siloq_)
     
     Returns: { "authenticated": true, "valid": true, "site_id": ..., "site_name": "...", "site_url": "..." }
     WordPress plugin expects 200 and body.authenticated === true for success.
     """
-    site = request.auth['site']
+    site = request.auth.get('site')
+    auth_type = request.auth.get('auth_type', 'site_key')
     
-    return Response({
+    response_data = {
         'authenticated': True,
         'valid': True,
-        'site_id': site.id,
-        'site_name': site.name,
-        'site_url': site.url,
-    }, status=status.HTTP_200_OK)
+        'auth_type': auth_type,
+    }
+    
+    if site:
+        response_data.update({
+            'site_id': site.id,
+            'site_name': site.name,
+            'site_url': site.url,
+        })
+    else:
+        response_data.update({
+            'site_id': None,
+            'site_name': None,
+            'site_url': None,
+            'message': 'Account key verified. Site will be auto-created on first sync.',
+        })
+    
+    return Response(response_data, status=status.HTTP_200_OK)
 
 
 @csrf_exempt
@@ -116,12 +131,23 @@ def sync_page(request):
     if data.get('is_homepage', False):
         Page.objects.filter(site=site, is_homepage=True).exclude(id=page.id).update(is_homepage=False)
     
+    # Auto-classify page (skip if manually overridden)
+    if not page.page_type_override:
+        try:
+            from seo.page_classifier import classify_and_save, _get_business_profile
+            profile = _get_business_profile(site)
+            classify_and_save(page, business_profile=profile)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to classify page {page.id}", exc_info=True)
+
     # Update site's last_synced_at
     site.last_synced_at = timezone.now()
     site.save(update_fields=['last_synced_at'])
     
     return Response({
         'page_id': page.id,
+        'site_id': str(site.id),
         'message': 'Page synced successfully',
         'created': created
     }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
@@ -335,5 +361,3 @@ def debug_page_count(request):
         'total_sites': Site.objects.count(),
         'pages_sample': pages_sample
     })
-
-    return Response(report)

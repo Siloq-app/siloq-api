@@ -1,0 +1,55 @@
+from django.db import migrations, models
+import django.db.models.deletion
+
+class Migration(migrations.Migration):
+    dependencies = [
+        ('seo', '0017_pageanalysis_generated_schema'),
+        ('sites', '0001_initial'),
+    ]
+    operations = [
+        migrations.CreateModel(
+            name='SiteEntityProfile',
+            fields=[
+                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
+                ('business_name', models.CharField(blank=True, max_length=255)),
+                ('description', models.TextField(blank=True)),
+                ('phone', models.CharField(blank=True, max_length=50)),
+                ('email', models.EmailField(blank=True, max_length=254)),
+                ('founding_year', models.IntegerField(blank=True, null=True)),
+                ('founder_name', models.CharField(blank=True, max_length=255)),
+                ('num_employees', models.CharField(blank=True, max_length=50)),
+                ('price_range', models.CharField(blank=True, max_length=20)),
+                ('languages', models.JSONField(blank=True, default=list)),
+                ('payment_methods', models.JSONField(blank=True, default=list)),
+                ('street_address', models.CharField(blank=True, max_length=255)),
+                ('city', models.CharField(blank=True, max_length=100)),
+                ('state', models.CharField(blank=True, max_length=100)),
+                ('zip_code', models.CharField(blank=True, max_length=20)),
+                ('country', models.CharField(blank=True, default='US', max_length=100)),
+                ('latitude', models.FloatField(blank=True, null=True)),
+                ('longitude', models.FloatField(blank=True, null=True)),
+                ('service_cities', models.JSONField(blank=True, default=list)),
+                ('service_zips', models.JSONField(blank=True, default=list)),
+                ('service_radius_miles', models.IntegerField(blank=True, null=True)),
+                ('hours', models.JSONField(blank=True, default=dict)),
+                ('categories', models.JSONField(blank=True, default=list)),
+                ('certifications', models.JSONField(blank=True, default=list)),
+                ('license_numbers', models.JSONField(blank=True, default=list)),
+                ('url_facebook', models.URLField(blank=True)),
+                ('url_instagram', models.URLField(blank=True)),
+                ('url_linkedin', models.URLField(blank=True)),
+                ('url_twitter', models.URLField(blank=True)),
+                ('url_youtube', models.URLField(blank=True)),
+                ('url_tiktok', models.URLField(blank=True)),
+                ('gbp_url', models.URLField(blank=True)),
+                ('google_place_id', models.CharField(blank=True, max_length=255)),
+                ('gbp_star_rating', models.FloatField(blank=True, null=True)),
+                ('gbp_review_count', models.IntegerField(blank=True, null=True)),
+                ('gbp_reviews', models.JSONField(blank=True, default=list)),
+                ('gbp_last_synced', models.DateTimeField(blank=True, null=True)),
+                ('created_at', models.DateTimeField(auto_now_add=True)),
+                ('updated_at', models.DateTimeField(auto_now=True)),
+                ('site', models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name='entity_profile', to='sites.site')),
+            ],
+        ),
+    ]

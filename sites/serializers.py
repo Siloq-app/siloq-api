@@ -9,6 +9,7 @@ class SiteSerializer(serializers.ModelSerializer):
     """Serializer for Site model."""
     page_count = serializers.SerializerMethodField()
     api_key_count = serializers.SerializerMethodField()
+    gsc_connected = serializers.SerializerMethodField()
     needs_onboarding = serializers.BooleanField(read_only=True)
     
     class Meta:
@@ -16,13 +17,17 @@ class SiteSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'name', 'url', 'wp_site_id', 'is_active',
             'last_synced_at', 'sync_requested_at', 'created_at', 'updated_at',
-            'page_count', 'api_key_count',
+            'page_count', 'api_key_count', 'gsc_connected',
             # Business profile fields
             'business_type', 'primary_services', 'service_areas',
             'target_audience', 'business_description', 'onboarding_complete',
             'needs_onboarding'
         )
         read_only_fields = ('id', 'created_at', 'updated_at', 'last_synced_at', 'sync_requested_at', 'needs_onboarding')
+
+    def get_gsc_connected(self, obj):
+        """Check if GSC is connected (has refresh token)."""
+        return bool(getattr(obj, 'gsc_refresh_token', None))
 
     def get_page_count(self, obj):
         """Get count of pages for this site."""

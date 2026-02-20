@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'seo',
     'integrations',
     'billing',
+    'ai',
 ]
 
 MIDDLEWARE = [
@@ -152,8 +153,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # REST Framework configuration
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
         'integrations.authentication.APIKeyAuthentication',
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
@@ -195,6 +196,9 @@ CORS_ALLOW_CREDENTIALS = True
 
 # Custom User Model
 AUTH_USER_MODEL = 'accounts.User'
+
+# Resend email configuration
+RESEND_API_KEY = os.getenv('RESEND_API_KEY', '')
 
 # Logging - ensure all output goes to stdout for DigitalOcean App Platform
 LOGGING = {

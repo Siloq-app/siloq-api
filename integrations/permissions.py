@@ -13,10 +13,11 @@ class IsAPIKeyAuthenticated(permissions.BasePermission):
     """
     def has_permission(self, request, view):
         logger.debug(f"IsAPIKeyAuthenticated checking, request.auth: {request.auth}")
-        # Check if request was authenticated via API key
+        # Check if request was authenticated via API key (site_key or account_key)
         if hasattr(request, 'auth') and isinstance(request.auth, dict):
-            result = request.auth.get('auth_type') == 'api_key'
-            logger.debug(f"auth_type check result: {result}")
+            auth_type = request.auth.get('auth_type', '')
+            result = auth_type in ('api_key', 'site_key', 'account_key')
+            logger.debug(f"auth_type={auth_type}, check result: {result}")
             return result
         logger.debug("No request.auth or not dict")
         return False

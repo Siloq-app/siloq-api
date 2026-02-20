@@ -35,8 +35,9 @@ class PageSerializer(serializers.ModelSerializer):
             'id', 'site', 'wp_post_id', 'url', 'title', 'slug',
             'content', 'excerpt', 'status', 'published_at', 'modified_at',
             'parent_id', 'menu_order', 'yoast_title', 'yoast_description',
-            'featured_image', 'siloq_page_id', 'is_money_page', 'last_synced_at',
-            'created_at', 'updated_at', 'seo_data'
+            'featured_image', 'siloq_page_id', 'is_money_page',
+            'page_type_classification', 'page_type_override',
+            'last_synced_at', 'created_at', 'updated_at', 'seo_data'
         )
         read_only_fields = ('id', 'created_at', 'updated_at', 'last_synced_at')
 
@@ -50,7 +51,8 @@ class PageListSerializer(serializers.ModelSerializer):
         model = Page
         fields = (
             'id', 'url', 'title', 'status', 'published_at',
-            'last_synced_at', 'seo_score', 'issue_count', 'is_money_page', 'is_noindex'
+            'last_synced_at', 'seo_score', 'issue_count', 'is_money_page', 'is_noindex',
+            'page_type_classification', 'page_type_override'
         )
 
     def get_seo_score(self, obj):
