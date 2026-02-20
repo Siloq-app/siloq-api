@@ -138,6 +138,44 @@ def sync_gbp(request, site_id):
             place_id = urllib.parse.unquote(pid_match.group(1))
             logger.info('Extracted Place ID from URL data param: %s', place_id)
 
+    # ── Strategy 2b: CID lookup from ?cid= URL ───────────────────────────────
+    if not place_id and gbp_url:
+        cid_match = re.search(r'[?&]cid=(\d+)', gbp_url)
+        if cid_match:
+            cid = cid_match.group(1)
+            try:
+                # Use findplacefromtext with CID as input — Google supports this
+                cid_resp = requests.get(
+                    'https://maps.googleapis.com/maps/api/place/findplacefromtext/json',
+                    params={'input': f'cid:{cid}', 'inputtype': 'textquery', 'fields': 'place_id', 'key': GOOGLE_PLACES_API_KEY},
+                    timeout=10,
+                )
+                cid_data = cid_resp.json()
+                candidates = cid_data.get('candidates', [])
+                if candidates:
+                    place_id = candidates[0].get('place_id')
+                    logger.info('Found via CID %s: %s', cid, place_id)
+            except Exception as e:
+                logger.warning('CID lookup failed: %s', e)
+
+    # ── Strategy 2c: phone number lookup (best for Service Area Businesses) ──
+    phone_input = (request.data.get('phone') or '').strip()
+    if not place_id and phone_input:
+        try:
+            phone_resp = requests.get(
+                'https://maps.googleapis.com/maps/api/place/findplacefromtext/json',
+                params={'input': phone_input, 'inputtype': 'phonenumber', 'fields': 'place_id,name', 'key': GOOGLE_PLACES_API_KEY},
+                timeout=10,
+            )
+            phone_data = phone_resp.json()
+            logger.info('Phone lookup status: %s', phone_data.get('status'))
+            candidates = phone_data.get('candidates', [])
+            if candidates:
+                place_id = candidates[0].get('place_id')
+                logger.info('Found via phone %s: %s — %s', phone_input, place_id, candidates[0].get('name'))
+        except Exception as e:
+            logger.warning('Phone lookup failed: %s', e)
+
     # ── Strategy 3: New Places API v2 (textQuery) ────────────────────────────
     # Better NLP, finds small/new local businesses that the old API misses
     if not place_id and gbp_url:
