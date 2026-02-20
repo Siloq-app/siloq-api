@@ -61,6 +61,16 @@ class Page(models.Model):
         related_name='supporting_pages',
         help_text="The money page this supporting page belongs to"
     )
+    # Page type classification
+    page_type_classification = models.CharField(
+        max_length=50, blank=True, null=True,
+        help_text='Auto-classified: money, supporting, utility, conversion, archive, product'
+    )
+    page_type_override = models.CharField(
+        max_length=50, blank=True, null=True,
+        help_text='Manual override for page type'
+    )
+
     last_synced_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
