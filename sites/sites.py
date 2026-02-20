@@ -230,11 +230,44 @@ class SiteViewSet(viewsets.ModelViewSet):
     def analyze(self, request, pk=None):
         """
         Run full analysis on a site.
-        
         POST /api/v1/sites/{id}/analyze/
         """
         site = self.get_object()
+
+        # --- Trial enforcement ---
+        try:
+            subscription = request.user.subscription
+            if subscription.tier == 'free_trial' and subscription.status == 'trialing':
+                pages_to_analyze = site.pages.filter(status='publish', is_noindex=False).count()
+                remaining = subscription.trial_pages_limit - subscription.trial_pages_used
+                if remaining <= 0:
+                    return Response({
+                        'error': 'Trial limit reached',
+                        'detail': f'Your free trial allows {subscription.trial_pages_limit} pages. '
+                                  f'Upgrade to Pro to analyze unlimited pages.',
+                        'trial_pages_used': subscription.trial_pages_used,
+                        'trial_pages_limit': subscription.trial_pages_limit,
+                        'upgrade_url': '/dashboard?tab=settings&section=subscription',
+                    }, status=status.HTTP_402_PAYMENT_REQUIRED)
+        except Exception:
+            pass  # No subscription record — let it through (superusers, etc.)
+        # --- End trial enforcement ---
+
         results = analyze_site(site)
+
+        # Increment trial pages used after successful analysis
+        try:
+            subscription = request.user.subscription
+            if subscription.tier == 'free_trial' and subscription.status == 'trialing':
+                analyzed = results.get('pages_analyzed', site.pages.filter(status='publish').count())
+                subscription.trial_pages_used = min(
+                    subscription.trial_pages_used + analyzed,
+                    subscription.trial_pages_limit
+                )
+                subscription.save(update_fields=['trial_pages_used'])
+        except Exception:
+            pass
+
         return Response(results)
 
     @action(detail=True, methods=['get'], url_path='pending-approvals')
