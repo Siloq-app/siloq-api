@@ -181,6 +181,145 @@ class SiteViewSet(viewsets.ModelViewSet):
             'onboarding_complete': site.onboarding_complete,
         })
 
+    @action(detail=True, methods=['get', 'patch'], url_path='entity-profile')
+    def entity_profile(self, request, pk=None):
+        """
+        GET  /api/v1/sites/{id}/entity-profile/ — Get stored GBP entity data
+        PATCH /api/v1/sites/{id}/entity-profile/ — Manually update fields
+        """
+        site = self.get_object()
+
+        if request.method == 'GET':
+            return Response({
+                'place_id': site.gbp_place_id or '',
+                'phone': site.gbp_phone or '',
+                'name': site.gbp_name or '',
+                'address': site.gbp_address or '',
+                'website': site.gbp_website or '',
+                'gbp_url': site.gbp_url or '',
+                'reviews': site.gbp_reviews or [],
+                'rating': site.gbp_rating,
+                'review_count': site.gbp_review_count,
+                'last_synced_at': site.gbp_last_synced_at,
+                'is_connected': bool(site.gbp_place_id or site.gbp_phone),
+            })
+
+        # PATCH — allow manual field updates
+        allowed = ['gbp_place_id', 'gbp_phone', 'gbp_name', 'gbp_address',
+                   'gbp_website', 'gbp_url']
+        # Accept both prefixed and unprefixed keys from dashboard
+        field_map = {
+            'place_id': 'gbp_place_id',
+            'phone': 'gbp_phone',
+            'name': 'gbp_name',
+            'address': 'gbp_address',
+            'website': 'gbp_website',
+            'gbp_url': 'gbp_url',
+        }
+        for client_key, model_field in field_map.items():
+            if client_key in request.data:
+                setattr(site, model_field, request.data[client_key])
+        for field in allowed:
+            if field in request.data:
+                setattr(site, field, request.data[field])
+        site.save()
+        return Response({'status': 'updated'})
+
+    @action(detail=True, methods=['post'], url_path='sync-gbp')
+    def sync_gbp(self, request, pk=None):
+        """
+        POST /api/v1/sites/{id}/sync-gbp/
+        Fetch GBP data from Google Places API using place_id or phone.
+        Body: { "place_id": "...", "phone": "..." }
+        """
+        import os, requests as req
+        from django.utils import timezone
+
+        site = self.get_object()
+        api_key = os.environ.get('GOOGLE_PLACES_API_KEY', '')
+
+        if not api_key:
+            return Response({'error': 'GOOGLE_PLACES_API_KEY not configured'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+        # Prefer explicit place_id from body, fall back to stored, then phone
+        place_id = request.data.get('place_id') or site.gbp_place_id
+        phone = request.data.get('phone') or site.gbp_phone
+
+        # If we have a place_id already, fetch directly
+        if not place_id and phone:
+            # Try text search by phone number
+            search_url = 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json'
+            r = req.get(search_url, params={
+                'input': phone,
+                'inputtype': 'phonenumber',
+                'fields': 'place_id',
+                'key': api_key,
+            }, timeout=10)
+            data = r.json()
+            candidates = data.get('candidates', [])
+            if candidates:
+                place_id = candidates[0].get('place_id')
+
+        if not place_id:
+            return Response({
+                'error': 'No Place ID found. For Service Area Businesses, Google hides location data. '
+                         'Please enter your Place ID manually from Google Maps.',
+                'help_url': 'https://developers.google.com/maps/documentation/places/web-service/place-id'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        # Fetch place details
+        details_url = 'https://maps.googleapis.com/maps/api/place/details/json'
+        r = req.get(details_url, params={
+            'place_id': place_id,
+            'fields': 'name,formatted_address,formatted_phone_number,website,url,rating,user_ratings_total,reviews',
+            'key': api_key,
+        }, timeout=10)
+        result = r.json().get('result', {})
+
+        if not result:
+            return Response({'error': 'Place not found or API error'},
+                            status=status.HTTP_404_NOT_FOUND)
+
+        # Filter to 4★/5★ reviews only
+        all_reviews = result.get('reviews', [])
+        quality_reviews = [
+            {
+                'author': rv.get('author_name', ''),
+                'rating': rv.get('rating', 0),
+                'text': rv.get('text', ''),
+                'time': rv.get('relative_time_description', ''),
+            }
+            for rv in all_reviews if rv.get('rating', 0) >= 4
+        ]
+
+        # Persist to site
+        site.gbp_place_id = place_id
+        site.gbp_name = result.get('name', '')
+        site.gbp_address = result.get('formatted_address', '')
+        site.gbp_phone = result.get('formatted_phone_number', '') or phone or ''
+        site.gbp_website = result.get('website', '')
+        site.gbp_url = result.get('url', '')
+        site.gbp_rating = result.get('rating')
+        site.gbp_review_count = result.get('user_ratings_total')
+        site.gbp_reviews = quality_reviews
+        site.gbp_last_synced_at = timezone.now()
+        site.save()
+
+        return Response({
+            'status': 'synced',
+            'place_id': place_id,
+            'name': site.gbp_name,
+            'address': site.gbp_address,
+            'phone': site.gbp_phone,
+            'website': site.gbp_website,
+            'gbp_url': site.gbp_url,
+            'rating': site.gbp_rating,
+            'review_count': site.gbp_review_count,
+            'reviews': quality_reviews,
+            'last_synced_at': site.gbp_last_synced_at,
+        })
+
     @action(detail=True, methods=['get'], url_path='cannibalization-issues')
     def cannibalization_issues(self, request, pk=None):
         """
