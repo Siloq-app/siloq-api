@@ -60,6 +60,16 @@ def team_cancel_invite_view(request, invite_id):
     from .team_views import team_cancel_invite
     return team_cancel_invite(request, invite_id)
 
+@csrf_exempt
+def accept_invite_view(request):
+    from .team_views import accept_invite
+    return accept_invite(request)
+
+@csrf_exempt
+def update_member_role_view(request, access_id):
+    from .team_views import update_member_role
+    return update_member_role(request, access_id)
+
 urlpatterns = [
     # Core authentication
     path('login/', login_view, name='login'),
@@ -78,4 +88,6 @@ urlpatterns = [
     path('team/invite/', team_invite_view, name='team_invite'),
     path('team/<int:access_id>/', team_remove_view, name='team_remove'),
     path('team/invite/<int:invite_id>/', team_cancel_invite_view, name='team_cancel_invite'),
+    path('team/invite/accept/', accept_invite_view, name='team_accept_invite'),
+    path('team/<int:access_id>/role/', update_member_role_view, name='team_update_role'),
 ]

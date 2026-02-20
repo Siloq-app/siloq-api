@@ -280,6 +280,122 @@ def team_remove(request, access_id):
         return Response({'error': 'Team member not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
+@api_view(['POST'])
+def accept_invite(request):
+    """
+    Accept a team invitation via token.
+    No auth required — the token IS the auth mechanism.
+
+    POST /api/v1/team/invite/accept/
+    Body: { "token": "..." }
+
+    Returns:
+      200 { "accepted": true, "site": {...}, "role": "..." }       — already-registered user, access granted
+      202 { "action": "register", "email": "...", "token": "..." } — user needs to register first
+      400/404 — invalid or expired token
+    """
+    token = request.data.get('token', '').strip()
+    if not token:
+        return Response({'error': 'Token is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        invite = TeamInvite.objects.select_related('site', 'invited_by').get(token=token)
+    except TeamInvite.DoesNotExist:
+        return Response({'error': 'Invalid invitation link'}, status=status.HTTP_404_NOT_FOUND)
+
+    if invite.status != 'pending':
+        return Response({
+            'error': 'This invitation has already been used or cancelled',
+            'status': invite.status,
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    if invite.expires_at < timezone.now():
+        invite.status = 'expired'
+        invite.save(update_fields=['status'])
+        return Response({'error': 'This invitation has expired'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Check if the invited user has an account
+    invited_user = User.objects.filter(email=invite.email).first()
+
+    if not invited_user:
+        # User needs to register — return enough info for frontend to handle signup
+        return Response({
+            'action': 'register',
+            'email': invite.email,
+            'token': token,
+            'site_name': invite.site.name,
+            'role': invite.role,
+            'invited_by': f"{invite.invited_by.first_name} {invite.invited_by.last_name}".strip() or invite.invited_by.email,
+        }, status=status.HTTP_202_ACCEPTED)
+
+    # Check if already has access
+    existing = SiteAccess.objects.filter(user=invited_user, site=invite.site).first()
+    if existing:
+        invite.status = 'accepted'
+        invite.save(update_fields=['status'])
+        return Response({
+            'accepted': True,
+            'already_had_access': True,
+            'site': {'id': invite.site.id, 'name': invite.site.name, 'url': invite.site.url},
+            'role': existing.role,
+        })
+
+    # Grant access
+    SiteAccess.objects.create(user=invited_user, site=invite.site, role=invite.role)
+    invite.status = 'accepted'
+    invite.accepted_at = timezone.now()
+    invite.save(update_fields=['status', 'accepted_at'])
+
+    logger.info('Team invite accepted: %s → %s (role: %s)', invite.email, invite.site.name, invite.role)
+
+    return Response({
+        'accepted': True,
+        'site': {'id': invite.site.id, 'name': invite.site.name, 'url': invite.site.url},
+        'role': invite.role,
+    })
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def update_member_role(request, access_id):
+    """
+    Update a team member's role.
+
+    PATCH /api/v1/team/{access_id}/role/
+    Body: { "role": "admin|editor|viewer" }
+    Returns: { "id": ..., "role": "...", "email": "..." }
+    """
+    user = request.user
+    new_role = request.data.get('role', '').strip()
+
+    if new_role not in ['viewer', 'editor', 'admin']:
+        return Response({'error': 'Invalid role. Must be viewer, editor, or admin'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        access = SiteAccess.objects.select_related('site', 'user').get(id=access_id)
+    except SiteAccess.DoesNotExist:
+        return Response({'error': 'Team member not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if access.site.user != user:
+        return Response({'error': 'Access denied — you do not own this site'}, status=status.HTTP_403_FORBIDDEN)
+
+    old_role = access.role
+    access.role = new_role
+    access.save(update_fields=['role'])
+
+    logger.info('Team role updated: %s on %s: %s → %s by %s', access.user.email, access.site.name, old_role, new_role, user.email)
+
+    return Response({
+        'id': access.id,
+        'user_id': access.user.id,
+        'email': access.user.email,
+        'name': f"{access.user.first_name} {access.user.last_name}".strip() or access.user.email,
+        'role': access.role,
+        'site_id': access.site.id,
+        'site_name': access.site.name,
+    })
+
+
 @api_view(['DELETE'])
 @permission_classes([IsAuthenticated])
 def team_cancel_invite(request, invite_id):
