@@ -379,3 +379,36 @@ class SEOData(models.Model):
 
     def __str__(self):
         return f"SEO Data for {self.page.title}"
+
+
+class ContentJob(models.Model):
+    """
+    Persistent content generation job — replaces the in-memory _jobs dict.
+    Survives server restarts and supports async processing.
+    """
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('processing', 'Processing'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ]
+
+    job_id = models.CharField(max_length=36, unique=True, db_index=True)
+    site = models.ForeignKey(
+        'sites.Site', on_delete=models.CASCADE, related_name='content_jobs'
+    )
+    page_id = models.CharField(max_length=255, blank=True, null=True)
+    wp_post_id = models.IntegerField(blank=True, null=True)
+    job_type = models.CharField(max_length=50, default='content_generation')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    result = models.JSONField(blank=True, null=True)
+    error = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'content_jobs'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"ContentJob {self.job_id} [{self.status}]"
