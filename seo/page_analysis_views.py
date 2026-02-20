@@ -423,10 +423,45 @@ def _apply_recommendation_to_wordpress(site: Site, analysis: PageAnalysis, rec: 
     after = rec.get('after', '')
     rec_id = rec.get('id')
 
-    # Fields not yet automatable via page.update_meta
+    # content_body — send via content.apply_content (WP plugin handles find/replace + append)
     if field == 'content_body':
-        logger.info('Skipping content_body rec %s — manual application required', rec_id)
-        return {'rec_id': rec_id, 'success': False, 'error': 'content_body updates require manual application in WordPress'}
+        # Guard: if the AI generated an instruction/guidance as the AFTER text rather than
+        # real insertable content, skip the apply and surface it as a manual action item
+        INSTRUCTION_PHRASES = [
+            'connect your google business profile',
+            'go to settings',
+            'pull real customer reviews',
+            'settings to pull',
+            'not yet available',
+            'upgrade your plan',
+            'contact us to enable',
+        ]
+        after_lower = after.lower()
+        if any(phrase in after_lower for phrase in INSTRUCTION_PHRASES):
+            logger.info('content_body rec %s is a guidance note — skipping auto-apply', rec_id)
+            return {
+                'rec_id': rec_id,
+                'success': False,
+                'error': 'requires_manual_action',
+                'guidance': after,
+            }
+
+        before = rec.get('before', 'Not present')
+        result = send_webhook_to_wordpress(
+            site=site,
+            event_type='content.apply_content',
+            data={
+                'url': analysis.page_url,
+                'field': 'content_body',
+                'before': before,
+                'after': after,
+            }
+        )
+        return {
+            'rec_id': rec_id,
+            'success': result.get('success', False),
+            'error': result.get('error'),
+        }
     if field == 'schema':
         schema_data = getattr(analysis, 'generated_schema', {}) or {}
         if not schema_data.get('json_ld'):
