@@ -323,7 +323,8 @@ def sync_gbp(request, site_id):
         profile.latitude = loc.get('lat')
         profile.longitude = loc.get('lng')
 
-    # Reviews — store up to 20 most recent
+    # Reviews — only store 4★ & 5★ (used for CRO recommendations — low-star reviews
+    # should never appear in schema or AI-generated content)
     raw_reviews = result.get('reviews', [])
     profile.gbp_reviews = [
         {
@@ -333,8 +334,9 @@ def sync_gbp(request, site_id):
             'date': r.get('relative_time_description', ''),
             'time': r.get('time', 0),
         }
-        for r in raw_reviews[:20]
-    ]
+        for r in raw_reviews
+        if r.get('rating', 0) >= 4
+    ][:20]  # Up to 20 high-quality reviews
     profile.gbp_last_synced = timezone.now()
     profile.save()
 
