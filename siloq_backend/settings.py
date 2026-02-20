@@ -27,6 +27,23 @@ ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,host.docker.inte
 # Frontend URL (for OAuth redirects)
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://app.siloq.ai')
 
+# Email Configuration
+# Local dev: set EMAIL_BACKEND=console in .env to print emails to terminal
+# Production: uses Resend SMTP (RESEND_API_KEY must be set)
+_email_backend = os.getenv('EMAIL_BACKEND', '')
+if _email_backend == 'console' or DEBUG:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST = 'smtp.resend.com'
+    EMAIL_PORT = 587
+    EMAIL_USE_TLS = True
+    EMAIL_HOST_USER = 'resend'
+    EMAIL_HOST_PASSWORD = os.getenv('RESEND_API_KEY', '')
+
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@siloq.ai')
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'https://app.siloq.ai')
+
 # Google Search Console OAuth
 GSC_CLIENT_ID = os.getenv('GSC_CLIENT_ID', '')
 GSC_CLIENT_SECRET = os.getenv('GSC_CLIENT_SECRET', '')

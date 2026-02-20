@@ -70,6 +70,16 @@ def update_member_role_view(request, access_id):
     from .team_views import update_member_role
     return update_member_role(request, access_id)
 
+@csrf_exempt
+def request_password_reset_view(request):
+    from .auth import request_password_reset
+    return request_password_reset(request)
+
+@csrf_exempt
+def confirm_password_reset_view(request):
+    from .auth import confirm_password_reset
+    return confirm_password_reset(request)
+
 urlpatterns = [
     # Core authentication
     path('login/', login_view, name='login'),
@@ -90,4 +100,7 @@ urlpatterns = [
     path('team/invite/<int:invite_id>/', team_cancel_invite_view, name='team_cancel_invite'),
     path('team/invite/accept/', accept_invite_view, name='team_accept_invite'),
     path('team/<int:access_id>/role/', update_member_role_view, name='team_update_role'),
+    # Password reset
+    path('reset-password/', request_password_reset_view, name='request_password_reset'),
+    path('reset-password/confirm/', confirm_password_reset_view, name='confirm_password_reset'),
 ]
