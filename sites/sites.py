@@ -13,7 +13,27 @@ from django.db.models import Prefetch
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from seo.models import SEOData, CannibalizationConflict, ConflictPage, ConflictResolution, RedirectRegistry, KeywordAssignment, KeywordAssignmentHistory
+from seo.models import SEOData
+# Note: CannibalizationConflict, ConflictPage, ConflictResolution, RedirectRegistry,
+# KeywordAssignment, KeywordAssignmentHistory are planned models not yet built.
+# Imported lazily inside functions to prevent startup ImportError. (TODO: build these models)
+def _get_cannibalization_models():
+    """Lazy import for cannibalization models — returns None if not yet built."""
+    try:
+        from seo.models import (  # noqa
+            CannibalizationConflict, ConflictPage, ConflictResolution,
+            RedirectRegistry, KeywordAssignment, KeywordAssignmentHistory
+        )
+        return {
+            'CannibalizationConflict': CannibalizationConflict,
+            'ConflictPage': ConflictPage,
+            'ConflictResolution': ConflictResolution,
+            'RedirectRegistry': RedirectRegistry,
+            'KeywordAssignment': KeywordAssignment,
+            'KeywordAssignmentHistory': KeywordAssignmentHistory,
+        }
+    except ImportError:
+        return None
 from .models import Site
 from .serializers import SiteSerializer
 from .permissions import IsSiteOwner
@@ -487,7 +507,12 @@ class SiteViewSet(viewsets.ModelViewSet):
         GET /api/v1/sites/{id}/pending-approvals/
         """
         site = self.get_object()
-        
+
+        models = _get_cannibalization_models()
+        if models is None:
+            return Response({'actions': [], 'total': 0, 'message': 'Conflict resolution system not yet available'})
+        CannibalizationConflict = models['CannibalizationConflict']
+
         # Query open cannibalization conflicts
         conflicts = CannibalizationConflict.objects.filter(
             site=site,
