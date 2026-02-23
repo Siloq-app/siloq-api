@@ -3,6 +3,8 @@ Billing and subscription models.
 Handles Stripe subscriptions, payments, and user billing information.
 """
 from django.db import models
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 from django.conf import settings
 from django.utils import timezone
 
@@ -151,3 +153,17 @@ class Usage(models.Model):
     
     def __str__(self):
         return f"{self.user.username} - {self.feature}: {self.count}"
+
+
+@receiver(post_save, sender=Subscription)
+def sync_user_subscription_fields(sender, instance, **kwargs):
+    user = instance.user
+    changed = False
+    if user.subscription_tier != instance.tier:
+        user.subscription_tier = instance.tier
+        changed = True
+    if user.subscription_status != instance.status:
+        user.subscription_status = instance.status
+        changed = True
+    if changed:
+        user.save(update_fields=['subscription_tier', 'subscription_status'])
