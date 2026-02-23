@@ -61,15 +61,6 @@ class Page(models.Model):
         default=False,
         help_text="True if user manually set the page type (skip auto-reclassification)",
     )
-    # Page type classification
-    page_type_classification = models.CharField(
-        max_length=50, blank=True, null=True,
-        help_text='Auto-classified: money, supporting, utility, conversion, archive, product'
-    )
-    page_type_override = models.CharField(
-        max_length=50, blank=True, null=True,
-        help_text='Manual override for page type'
-    )
 
     last_synced_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
