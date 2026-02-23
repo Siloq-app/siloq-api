@@ -5,6 +5,8 @@ Handles login, register, logout, and user profile.
 import logging
 import os
 
+from datetime import timedelta
+
 from dotenv import load_dotenv
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
@@ -14,6 +16,8 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
+
+from billing.models import Subscription
 
 from .serializers import LoginSerializer, RegisterSerializer, UserSerializer
 
@@ -66,6 +70,19 @@ def register(request):
 
     if serializer.is_valid():
         user = serializer.save()
+
+        # Auto-create trial subscription so trial page limits are enforced
+        Subscription.objects.get_or_create(
+            user=user,
+            defaults={
+                'tier': 'free_trial',
+                'status': 'trialing',
+                'trial_started_at': timezone.now(),
+                'trial_ends_at': timezone.now() + timedelta(days=10),
+                'trial_pages_limit': 10,
+                'trial_pages_used': 0,
+            }
+        )
 
         # Generate JWT token so frontend can log in immediately
         refresh = RefreshToken.for_user(user)
