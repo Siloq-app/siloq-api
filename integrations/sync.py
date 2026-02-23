@@ -112,7 +112,10 @@ def sync_page(request):
     else:
         wp_post_id = raw_wp_post_id
     data['wp_post_id'] = wp_post_id
-    
+
+    # Ensure required DB fields have defaults — page_type_classification is NOT NULL
+    data.setdefault('page_type_classification', 'supporting')
+
     # Get or create page
     wp_post_id = data['wp_post_id']
     page, created = Page.objects.get_or_create(
