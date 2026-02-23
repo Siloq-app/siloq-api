@@ -113,8 +113,10 @@ def sync_page(request):
         wp_post_id = raw_wp_post_id
     data['wp_post_id'] = wp_post_id
 
-    # Ensure required DB fields have defaults — page_type_classification is NOT NULL
-    data.setdefault('page_type_classification', 'supporting')
+    # Ensure all NOT NULL columns that the WP plugin doesn't send have safe defaults.
+    # These columns were added via raw SQL migrations with NOT NULL but no DB default.
+    data.setdefault('page_type_classification', 'supporting')  # NOT NULL, no DB default
+    data.setdefault('page_type_override', '')                  # NOT NULL, no DB default
 
     # Get or create page
     wp_post_id = data['wp_post_id']
