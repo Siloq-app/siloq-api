@@ -388,14 +388,29 @@ class ConflictPage(models.Model):
 
 
 class ConflictResolution(models.Model):
+    # UUIDField primary key — matches migration 0007
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     conflict = models.ForeignKey(CannibalizationConflict, on_delete=models.CASCADE, related_name='resolutions', null=True, blank=True)
-    action_type = models.CharField(max_length=100, blank=True)
-    action = models.CharField(max_length=100, default='redirect')
-    winner_url = models.URLField(max_length=2048, blank=True)
-    loser_url = models.URLField(max_length=2048, blank=True)
-    recommended_by = models.CharField(max_length=255, blank=True)
-    approved_by = models.CharField(max_length=255, blank=True)
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='conflict_resolutions', null=True, blank=True)
+    redirect = models.ForeignKey('RedirectRegistry', on_delete=models.SET_NULL, null=True, blank=True, related_name='conflict_resolutions')
+    action_type = models.CharField(max_length=30)
+    winner_url = models.CharField(max_length=2048, blank=True, null=True)
+    loser_url = models.CharField(max_length=2048, blank=True, null=True)
+    redirect_type = models.IntegerField(blank=True, null=True)
+    merge_brief = models.TextField(blank=True, null=True)
+    content_merged = models.BooleanField(default=False)
+    internal_links_updated = models.IntegerField(default=0)
+    keyword_reassigned = models.BooleanField(default=False)
+    previous_keyword_owner = models.CharField(max_length=2048, blank=True, null=True)
+    new_keyword_owner = models.CharField(max_length=2048, blank=True, null=True)
+    recommended_by = models.CharField(max_length=30, default='siloq')
+    approved_by = models.CharField(max_length=255, blank=True, null=True)
+    approval_rating = models.CharField(max_length=10, blank=True, null=True)
+    verified = models.BooleanField(default=False)
+    verified_at = models.DateTimeField(blank=True, null=True)
+    verification_status = models.CharField(max_length=30, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         managed = False
@@ -480,10 +495,21 @@ class ContentAuditLog(models.Model):
 
 
 class ValidationLog(models.Model):
+    # UUIDField primary key — matches migration 0007
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True)
-    proposed_keyword = models.CharField(max_length=500, blank=True)
-    overall_status = models.CharField(max_length=50, blank=True)
+    proposed_title = models.CharField(max_length=500, blank=True, null=True)
+    proposed_slug = models.CharField(max_length=500, blank=True, null=True)
+    proposed_h1 = models.CharField(max_length=500, blank=True, null=True)
+    proposed_keyword = models.CharField(max_length=500, blank=True, null=True)
+    proposed_page_type = models.CharField(max_length=30, blank=True, null=True)
+    overall_status = models.CharField(max_length=10)
+    blocking_check = models.CharField(max_length=50, blank=True, null=True)
     check_results = models.JSONField(default=dict)
+    user_action = models.CharField(max_length=30, blank=True, null=True)
+    user_acknowledged_warnings = models.BooleanField(default=False)
+    validation_source = models.CharField(max_length=30, default='generation')
+    triggered_by = models.CharField(max_length=255, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
