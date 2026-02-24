@@ -5,6 +5,7 @@ GET  /api/v1/sites/{site_id}/entity-profile/      — get or create profile
 PATCH /api/v1/sites/{site_id}/entity-profile/     — update profile fields
 POST /api/v1/sites/{site_id}/entity-profile/sync-gbp/  — sync from Google Places
 """
+import json
 import logging
 import os
 import re
@@ -29,47 +30,50 @@ def _get_or_create_profile(site):
 
 
 def _serialize_profile(profile):
+    """Build full JSON-serializable dict for entity profile. Safe for None datetimes."""
+def _dt_iso(dt):
+        return dt.isoformat() if dt is not None else None
     return {
         'id': profile.id,
-        'business_name': profile.business_name,
-        'description': profile.description,
-        'phone': profile.phone,
-        'email': profile.email,
+        'business_name': profile.business_name or '',
+        'description': profile.description or '',
+        'phone': profile.phone or '',
+        'email': profile.email or '',
         'founding_year': profile.founding_year,
-        'founder_name': profile.founder_name,
-        'num_employees': profile.num_employees,
-        'price_range': profile.price_range,
-        'languages': profile.languages,
-        'payment_methods': profile.payment_methods,
-        'street_address': profile.street_address,
-        'city': profile.city,
-        'state': profile.state,
-        'zip_code': profile.zip_code,
-        'country': profile.country,
+        'founder_name': profile.founder_name or '',
+        'num_employees': profile.num_employees or '',
+        'price_range': profile.price_range or '',
+        'languages': profile.languages if profile.languages is not None else [],
+        'payment_methods': profile.payment_methods if profile.payment_methods is not None else [],
+        'street_address': profile.street_address or '',
+        'city': profile.city or '',
+        'state': profile.state or '',
+        'zip_code': profile.zip_code or '',
+        'country': profile.country or '',
         'latitude': profile.latitude,
         'longitude': profile.longitude,
-        'service_cities': profile.service_cities,
-        'service_zips': profile.service_zips,
+        'service_cities': profile.service_cities if profile.service_cities is not None else [],
+        'service_zips': profile.service_zips if profile.service_zips is not None else [],
         'service_radius_miles': profile.service_radius_miles,
-        'hours': profile.hours,
-        'categories': profile.categories,
-        'certifications': profile.certifications,
-        'license_numbers': profile.license_numbers,
+        'hours': profile.hours if profile.hours is not None else {},
+        'categories': profile.categories if profile.categories is not None else [],
+        'certifications': profile.certifications if profile.certifications is not None else [],
+        'license_numbers': profile.license_numbers if profile.license_numbers is not None else [],
         'social_profiles': {
-            'facebook': profile.url_facebook,
-            'instagram': profile.url_instagram,
-            'linkedin': profile.url_linkedin,
-            'twitter': profile.url_twitter,
-            'youtube': profile.url_youtube,
-            'tiktok': profile.url_tiktok,
+            'facebook': profile.url_facebook or '',
+            'instagram': profile.url_instagram or '',
+            'linkedin': profile.url_linkedin or '',
+            'twitter': profile.url_twitter or '',
+            'youtube': profile.url_youtube or '',
+            'tiktok': profile.url_tiktok or '',
         },
-        'gbp_url': profile.gbp_url,
-        'google_place_id': profile.google_place_id,
+        'gbp_url': profile.gbp_url or '',
+        'google_place_id': profile.google_place_id or '',
         'gbp_star_rating': profile.gbp_star_rating,
         'gbp_review_count': profile.gbp_review_count,
-        'gbp_reviews': profile.gbp_reviews,
-        'gbp_last_synced': profile.gbp_last_synced.isoformat() if profile.gbp_last_synced else None,
-        'updated_at': profile.updated_at.isoformat(),
+        'gbp_reviews': profile.gbp_reviews if profile.gbp_reviews is not None else [],
+        'gbp_last_synced': _dt_iso(getattr(profile, 'gbp_last_synced', None)),
+        'updated_at': _dt_iso(getattr(profile, 'updated_at', None)) or '',
     }
 
 
@@ -108,9 +112,14 @@ def entity_profile(request, site_id):
             setattr(profile, model_field, social[key])
 
     profile.save()
+    profile.refresh_from_db()
     serialized = _serialize_profile(profile)
-    logger.info('[PATCH entity-profile] site=%s bytes=%d business_name=%r', site_id, len(str(serialized)), serialized.get('business_name'))
-    return Response(serialized)
+    body_bytes = len(json.dumps(serialized))
+    logger.info(
+        '[PATCH entity-profile] site=%s response_bytes=%d business_name=%r',
+        site_id, body_bytes, serialized.get('business_name')
+    )
+    return Response(serialized, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
