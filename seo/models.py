@@ -564,21 +564,24 @@ class SiteEntityProfile(models.Model):
 class PageAnalysis(models.Model):
     site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True, related_name='page_analyses')
     page_url = models.URLField(max_length=2048)
-    page_title = models.CharField(max_length=1024, blank=True)
-    status = models.CharField(max_length=50, default='analyzing')
+    page_title = models.CharField(max_length=500, blank=True)
+    # gsc_data and wp_meta are NOT NULL in DB (created with default=dict in migration 0014)
+    # generated_schema is NOT NULL in DB (added with default=dict in migration 0017)
+    # Use default=dict so Django inserts {} instead of NULL when not provided
+    gsc_data = models.JSONField(default=dict)
+    wp_meta = models.JSONField(default=dict)
+    geo_recommendations = models.JSONField(default=list)
+    seo_recommendations = models.JSONField(default=list)
+    cro_recommendations = models.JSONField(default=list)
     geo_score = models.IntegerField(null=True, blank=True)
     seo_score = models.IntegerField(null=True, blank=True)
     cro_score = models.IntegerField(null=True, blank=True)
     overall_score = models.IntegerField(null=True, blank=True)
-    geo_recommendations = models.JSONField(default=list)
-    seo_recommendations = models.JSONField(default=list)
-    cro_recommendations = models.JSONField(default=list)
-    generated_schema = models.JSONField(null=True, blank=True)
-    gsc_data = models.JSONField(null=True, blank=True)
-    wp_meta = models.JSONField(null=True, blank=True)
+    status = models.CharField(max_length=20, default='pending')
     error_message = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
+    generated_schema = models.JSONField(default=dict)
 
     class Meta:
         managed = False
