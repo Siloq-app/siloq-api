@@ -457,6 +457,18 @@ def _apply_recommendation_to_wordpress(site: Site, analysis: PageAnalysis, rec: 
                 'after': after,
             }
         )
+        # WP plugin returns success:false + manual_action:true for page builder pages
+        # (HTTP is still 200). Treat as requires_manual_action so dashboard shows amber.
+        wp_resp = result.get('response') or {}
+        if wp_resp.get('manual_action') or wp_resp.get('error') == 'page_builder_detected':
+            builder = wp_resp.get('builder', 'page builder')
+            logger.info('content_body rec %s skipped — page builder detected (%s)', rec_id, builder)
+            return {
+                'rec_id': rec_id,
+                'success': False,
+                'error': 'requires_manual_action',
+                'guidance': wp_resp.get('message', f'This page uses {builder}. Paste the suggested content in your page editor.'),
+            }
         return {
             'rec_id': rec_id,
             'success': result.get('success', False),
