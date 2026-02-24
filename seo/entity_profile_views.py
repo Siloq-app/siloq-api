@@ -31,7 +31,7 @@ def _get_or_create_profile(site):
 
 def _serialize_profile(profile):
     """Build full JSON-serializable dict for entity profile. Safe for None datetimes."""
-def _dt_iso(dt):
+    def _dt_iso(dt):
         return dt.isoformat() if dt is not None else None
     return {
         'id': profile.id,
