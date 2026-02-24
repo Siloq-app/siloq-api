@@ -108,7 +108,9 @@ def entity_profile(request, site_id):
             setattr(profile, model_field, social[key])
 
     profile.save()
-    return Response(_serialize_profile(profile))
+    serialized = _serialize_profile(profile)
+    logger.info('[PATCH entity-profile] site=%s bytes=%d business_name=%r', site_id, len(str(serialized)), serialized.get('business_name'))
+    return Response(serialized)
 
 
 @api_view(['POST'])
