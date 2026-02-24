@@ -5,6 +5,7 @@ Generates unique title/meta/keyword recommendations for competing pages.
 import json
 import logging
 import os
+import re
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -14,6 +15,7 @@ import openai
 
 from sites.models import Site
 from seo.models import Page
+from integrations.wordpress_webhook import send_webhook_to_wordpress
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +121,7 @@ For each page, provide:
 - new_h1: A differentiated H1 heading
 - new_meta_description: Updated meta description with unique selling point (155 chars max)
 - primary_keyword: The specific keyword THIS page should own
+- new_slug: Recommended URL slug if the current URL slug doesn't clearly reflect the differentiated angle (e.g. "handcrafted-rug-repair-tulsa"). Set to null if the current URL is already appropriate.
 - internal_link_suggestion: Which other page(s) this should link to and with what anchor text
 - reasoning: Brief explanation (2-3 sentences) of why these changes help
 
@@ -137,6 +140,7 @@ Example structure:
     "new_h1": "...",
     "new_meta_description": "...",
     "primary_keyword": "...",
+    "new_slug": "better-slug-here",
     "internal_link_suggestion": "Link to [page2] with anchor text 'specific service'",
     "reasoning": "..."
   }}
@@ -233,45 +237,68 @@ def apply_differentiation(request, site_id):
         new_title = change.get('new_title')
         new_meta = change.get('new_meta_description')
         new_h1 = change.get('new_h1')
+        new_slug = change.get('new_slug') or None
 
         if not url:
             results.append({'url': 'unknown', 'success': False, 'error': 'Missing URL'})
             continue
 
         try:
-            # Update DB
+            # Update DB record
             if page_id:
                 page = Page.objects.filter(site=site, id=page_id).first()
                 if page:
                     if new_title:
                         page.title = new_title
                     if new_meta:
-                        page.yoast_description = new_meta
-                    # We don't have a separate H1 field yet, but we'll send it to WP
+                        page.meta_description = new_meta
+                    if new_slug:
+                        # Sanitize: lowercase, hyphens only
+                        clean_slug = re.sub(r'[^a-z0-9-]', '-', new_slug.lower().strip()).strip('-')
+                        page.slug = clean_slug
                     page.save()
 
-            # Send webhook to WordPress
-            # TODO: Implement webhook sending when the webhook system is ready
-            # For now, we'll just log it
-            webhook_payload = {
-                'event': 'page.update_meta',
-                'site_id': site.id,
-                'url': url,
-                'title': new_title,
-                'meta_description': new_meta,
-                'h1': new_h1,
-            }
-            logger.info(f"Would send webhook to WordPress: {webhook_payload}")
-            # webhook.send(site, webhook_payload)
+            updated_fields = []
+
+            # Send title/meta/h1 webhook to WordPress
+            meta_payload = {'url': url}
+            if new_title:
+                meta_payload['title'] = new_title
+                updated_fields.append('title')
+            if new_meta:
+                meta_payload['meta_description'] = new_meta
+                updated_fields.append('meta_description')
+            if new_h1:
+                meta_payload['h1'] = new_h1
+                updated_fields.append('h1')
+
+            if len(meta_payload) > 1:  # has more than just 'url'
+                webhook_result = send_webhook_to_wordpress(site, 'page.update_meta', meta_payload)
+                if not webhook_result.get('success'):
+                    logger.warning('page.update_meta webhook failed for %s: %s', url, webhook_result.get('error'))
+
+            # Send slug/redirect webhook if new_slug requested
+            if new_slug:
+                clean_slug = re.sub(r'[^a-z0-9-]', '-', new_slug.lower().strip()).strip('-')
+                # Build new URL: replace last path segment with new slug
+                base = url.rstrip('/')
+                parent_path = '/'.join(base.split('/')[:-1])
+                new_url = f"{parent_path}/{clean_slug}/"
+                redirect_result = send_webhook_to_wordpress(site, 'redirect.create', {
+                    'from_url': url,
+                    'to_url': new_url,
+                    'type': 301,
+                    'reason': f'Differentiation slug update: {new_slug}',
+                })
+                updated_fields.append('slug')
+                if not redirect_result.get('success'):
+                    logger.warning('redirect.create webhook failed for %s → %s: %s', url, new_url, redirect_result.get('error'))
 
             results.append({
                 'url': url,
                 'success': True,
-                'updated_fields': {
-                    'title': new_title,
-                    'meta_description': new_meta,
-                    'h1': new_h1,
-                },
+                'updated_fields': updated_fields,
+                'new_url': f"{'/'.join(url.rstrip('/').split('/')[:-1])}/{re.sub(r'[^a-z0-9-]', '-', new_slug.lower().strip()).strip('-')}/" if new_slug else url,
             })
 
         except Exception as e:
