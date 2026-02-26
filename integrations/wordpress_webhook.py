@@ -57,6 +57,7 @@ def create_wordpress_redirect(site, source_url: str, target_url: str, redirect_t
     
     headers = {
         'Content-Type': 'application/json',
+        'User-Agent': 'Siloq/1.0 (WordPress Plugin Webhook; +https://siloq.ai)',
     }
     
     # Add Bearer token authentication if available
@@ -130,6 +131,9 @@ def send_webhook_to_wordpress(site, event_type: str, data: dict) -> dict:
     headers = {
         'Content-Type': 'application/json',
         'X-Siloq-Event': event_type,
+        # Use a descriptive UA — generic 'python-requests' is blocked by
+        # ModSecurity rules on many shared hosting providers (e.g. 406 Not Acceptable).
+        'User-Agent': 'Siloq/1.0 (WordPress Plugin Webhook; +https://siloq.ai)',
         # HMAC signing deferred — WP plugin will verify via callback or
         # allowlist in a follow-up. For now send site_id so WP can confirm.
     }
