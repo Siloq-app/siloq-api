@@ -2,6 +2,7 @@
 User account models.
 """
 import secrets
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
@@ -127,3 +128,37 @@ class SiteAccess(models.Model):
     
     def __str__(self):
         return f"{self.user.email} has {self.role} access to {self.site.name}"
+
+
+# Default keys for notification preferences (must match frontend)
+DEFAULT_EMAIL_PREFS = {
+    'daily_digest': True,
+    'block_errors': True,
+    'weekly_report': False,
+    'team_activity': False,
+    'approval_requests': True,
+}
+DEFAULT_APP_PREFS = {
+    'toast': True,
+    'sound': False,
+    'push': False,
+}
+
+
+class UserNotificationPreferences(models.Model):
+    """Per-user notification preferences (email + in-app)."""
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='notification_preferences',
+    )
+    email_preferences = models.JSONField(default=dict)  # daily_digest, block_errors, etc.
+    app_preferences = models.JSONField(default=dict)   # toast, sound, push
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'user_notification_preferences'
+
+    def __str__(self):
+        return f"Notification prefs for {self.user.email}"

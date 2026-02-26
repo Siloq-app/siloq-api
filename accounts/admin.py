@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import User, TeamInvite, SiteAccess
+from .models import User, TeamInvite, SiteAccess, UserNotificationPreferences
 
 
 @admin.register(User)
@@ -23,4 +23,11 @@ class TeamInviteAdmin(admin.ModelAdmin):
 class SiteAccessAdmin(admin.ModelAdmin):
     list_display = ('user', 'site', 'role', 'granted_by', 'created_at')
     list_filter = ('role', 'created_at')
-    search_fields = ('user__email', 'site__name', 'granted_by__email')  
+    search_fields = ('user__email', 'site__name', 'granted_by__email')
+
+
+@admin.register(UserNotificationPreferences)
+class UserNotificationPreferencesAdmin(admin.ModelAdmin):
+    list_display = ('user', 'updated_at')
+    search_fields = ('user__email',)
+    raw_id_fields = ('user',)  

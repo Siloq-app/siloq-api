@@ -80,6 +80,11 @@ def confirm_password_reset_view(request):
     from .auth import confirm_password_reset
     return confirm_password_reset(request)
 
+@csrf_exempt
+def notification_preferences_view(request):
+    from .notification_views import notification_preferences
+    return notification_preferences(request)
+
 urlpatterns = [
     # Core authentication
     path('login/', login_view, name='login'),
@@ -103,4 +108,6 @@ urlpatterns = [
     # Password reset
     path('reset-password/', request_password_reset_view, name='request_password_reset'),
     path('reset-password/confirm/', confirm_password_reset_view, name='confirm_password_reset'),
+    # Notification preferences
+    path('notifications/', notification_preferences_view, name='notification_preferences'),
 ]
