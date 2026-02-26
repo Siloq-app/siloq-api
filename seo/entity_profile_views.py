@@ -280,12 +280,14 @@ def sync_gbp(request, site_id):
             logger.warning('textsearch fallback failed: %s', e)
 
     # ── Last fallback: text search by business_name + city/state (SABs, toll-free) ──
+    last_fallback_query = None
     if not place_id:
         search_name = request.data.get('business_name') or profile.business_name or ''
         search_city = profile.city or ''
         search_state = profile.state or ''
         if search_name:
             query = f"{search_name} {search_city} {search_state}".strip()
+            last_fallback_query = query
             try:
                 ts_resp = requests.get(
                     'https://maps.googleapis.com/maps/api/place/textsearch/json',
@@ -305,7 +307,9 @@ def sync_gbp(request, site_id):
 
     if not place_id:
         name_hint = ''
-        if text_search_query:
+        if last_fallback_query:
+            name_hint = f' for "{last_fallback_query}"'
+        elif text_search_query:
             name_hint = f' for "{text_search_query}"'
         elif gbp_url:
             m = re.search(r'/maps/place/([^/@?]+)', gbp_url)
