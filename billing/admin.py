@@ -8,6 +8,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
         'user',
         'tier',
         'status',
+        'is_staff_exempt',
         'stripe_customer_id',
         'stripe_subscription_id',
         'is_trial_active',
@@ -15,9 +16,11 @@ class SubscriptionAdmin(admin.ModelAdmin):
         'current_period_end',
         'created_at',
     )
+    list_editable = ('is_staff_exempt',)
     list_filter = (
         'tier',
         'status',
+        'is_staff_exempt',
         'created_at',
         'current_period_end',
     )
@@ -49,6 +52,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
             'fields': (
                 'tier',
                 'status',
+                'is_staff_exempt',
                 'current_period_start',
                 'current_period_end',
             )

@@ -328,10 +328,12 @@ class SiteViewSet(viewsets.ModelViewSet):
         """
         site = self.get_object()
 
-        # --- Trial enforcement ---
+        # --- Trial enforcement (skip when subscription.is_staff_exempt) ---
         try:
             subscription = request.user.subscription
-            if subscription.tier == 'free_trial' and subscription.status == 'trialing':
+            if getattr(subscription, 'is_staff_exempt', False):
+                pass  # Billing bypass
+            elif subscription.tier == 'free_trial' and subscription.status == 'trialing':
                 pages_to_analyze = site.pages.filter(status='publish', is_noindex=False).count()
                 remaining = subscription.trial_pages_limit - subscription.trial_pages_used
                 if remaining <= 0:
@@ -349,10 +351,12 @@ class SiteViewSet(viewsets.ModelViewSet):
 
         results = analyze_site(site)
 
-        # Increment trial pages used after successful analysis
+        # Increment trial pages used after successful analysis (skip when is_staff_exempt)
         try:
             subscription = request.user.subscription
-            if subscription.tier == 'free_trial' and subscription.status == 'trialing':
+            if getattr(subscription, 'is_staff_exempt', False):
+                pass
+            elif subscription.tier == 'free_trial' and subscription.status == 'trialing':
                 analyzed = results.get('pages_analyzed', site.pages.filter(status='publish').count())
                 subscription.trial_pages_used = min(
                     subscription.trial_pages_used + analyzed,

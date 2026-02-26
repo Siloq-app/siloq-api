@@ -58,6 +58,9 @@ class Subscription(models.Model):
     current_period_start = models.DateTimeField(null=True, blank=True)
     current_period_end = models.DateTimeField(null=True, blank=True)
     
+    # Staff/internal: when True, trial and billing limits are bypassed (e.g. user_id=19)
+    is_staff_exempt = models.BooleanField(default=False)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -74,6 +77,11 @@ class Subscription(models.Model):
         if not self.trial_ends_at:
             return False
         return timezone.now() < self.trial_ends_at
+
+    @property
+    def billing_bypass(self):
+        """True if this subscription should skip trial/billing limits (staff exempt)."""
+        return getattr(self, 'is_staff_exempt', False)
     
     @property
     def trial_days_remaining(self):
