@@ -86,6 +86,7 @@ UPDATABLE_FIELDS = [
     'service_cities', 'service_zips', 'service_radius_miles', 'hours',
     'categories', 'certifications', 'license_numbers',
     'gbp_url', 'google_place_id',
+    'gbp_star_rating', 'gbp_review_count', 'gbp_reviews',
 ]
 SOCIAL_FIELD_MAP = {
     'facebook': 'url_facebook', 'instagram': 'url_instagram', 'linkedin': 'url_linkedin',
@@ -277,6 +278,30 @@ def sync_gbp(request, site_id):
                 place_id = results[0].get('place_id')
         except Exception as e:
             logger.warning('textsearch fallback failed: %s', e)
+
+    # ── Last fallback: text search by business_name + city/state (SABs, toll-free) ──
+    if not place_id:
+        search_name = request.data.get('business_name') or profile.business_name or ''
+        search_city = profile.city or ''
+        search_state = profile.state or ''
+        if search_name:
+            query = f"{search_name} {search_city} {search_state}".strip()
+            try:
+                ts_resp = requests.get(
+                    'https://maps.googleapis.com/maps/api/place/textsearch/json',
+                    params={
+                        'query': query,
+                        'key': GOOGLE_PLACES_API_KEY,
+                    },
+                    timeout=10,
+                )
+                ts_data = ts_resp.json()
+                results = ts_data.get('results', [])
+                if results:
+                    place_id = results[0].get('place_id')
+                    logger.info('Found via text search "%s": %s', query, place_id)
+            except Exception as e:
+                logger.warning('Text search failed: %s', e)
 
     if not place_id:
         name_hint = ''
