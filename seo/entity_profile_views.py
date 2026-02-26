@@ -10,6 +10,8 @@ import logging
 import os
 import re
 import urllib.parse
+from urllib.parse import parse_qs, urlparse
+
 import requests
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -135,6 +137,23 @@ def sync_gbp(request, site_id):
     raw_input = (request.data.get('place_id') or request.data.get('gbp_url') or '').strip()
     gbp_url = raw_input if raw_input.startswith('http') else (profile.gbp_url or '')
     place_id = None
+    text_search_query = None  # set by share.google so Strategy 3/4 can use it
+
+    # ── Strategy 0: share.google redirect URL (kgmid + q in final URL) ────────
+    if raw_input.startswith('https://share.google/'):
+        try:
+            resolved = requests.get(raw_input, allow_redirects=True, timeout=10)
+            params = parse_qs(urlparse(resolved.url).query)
+            kgmid = (params.get('kgmid') or [None])[0]
+            biz_name = urllib.parse.unquote_plus((params.get('q') or [''])[0])
+            logger.info('Resolved share.google: kgmid=%s, name=%s', kgmid, biz_name)
+            if biz_name:
+                text_search_query = biz_name
+                if profile.city or profile.state:
+                    text_search_query = f"{biz_name}, {profile.city or ''} {profile.state or ''}".strip(', ')
+                gbp_url = resolved.url  # so downstream strategies see the resolved URL if needed
+        except Exception as e:
+            logger.warning('share.google resolve failed: %s', e)
 
     # ── Strategy 1: bare Place ID (ChIJ... or similar) provided directly ──────
     if raw_input and not raw_input.startswith('http'):
@@ -189,11 +208,15 @@ def sync_gbp(request, site_id):
 
     # ── Strategy 3: New Places API v2 (textQuery) ────────────────────────────
     # Better NLP, finds small/new local businesses that the old API misses
-    if not place_id and gbp_url:
+    if not place_id and (text_search_query or gbp_url):
         try:
-            name_match = re.search(r'/maps/place/([^/@?]+)', gbp_url)
-            search_query = urllib.parse.unquote_plus(name_match.group(1)) if name_match else gbp_url
-            coord_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', gbp_url)
+            search_query = text_search_query
+            if not search_query and gbp_url:
+                name_match = re.search(r'/maps/place/([^/@?]+)', gbp_url)
+                search_query = urllib.parse.unquote_plus(name_match.group(1)) if name_match else gbp_url
+            if not search_query:
+                raise ValueError('No search query')
+            coord_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', gbp_url) if gbp_url else None
 
             v2_body: dict = {'textQuery': search_query}
             if coord_match:
@@ -227,11 +250,15 @@ def sync_gbp(request, site_id):
             logger.warning('Places API v2 lookup failed: %s', e)
 
     # ── Strategy 4: Old textsearch fallback ──────────────────────────────────
-    if not place_id and gbp_url:
+    if not place_id and (text_search_query or gbp_url):
         try:
-            name_match = re.search(r'/maps/place/([^/@?]+)', gbp_url)
-            search_query = urllib.parse.unquote_plus(name_match.group(1)) if name_match else gbp_url
-            coord_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', gbp_url)
+            search_query = text_search_query
+            if not search_query and gbp_url:
+                name_match = re.search(r'/maps/place/([^/@?]+)', gbp_url)
+                search_query = urllib.parse.unquote_plus(name_match.group(1)) if name_match else gbp_url
+            if not search_query:
+                raise ValueError('No search query')
+            coord_match = re.search(r'@(-?\d+\.\d+),(-?\d+\.\d+)', gbp_url) if gbp_url else None
 
             text_params: dict = {'query': search_query, 'key': GOOGLE_PLACES_API_KEY}
             if coord_match:
@@ -253,7 +280,9 @@ def sync_gbp(request, site_id):
 
     if not place_id:
         name_hint = ''
-        if gbp_url:
+        if text_search_query:
+            name_hint = f' for "{text_search_query}"'
+        elif gbp_url:
             m = re.search(r'/maps/place/([^/@?]+)', gbp_url)
             if m:
                 name_hint = f' for "{urllib.parse.unquote_plus(m.group(1))}"'
