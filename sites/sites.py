@@ -828,6 +828,23 @@ class SiteViewSet(viewsets.ModelViewSet):
         POST /api/v1/sites/{id}/approvals/{action_id}/approve/
         """
         site = self.get_object()
+
+        models = _get_cannibalization_models()
+        if models is None:
+            return Response(
+                {
+                    'error': 'Conflict resolution system not yet available',
+                    'status': 'unavailable',
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        CannibalizationConflict = models['CannibalizationConflict']
+        RedirectRegistry = models['RedirectRegistry']
+        KeywordAssignment = models['KeywordAssignment']
+        KeywordAssignmentHistory = models['KeywordAssignmentHistory']
+        ConflictResolution = models['ConflictResolution']
+
         conflict = get_object_or_404(CannibalizationConflict, id=action_id, site=site)
         
         if conflict.status == 'resolved':
@@ -978,6 +995,20 @@ class SiteViewSet(viewsets.ModelViewSet):
         POST /api/v1/sites/{id}/approvals/{action_id}/deny/
         """
         site = self.get_object()
+
+        models = _get_cannibalization_models()
+        if models is None:
+            return Response(
+                {
+                    'error': 'Conflict resolution system not yet available',
+                    'status': 'unavailable',
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        CannibalizationConflict = models['CannibalizationConflict']
+        ConflictResolution = models['ConflictResolution']
+
         conflict = get_object_or_404(CannibalizationConflict, id=action_id, site=site)
         
         reason = request.data.get('reason', 'User denied recommendation')
