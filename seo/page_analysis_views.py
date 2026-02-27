@@ -195,6 +195,11 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
         except Exception:
             pass
 
+        # Fallback: if meta_description still empty, use yoast_description synced from WP plugin.
+        # This field is populated by AIOSEO, Yoast, or RankMath via sync_page() in the WP plugin.
+        if not meta['meta_description']:
+            meta['meta_description'] = page_qs.yoast_description or ''
+
         if meta['title']:
             return meta
 
@@ -226,6 +231,26 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
                 meta['source'] = 'wp_rest_api'
     except Exception as exc:
         logger.debug("WP REST API fetch failed for %s: %s", absolute_url, exc)
+
+    # ── Strategy 3: Scrape live page for <meta name="description"> ──
+    # Universal fallback — works for AIOSEO, Yoast, RankMath, any SEO plugin.
+    # Only fires when meta_description is still empty after DB + REST API lookups.
+    if not meta['meta_description']:
+        try:
+            resp = requests.get(absolute_url, timeout=8, headers={'User-Agent': 'Siloq/1.0'})
+            if resp.status_code == 200:
+                match = re.search(
+                    r'<meta\s+name=["\']description["\']\s+content=["\'](.*?)["\']',
+                    resp.text, re.IGNORECASE
+                ) or re.search(
+                    r'<meta\s+content=["\'](.*?)["\']\s+name=["\']description["\']',
+                    resp.text, re.IGNORECASE
+                )
+                if match:
+                    meta['meta_description'] = match.group(1).strip()
+                    meta['source'] = meta['source'] + '+html_scrape' if meta['source'] != 'unknown' else 'html_scrape'
+        except Exception as exc:
+            logger.debug("HTML scrape failed for %s: %s", absolute_url, exc)
 
     return meta
 
@@ -525,27 +550,41 @@ def _get_entity_profile(site) -> dict:
     try:
         from seo.models import SiteEntityProfile
         profile = SiteEntityProfile.objects.get(site=site)
+
+        # Build sameAs list from all social + GBP + Yelp URLs
+        same_as = [
+            u for u in [
+                profile.url_facebook, profile.url_instagram, profile.url_linkedin,
+                profile.url_twitter, profile.url_youtube, profile.url_tiktok,
+                profile.gbp_url,
+                getattr(profile, 'url_yelp', None),
+            ] if u
+        ]
+
         return {
-            'business_name': profile.business_name,
-            'description': profile.description,
-            'phone': profile.phone,
-            'email': profile.email,
+            'business_name':  profile.business_name,
+            'description':    profile.description,
+            'phone':          profile.phone,
+            'email':          profile.email,
             'street_address': profile.street_address,
-            'city': profile.city,
-            'state': profile.state,
-            'zip_code': profile.zip_code,
-            'country': profile.country,
-            'founding_year': profile.founding_year,
-            'founder_name': profile.founder_name,
-            'price_range': profile.price_range,
-            'categories': profile.categories,
+            'city':           profile.city,
+            'state':          profile.state,
+            'zip_code':       profile.zip_code,
+            'country':        profile.country,
+            'founding_year':  profile.founding_year,
+            'founder_name':   profile.founder_name,
+            'price_range':    profile.price_range,
+            'categories':     profile.categories,
             'service_cities': profile.service_cities,
-            'hours': profile.hours,
-            'social_urls': profile.same_as_urls,
-            'gbp_star_rating': profile.gbp_star_rating,
+            'hours':          profile.hours,
+            'social_urls':    same_as,
+            'logo_url':       getattr(profile, 'logo_url', '') or '',
+            'brands_used':    getattr(profile, 'brands_used', []) or [],
+            'gbp_star_rating':  profile.gbp_star_rating,
             'gbp_review_count': profile.gbp_review_count,
-            'gbp_reviews': profile.gbp_reviews[:5],
-            'certifications': profile.certifications,
+            'gbp_reviews':      profile.gbp_reviews[:5],
+            'certifications':   profile.certifications,
+            'is_service_area_business': getattr(profile, 'is_service_area_business', False),
         }
     except Exception:
         return {}
@@ -607,6 +646,12 @@ def _generate_schema_for_recommendations(ai_result: dict, wp_meta: dict, absolut
         }
     if entity.get('service_cities'):
         org_block['areaServed'] = entity['service_cities']
+    if entity.get('logo_url'):
+        org_block['logo'] = {
+            '@type': 'ImageObject',
+            'url': entity['logo_url'],
+        }
+        org_block['image'] = entity['logo_url']
     if entity.get('social_urls'):
         org_block['sameAs'] = entity['social_urls']
     if entity.get('gbp_star_rating') and entity.get('gbp_review_count'):
