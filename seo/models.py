@@ -9,9 +9,30 @@ v2 tables are organised into five domains:
   5. Validation & Preflight — ValidationLog
 """
 
+import json
 import uuid
 from django.db import models
 from sites.models import Site
+
+
+class SafeJSONField(models.JSONField):
+    """
+    JSONField that handles psycopg2 2.9 + Django 5 double-decode issue.
+
+    Django 5 registers custom JSON adapters for JSONB (OID 3802) columns only.
+    Plain JSON (OID 114) columns are auto-decoded by psycopg2 to Python objects,
+    then Django's from_db_value calls json.loads() on the already-decoded value
+    → TypeError. This subclass adds the isinstance(str) guard.
+
+    Use for any JSONField backed by a plain JSON (not JSONB) DB column, or as a
+    general-purpose safe replacement when managed=False.
+    """
+    def from_db_value(self, value, expression, connection):
+        if value is None:
+            return value
+        if isinstance(value, str):
+            return json.loads(value, cls=self.decoder)
+        return value  # Already decoded by psycopg2 (json OID 114 without Django adapter)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -598,11 +619,11 @@ class SiteEntityProfile(models.Model):
     # V1 additions — brands, logo, Yelp, team, SAB flag
     logo_url = models.URLField(blank=True, max_length=500,
         help_text="Publicly accessible URL for the business logo (required for schema)")
-    brands_used = models.JSONField(default=list, blank=True,
+    brands_used = SafeJSONField(default=list, blank=True,
         help_text="Brands/products the business installs, sells, or uses (e.g. Generac, Trane)")
     url_yelp = models.URLField(blank=True, max_length=500,
         help_text="Yelp business profile URL (high-authority sameAs entity signal)")
-    team_members = models.JSONField(default=list, blank=True,
+    team_members = SafeJSONField(default=list, blank=True,
         help_text="List of {name, title, linkedin_url, bio} — used for E-E-A-T and About Us analysis")
     is_service_area_business = models.BooleanField(default=False,
         help_text="True if business hides physical address and serves a geographic area (SAB)")
