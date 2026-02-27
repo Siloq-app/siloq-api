@@ -62,6 +62,24 @@ class Page(models.Model):
         help_text="True if user manually set the page type (skip auto-reclassification)",
     )
 
+    PAGE_BUILDER_CHOICES = [
+        ('standard',     'Standard WordPress'),
+        ('gutenberg',    'Gutenberg Block Editor'),
+        ('elementor',    'Elementor'),
+        ('cornerstone',  'Cornerstone / X Theme'),
+        ('divi',         'Divi'),
+        ('wpbakery',     'WPBakery'),
+        ('beaver_builder', 'Beaver Builder'),
+        ('unknown',      'Unknown'),
+    ]
+    page_builder = models.CharField(
+        max_length=30,
+        choices=PAGE_BUILDER_CHOICES,
+        default='unknown',
+        blank=True,
+        help_text="Page builder detected during sync (elementor, cornerstone, divi, wpbakery, beaver_builder, gutenberg, standard)",
+    )
+
     last_synced_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -576,6 +594,19 @@ class SiteEntityProfile(models.Model):
     gbp_review_count = models.IntegerField(null=True, blank=True)
     gbp_reviews = models.JSONField(default=list)
     gbp_last_synced = models.DateTimeField(null=True, blank=True)
+
+    # V1 additions — brands, logo, Yelp, team, SAB flag
+    logo_url = models.URLField(blank=True, max_length=500,
+        help_text="Publicly accessible URL for the business logo (required for schema)")
+    brands_used = models.JSONField(default=list, blank=True,
+        help_text="Brands/products the business installs, sells, or uses (e.g. Generac, Trane)")
+    url_yelp = models.URLField(blank=True, max_length=500,
+        help_text="Yelp business profile URL (high-authority sameAs entity signal)")
+    team_members = models.JSONField(default=list, blank=True,
+        help_text="List of {name, title, linkedin_url, bio} — used for E-E-A-T and About Us analysis")
+    is_service_area_business = models.BooleanField(default=False,
+        help_text="True if business hides physical address and serves a geographic area (SAB)")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -76,6 +76,12 @@ def _serialize_profile(profile):
         'gbp_reviews': profile.gbp_reviews if profile.gbp_reviews is not None else [],
         'gbp_last_synced': _dt_iso(getattr(profile, 'gbp_last_synced', None)),
         'updated_at': _dt_iso(getattr(profile, 'updated_at', None)) or '',
+        # V1 fields
+        'logo_url': getattr(profile, 'logo_url', '') or '',
+        'brands_used': getattr(profile, 'brands_used', None) if getattr(profile, 'brands_used', None) is not None else [],
+        'url_yelp': getattr(profile, 'url_yelp', '') or '',
+        'team_members': getattr(profile, 'team_members', None) if getattr(profile, 'team_members', None) is not None else [],
+        'is_service_area_business': getattr(profile, 'is_service_area_business', False),
     }
 
 
@@ -87,10 +93,13 @@ UPDATABLE_FIELDS = [
     'categories', 'certifications', 'license_numbers',
     'gbp_url', 'google_place_id',
     'gbp_star_rating', 'gbp_review_count', 'gbp_reviews',
+    # V1 additions
+    'logo_url', 'brands_used', 'url_yelp', 'team_members', 'is_service_area_business',
 ]
 SOCIAL_FIELD_MAP = {
     'facebook': 'url_facebook', 'instagram': 'url_instagram', 'linkedin': 'url_linkedin',
     'twitter': 'url_twitter', 'youtube': 'url_youtube', 'tiktok': 'url_tiktok',
+    'yelp': 'url_yelp',
 }
 
 
@@ -101,7 +110,10 @@ def entity_profile(request, site_id):
     profile = _get_or_create_profile(site)
 
     if request.method == 'GET':
-        return Response(_serialize_profile(profile))
+        from seo.profile_validators import get_profile_completeness
+        serialized = _serialize_profile(profile)
+        serialized['completeness'] = get_profile_completeness(profile)
+        return Response(serialized)
 
     # PATCH
     data = request.data
@@ -391,6 +403,14 @@ def sync_gbp(request, site_id):
         loc = result['geometry']['location']
         profile.latitude = loc.get('lat')
         profile.longitude = loc.get('lng')
+
+    # SAB detection: if GBP returned no address components, the business hides
+    # their address. Mark as service-area business so schema/UI handles correctly.
+    if not addr_comps and not getattr(profile, 'street_address', None):
+        try:
+            profile.is_service_area_business = True
+        except AttributeError:
+            pass  # column not yet migrated on this environment
 
     # Reviews — only store 4★ & 5★ (used for CRO recommendations — low-star reviews
     # should never appear in schema or AI-generated content)
