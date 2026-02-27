@@ -20,6 +20,92 @@ from integrations.wordpress_webhook import send_webhook_to_wordpress
 
 logger = logging.getLogger(__name__)
 
+# US state abbreviations used in URL slugs as location signals
+_US_STATE_ABBREVS = frozenset({
+    'al','ak','az','ar','ca','co','ct','de','fl','ga','hi','id','il','in','ia',
+    'ks','ky','la','me','md','ma','mi','mn','ms','mo','mt','ne','nv','nh','nj',
+    'nm','ny','nc','nd','oh','ok','or','pa','ri','sc','sd','tn','tx','ut','vt',
+    'va','wa','wv','wi','wy',
+})
+
+_SLUG_STOP_WORDS = frozenset({
+    'the', 'and', 'for', 'with', 'our', 'your', 'all', 'how', 'what', 'why',
+    'page', 'home', 'about', 'contact', 'services', 'service', 'blog', 'news',
+    'www', 'com', 'net', 'org',
+})
+
+
+def _has_different_location_modifiers(url1: str, url2: str) -> bool:
+    """
+    Returns True when two URLs clearly target DIFFERENT geographic locations.
+
+    Detection: both URLs share a common service keyword AND each URL has at
+    least one unique city/state token (different from the other URL's location).
+    This prevents multi-location sites from being flagged as cannibalizing.
+
+    Example:
+        /electrician-bonner-springs-ks/  vs  /electrician-excelsior-springs-mo/
+        → common token: 'electrician'
+        → unique tokens: {'bonner','ks'} vs {'excelsior','mo'}
+        → returns True  (location differentiated — NOT competing)
+    """
+    import re
+    from urllib.parse import urlparse
+
+    def slug_tokens(url):
+        path = urlparse(url).path.lower().strip('/')
+        raw = set(re.split(r'[/\-_]', path))
+        return {t for t in raw if t and len(t) > 1 and t not in _SLUG_STOP_WORDS and not t.isdigit()}
+
+    t1 = slug_tokens(url1)
+    t2 = slug_tokens(url2)
+
+    common = t1 & t2
+    only1 = t1 - t2
+    only2 = t2 - t1
+
+    # Must share at least one service token (same topic, different location)
+    if not common:
+        return False
+
+    # Each URL must have unique tokens that look like location identifiers
+    def has_location_token(tokens):
+        return bool(tokens & _US_STATE_ABBREVS) or any(len(t) >= 4 for t in tokens)
+
+    if has_location_token(only1) and has_location_token(only2):
+        return True
+
+    return False
+
+
+def _annotate_conflict_location_status(conflict_dict: dict) -> dict:
+    """
+    Add auto_dismissed / dismiss_reason to a serialized conflict dict
+    when all competing pages have different location modifiers.
+    """
+    pages = conflict_dict.get('pages', [])
+    if len(pages) < 2:
+        return conflict_dict
+
+    urls = [p['page_url'] for p in pages if p.get('page_url')]
+    if len(urls) < 2:
+        return conflict_dict
+
+    # Check all pairs — if ANY pair has different location modifiers, auto-dismiss
+    for i in range(len(urls)):
+        for j in range(i + 1, len(urls)):
+            if _has_different_location_modifiers(urls[i], urls[j]):
+                conflict_dict['auto_dismissed'] = True
+                conflict_dict['dismiss_reason'] = (
+                    'Location Differentiation — pages target different geographic areas '
+                    'and are not competing for the same audience.'
+                )
+                return conflict_dict
+
+    conflict_dict.setdefault('auto_dismissed', False)
+    conflict_dict.setdefault('dismiss_reason', None)
+    return conflict_dict
+
 
 def _get_site_or_error(request, site_id):
     """Validate site ownership."""
@@ -150,14 +236,25 @@ def conflict_list(request):
             site=site, status='open', severity=sev
         ).count()
 
+    # Annotate each conflict with location differentiation status
+    include_dismissed = request.query_params.get('include_dismissed', '').lower() == 'true'
+    serialized = [_annotate_conflict_location_status(_serialize_conflict(c)) for c in conflicts]
+
+    # By default, exclude auto-dismissed location differentiation conflicts
+    # from the active list (they're not real conflicts)
+    auto_dismissed_count = sum(1 for c in serialized if c.get('auto_dismissed'))
+    if not include_dismissed:
+        serialized = [c for c in serialized if not c.get('auto_dismissed')]
+
     return Response({
-        'data': [_serialize_conflict(c) for c in conflicts],
+        'data': serialized,
         'meta': {
             'total': total,
             'page': page,
             'per_page': per_page,
             'total_pages': total_pages,
             'severity_summary': severity_counts,
+            'auto_dismissed_count': auto_dismissed_count,
         },
     })
 
