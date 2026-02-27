@@ -226,8 +226,8 @@ def _problem_hook(service: str) -> str:
         'hvac': 'AC Not Cooling Your Home',
         'roofing': 'Roof Leak After Rain',
         'roofer': 'Roof Leak After Rain',
-        'dentist': 'Tooth Pain That Won't Go Away',
-        'dental': 'Tooth Pain That Won't Go Away',
+        'dentist': "Tooth Pain That Won't Go Away",
+        'dental': "Tooth Pain That Won't Go Away",
     }
     for keyword, hook in hooks.items():
         if keyword in service_lower:
