@@ -117,6 +117,7 @@ def sync_page(request):
     # These columns were added via raw SQL migrations with NOT NULL but no DB default.
     data.setdefault('page_type_classification', 'supporting')  # VARCHAR NOT NULL, no DB default
     data.setdefault('page_type_override', False)               # BOOLEAN NOT NULL, no DB default
+    data.setdefault('page_builder', 'unknown')                 # Set by WP plugin; default to unknown
 
     # Get or create page
     wp_post_id = data['wp_post_id']
@@ -365,4 +366,53 @@ def debug_page_count(request):
         'total_pages': Page.objects.count(),
         'total_sites': Site.objects.count(),
         'pages_sample': pages_sample
+    })
+
+
+@csrf_exempt
+@api_view(['POST'])
+@authentication_classes([APIKeyAuthentication])
+@permission_classes([IsAPIKeyAuthenticated])
+def purge_deleted_pages(request):
+    """
+    POST /api/v1/pages/purge-deleted/
+
+    Called by WP plugin after a full "Sync All Pages" completes.
+    Accepts the list of wp_post_ids currently active in WordPress,
+    then removes any Page records in the DB that are NOT in that list.
+
+    Body: { "active_wp_post_ids": [1, 2, 3, 42, ...] }
+
+    Returns: { "deleted_count": N, "deleted_pages": [{id, title, url}, ...] }
+    """
+    from seo.models import Page
+
+    site = request.auth['site']
+
+    active_ids = request.data.get('active_wp_post_ids', [])
+    if not isinstance(active_ids, list):
+        return Response({'error': 'active_wp_post_ids must be a list'}, status=400)
+
+    if not active_ids:
+        # Safety guard: never purge everything if the list is empty
+        # (could indicate a failed sync sending an empty payload)
+        return Response({
+            'success': False,
+            'error': 'active_wp_post_ids is empty — purge skipped to prevent data loss. Only call this after a successful full sync.',
+        }, status=400)
+
+    # Find pages in our DB that no longer exist in WordPress
+    stale_pages = Page.objects.filter(site=site).exclude(wp_post_id__in=active_ids)
+
+    deleted = list(stale_pages.values('id', 'title', 'url', 'wp_post_id'))
+    deleted_count = stale_pages.count()
+
+    if deleted_count > 0:
+        stale_pages.delete()
+
+    return Response({
+        'success': True,
+        'deleted_count': deleted_count,
+        'deleted_pages': deleted,
+        'remaining_pages': Page.objects.filter(site=site).count(),
     })
