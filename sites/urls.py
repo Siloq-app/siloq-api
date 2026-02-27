@@ -39,6 +39,7 @@ from seo.page_analysis_views import (
 )
 from seo.entity_extraction_views import extract_entities
 from seo.entity_profile_views import entity_profile, sync_gbp
+from seo.supporting_content_views import supporting_content_gap, about_us_analysis
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -88,4 +89,8 @@ urlpatterns = [
     # Site Entity Profile
     path('<int:site_id>/entity-profile/', entity_profile, name='site-entity-profile'),
     path('<int:site_id>/entity-profile/sync-gbp/', sync_gbp, name='site-entity-profile-sync-gbp'),
+    # Supporting Content Gap Detection (Section 02)
+    path('<int:site_id>/pages/<int:page_id>/supporting-content/', supporting_content_gap, name='page-supporting-content'),
+    # About Us Intelligence (Section 05)
+    path('<int:site_id>/pages/<int:page_id>/about-analysis/', about_us_analysis, name='page-about-analysis'),
 ]
