@@ -32,6 +32,7 @@ from integrations.gsc_views import connect_gsc_site, get_gsc_data, analyze_gsc_c
 from seo.silo_health_views import silo_health_scores, silo_health_recalculate
 from seo.page_analysis_views import (
     analyze_page,
+    analyze_all_pages,
     list_analyses,
     get_analysis,
     approve_recommendations,
@@ -82,6 +83,7 @@ urlpatterns = [
     path('<int:site_id>/pages/extract-entities/', extract_entities, name='page-extract-entities'),
     # Pages Content Optimization — Three-Layer Model (GEO + SEO + CRO)
     path('<int:site_id>/pages/analyze/', analyze_page, name='page-analyze'),
+    path('<int:site_id>/pages/analyze-all/', analyze_all_pages, name='page-analyze-all'),
     path('<int:site_id>/pages/analysis/', list_analyses, name='page-analysis-list'),
     path('<int:site_id>/pages/analysis/<int:analysis_id>/', get_analysis, name='page-analysis-detail'),
     path('<int:site_id>/pages/analysis/<int:analysis_id>/approve/', approve_recommendations, name='page-analysis-approve'),

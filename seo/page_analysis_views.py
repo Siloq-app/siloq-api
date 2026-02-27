@@ -1178,3 +1178,142 @@ def _all_recommendations(analysis: PageAnalysis) -> list:
         + list(analysis.seo_recommendations)
         + list(analysis.cro_recommendations)
     )
+
+
+# ── Analyze All Pages ────────────────────────────────────────────────────────
+
+import threading
+
+def _run_analysis_for_all_pages(site_id: int, user_id: int, force: bool = False):
+    """
+    Background thread: run deep AI analysis for every published page on a site.
+    Skips pages that already have a completed analysis (unless force=True).
+    Runs sequentially with a short delay to avoid hammering the AI provider.
+    """
+    import time
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    logger_bg = logging.getLogger(__name__ + '.analyze_all')
+
+    try:
+        site = Site.objects.get(id=site_id)
+        user = User.objects.get(id=user_id)
+        pages = Page.objects.filter(
+            site=site,
+            status='publish',
+            is_noindex=False,
+        ).order_by('id')
+
+        if not force:
+            # Skip pages that already have a recent completed analysis (< 7 days old)
+            from django.utils import timezone as tz
+            from datetime import timedelta
+            cutoff = tz.now() - timedelta(days=7)
+            analyzed_urls = set(
+                PageAnalysis.objects.filter(
+                    site=site,
+                    status='complete',
+                    created_at__gte=cutoff,
+                ).values_list('page_url', flat=True)
+            )
+            pages = [p for p in pages if p.url not in analyzed_urls]
+        else:
+            pages = list(pages)
+
+        total = len(pages)
+        logger_bg.info(f"analyze_all: site={site_id} queued={total} force={force}")
+
+        for i, page in enumerate(pages):
+            try:
+                absolute_url = _normalize_page_url(site.url, page.url)
+
+                # Create / reset analysis record
+                analysis = PageAnalysis.objects.create(
+                    site=site,
+                    page_url=absolute_url,
+                    status='analyzing',
+                )
+
+                gsc_data = _fetch_gsc_data_for_page(site, absolute_url)
+                wp_meta  = _fetch_wp_meta_for_page(site, absolute_url)
+                user_message = _build_analysis_prompt(absolute_url, gsc_data, wp_meta, site=site)
+                ai_result = _call_ai_for_analysis(user_message)
+
+                geo_score = int(ai_result['geo_score'])
+                seo_score = int(ai_result['seo_score'])
+                cro_score = int(ai_result['cro_score'])
+                overall_score = round(geo_score * 0.30 + seo_score * 0.40 + cro_score * 0.30)
+
+                analysis.page_title     = wp_meta.get('title', '')
+                analysis.generated_schema = _generate_schema_for_recommendations(ai_result, wp_meta, absolute_url, site=site)
+                analysis.gsc_data       = gsc_data
+                analysis.wp_meta        = wp_meta
+                analysis.geo_score      = geo_score
+                analysis.seo_score      = seo_score
+                analysis.cro_score      = cro_score
+                analysis.overall_score  = overall_score
+                analysis.geo_recommendations = _stamp_recommendation_status(ai_result.get('geo_recommendations', []))
+                analysis.seo_recommendations = _stamp_recommendation_status(ai_result.get('seo_recommendations', []))
+                analysis.cro_recommendations = _stamp_recommendation_status(ai_result.get('cro_recommendations', []))
+                analysis.status         = 'complete'
+                analysis.completed_at   = timezone.now()
+                analysis.save()
+
+                logger_bg.info(f"analyze_all: [{i+1}/{total}] done — {absolute_url}")
+
+            except Exception as exc:
+                logger_bg.warning(f"analyze_all: [{i+1}/{total}] failed — {page.url}: {exc}")
+                try:
+                    analysis.status = 'error'
+                    analysis.error_message = str(exc)[:500]
+                    analysis.save()
+                except Exception:
+                    pass
+
+            # Brief pause between pages — avoids rate limits + gives server breathing room
+            if i < total - 1:
+                time.sleep(2)
+
+    except Exception as exc:
+        logging.getLogger(__name__).error(f"analyze_all background thread crashed: {exc}", exc_info=True)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def analyze_all_pages(request, site_id: int):
+    """
+    Kick off deep AI analysis for all published pages on a site.
+
+    POST /api/v1/sites/{id}/pages/analyze-all/
+    Body (optional): { "force": true }   — re-analyze even recently analyzed pages
+
+    Returns immediately with the count of pages queued.
+    Analysis runs in background; poll individual page analyses for progress.
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+    force = bool(request.data.get('force', False))
+
+    total_pages = Page.objects.filter(
+        site=site, status='publish', is_noindex=False
+    ).count()
+
+    if total_pages == 0:
+        return Response(
+            {'error': 'No published pages found. Sync your WordPress site first.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # Fire and forget — background thread does the work
+    t = threading.Thread(
+        target=_run_analysis_for_all_pages,
+        args=(site.id, request.user.id, force),
+        daemon=True,
+    )
+    t.start()
+
+    return Response({
+        'queued':  total_pages,
+        'force':   force,
+        'message': f'Analysis started for {total_pages} pages. Results will appear as each page completes.',
+    }, status=status.HTTP_202_ACCEPTED)
