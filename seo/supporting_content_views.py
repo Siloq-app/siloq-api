@@ -545,3 +545,191 @@ def _generate_about_outline(profile, site: Site) -> dict:
         'word_count_target': 400,
         'note': 'This outline is auto-generated from your Business Profile. Approve to generate the full article.',
     }
+
+
+# =============================================================================
+# SCHEMA INVENTORY — Section 03
+# =============================================================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def schema_inventory(request, site_id: int, analysis_id: int):
+    """
+    GET /api/v1/sites/{site_id}/pages/analysis/{analysis_id}/schema/
+
+    Returns:
+    - existing_schema:  all JSON-LD blocks already present on the page (from analysis)
+    - recommended_types: schema types that SHOULD be present (with checkboxes)
+    - generated_schema: ready-to-apply schema built from entity profile
+    - blocked:          True if profile is incomplete
+    - missing_fields:   which profile fields are blocking schema generation
+    """
+    from seo.models import PageAnalysis
+    from seo.page_analysis_views import _get_entity_profile
+
+    site     = get_object_or_404(Site, id=site_id, user=request.user)
+    analysis = get_object_or_404(PageAnalysis, id=analysis_id, site=site)
+
+    # ── Profile completeness check ────────────────────────────────────────────
+    try:
+        profile = SiteEntityProfile.objects.get(site=site)
+        completeness = get_profile_completeness(profile)
+    except SiteEntityProfile.DoesNotExist:
+        profile = None
+        completeness = {
+            'schema_blocked': True,
+            'missing_required': ['business_name', 'phone', 'logo_url'],
+            'blocked_features': ['schema_generation'],
+        }
+
+    if completeness.get('schema_blocked'):
+        return Response({
+            'blocked': True,
+            'message': 'Complete your Business Profile to enable schema generation.',
+            'missing_fields': completeness.get('missing_required', []),
+            'profile_url': f'/dashboard/settings/business-profile/',
+            'existing_schema':   _parse_existing_schema(analysis),
+            'recommended_types': _get_recommended_schema_types(analysis.page_url),
+            'generated_schema':  None,
+        })
+
+    # ── Existing schema (from analysis wp_meta) ───────────────────────────────
+    existing = _parse_existing_schema(analysis)
+
+    # ── Recommended schema types based on page type ───────────────────────────
+    recommended = _get_recommended_schema_types(analysis.page_url)
+
+    # ── Generated schema ──────────────────────────────────────────────────────
+    generated = analysis.generated_schema or {}
+    if not generated.get('json_ld'):
+        # Re-generate from entity profile if not already saved
+        entity = _get_entity_profile(site)
+        wp_meta = analysis.wp_meta or {}
+        generated = _build_schema_from_profile(analysis.page_url, entity, wp_meta, analysis)
+
+    return Response({
+        'blocked':          False,
+        'existing_schema':  existing,
+        'recommended_types': recommended,
+        'generated_schema': generated,
+        'apply_endpoint':   f'/api/v1/sites/{site_id}/pages/analysis/{analysis_id}/apply/',
+        'note': 'To apply: approve the schema recommendation in the analysis, then call the apply endpoint.',
+    })
+
+
+def _parse_existing_schema(analysis) -> list:
+    """
+    Extract schema types already present on the page from the PageAnalysis wp_meta.
+    Returns list of {type, json_ld} dicts for display in the UI.
+    """
+    wp_meta = analysis.wp_meta or {}
+    schema_types = wp_meta.get('schema_types', [])
+    schema_raw   = wp_meta.get('schema_raw', [])  # list of JSON-LD blocks if plugin sends them
+
+    existing = []
+
+    # If plugin sent raw JSON-LD blocks
+    for block in schema_raw:
+        if isinstance(block, dict):
+            existing.append({
+                'type':   block.get('@type', 'Unknown'),
+                'json_ld': block,
+                'source': 'page',
+            })
+
+    # Fallback: just the type names
+    if not existing and schema_types:
+        for t in schema_types:
+            existing.append({
+                'type':   t,
+                'json_ld': None,
+                'source': 'page',
+                'note':   'Full markup not available — re-sync page to retrieve JSON-LD.',
+            })
+
+    if not existing:
+        existing.append({
+            'type':   'none',
+            'json_ld': None,
+            'source': 'page',
+            'note':   'No schema markup detected on this page.',
+        })
+
+    return existing
+
+
+def _get_recommended_schema_types(page_url: str) -> list:
+    """
+    Return schema types that SHOULD be present based on URL patterns.
+    Each item includes a 'present' flag (always False here — dashboard fills it in).
+    """
+    url = page_url.lower()
+
+    types = [
+        {
+            'type':     'LocalBusiness',
+            'priority': 'required',
+            'reason':   'Every page on a local business site should include LocalBusiness schema.',
+            'present':  False,
+        },
+    ]
+
+    if any(x in url for x in ['/faq', 'question', 'faq']):
+        types.append({
+            'type':     'FAQPage',
+            'priority': 'high',
+            'reason':   'FAQ content triggers rich results in Google Search.',
+            'present':  False,
+        })
+
+    if any(x in url for x in ['/service', '/services', '/electrician', '/plumber', '/hvac', '/roofing', '/dentist']):
+        types.append({
+            'type':     'Service',
+            'priority': 'high',
+            'reason':   'Service pages benefit from Service schema with pricing and area served.',
+            'present':  False,
+        })
+
+    if any(x in url for x in ['/blog', '/post', '/article', '/news']):
+        types.append({
+            'type':     'Article',
+            'priority': 'recommended',
+            'reason':   'Blog posts with Article schema are eligible for Google News features.',
+            'present':  False,
+        })
+
+    if 'about' in url:
+        types.append({
+            'type':     'Organization',
+            'priority': 'recommended',
+            'reason':   'About pages should include Organization schema with team and founding info.',
+            'present':  False,
+        })
+
+    if 'contact' in url:
+        types.append({
+            'type':     'ContactPage',
+            'priority': 'recommended',
+            'reason':   'Contact pages benefit from ContactPage + LocalBusiness schema.',
+            'present':  False,
+        })
+
+    types.append({
+        'type':     'BreadcrumbList',
+        'priority': 'recommended',
+        'reason':   'Breadcrumbs improve navigation display in search results.',
+        'present':  False,
+    })
+
+    return types
+
+
+def _build_schema_from_profile(page_url: str, entity: dict, wp_meta: dict, analysis) -> dict:
+    """Thin wrapper to generate schema using the existing analysis engine."""
+    try:
+        from seo.page_analysis_views import _generate_schema_for_recommendations
+        # Pass empty AI result — schema generation works without AI recs
+        return _generate_schema_for_recommendations({}, wp_meta, page_url, site=analysis.site)
+    except Exception as e:
+        logger.warning('Schema generation failed: %s', e)
+        return {}

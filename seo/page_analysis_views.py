@@ -525,27 +525,41 @@ def _get_entity_profile(site) -> dict:
     try:
         from seo.models import SiteEntityProfile
         profile = SiteEntityProfile.objects.get(site=site)
+
+        # Build sameAs list from all social + GBP + Yelp URLs
+        same_as = [
+            u for u in [
+                profile.url_facebook, profile.url_instagram, profile.url_linkedin,
+                profile.url_twitter, profile.url_youtube, profile.url_tiktok,
+                profile.gbp_url,
+                getattr(profile, 'url_yelp', None),
+            ] if u
+        ]
+
         return {
-            'business_name': profile.business_name,
-            'description': profile.description,
-            'phone': profile.phone,
-            'email': profile.email,
+            'business_name':  profile.business_name,
+            'description':    profile.description,
+            'phone':          profile.phone,
+            'email':          profile.email,
             'street_address': profile.street_address,
-            'city': profile.city,
-            'state': profile.state,
-            'zip_code': profile.zip_code,
-            'country': profile.country,
-            'founding_year': profile.founding_year,
-            'founder_name': profile.founder_name,
-            'price_range': profile.price_range,
-            'categories': profile.categories,
+            'city':           profile.city,
+            'state':          profile.state,
+            'zip_code':       profile.zip_code,
+            'country':        profile.country,
+            'founding_year':  profile.founding_year,
+            'founder_name':   profile.founder_name,
+            'price_range':    profile.price_range,
+            'categories':     profile.categories,
             'service_cities': profile.service_cities,
-            'hours': profile.hours,
-            'social_urls': profile.same_as_urls,
-            'gbp_star_rating': profile.gbp_star_rating,
+            'hours':          profile.hours,
+            'social_urls':    same_as,
+            'logo_url':       getattr(profile, 'logo_url', '') or '',
+            'brands_used':    getattr(profile, 'brands_used', []) or [],
+            'gbp_star_rating':  profile.gbp_star_rating,
             'gbp_review_count': profile.gbp_review_count,
-            'gbp_reviews': profile.gbp_reviews[:5],
-            'certifications': profile.certifications,
+            'gbp_reviews':      profile.gbp_reviews[:5],
+            'certifications':   profile.certifications,
+            'is_service_area_business': getattr(profile, 'is_service_area_business', False),
         }
     except Exception:
         return {}
@@ -607,6 +621,12 @@ def _generate_schema_for_recommendations(ai_result: dict, wp_meta: dict, absolut
         }
     if entity.get('service_cities'):
         org_block['areaServed'] = entity['service_cities']
+    if entity.get('logo_url'):
+        org_block['logo'] = {
+            '@type': 'ImageObject',
+            'url': entity['logo_url'],
+        }
+        org_block['image'] = entity['logo_url']
     if entity.get('social_urls'):
         org_block['sameAs'] = entity['social_urls']
     if entity.get('gbp_star_rating') and entity.get('gbp_review_count'):
