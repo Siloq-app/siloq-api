@@ -75,7 +75,12 @@ OUTPUT FORMAT — respond with ONLY valid JSON:
     }
   ],
   "seo_recommendations": [...],
-  "cro_recommendations": [...]
+  "cro_recommendations": [...],
+  "heading_structure": {
+    "current": [{"level": "h1", "text": "...", "issues": []}],
+    "recommended": [{"level": "h1", "text": "..."}, {"level": "h2", "text": "..."}],
+    "issues_summary": ["Missing H2s", "H1 lacks city"]
+  }
 }"""
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -385,6 +390,26 @@ def _parse_ai_json(text: str) -> dict:
     data = json.loads(cleaned)
     _validate_analysis_response(data)
     return data
+
+
+def _normalize_heading_structure(raw: Any) -> dict:
+    """Normalize AI heading_structure output. Returns dict with current, recommended, issues_summary."""
+    if not raw or not isinstance(raw, dict):
+        return {'current': [], 'recommended': [], 'issues_summary': []}
+    current = raw.get('current')
+    recommended = raw.get('recommended')
+    issues_summary = raw.get('issues_summary')
+    if not isinstance(current, list):
+        current = []
+    if not isinstance(recommended, list):
+        recommended = []
+    if not isinstance(issues_summary, list):
+        issues_summary = []
+    return {
+        'current': current[:20],
+        'recommended': recommended[:20],
+        'issues_summary': [str(x) for x in issues_summary[:10]],
+    }
 
 
 def _validate_analysis_response(data: dict) -> None:
@@ -798,6 +823,8 @@ def analyze_page(request, site_id: int):
         analysis.geo_recommendations = geo_recs
         analysis.seo_recommendations = seo_recs
         analysis.cro_recommendations = cro_recs
+        heading_struct = _normalize_heading_structure(ai_result.get('heading_structure'))
+        analysis.wp_meta = {**(analysis.wp_meta or {}), 'heading_structure': heading_struct}
         analysis.status = 'complete'
         analysis.completed_at = timezone.now()
         analysis.save()
@@ -1047,9 +1074,11 @@ def _serialize_analysis(analysis: PageAnalysis) -> dict:
             } if analysis.gsc_data else {},
             'gsc_top_queries': analysis.gsc_data.get('top_queries', [])[:10],
             'wp_meta': {
-                k: v for k, v in analysis.wp_meta.items() if k != 'content_snippet'
+                k: v for k, v in analysis.wp_meta.items()
+                if k not in ('content_snippet', 'heading_structure')
             } if analysis.wp_meta else {},
         },
+        'heading_structure': (analysis.wp_meta or {}).get('heading_structure') or {'current': [], 'recommended': [], 'issues_summary': []},
         'created_at': analysis.created_at.isoformat() if analysis.created_at else None,
         'completed_at': analysis.completed_at.isoformat() if analysis.completed_at else None,
     }
@@ -1091,6 +1120,7 @@ def _serialize_analysis_summary(analysis: PageAnalysis) -> dict:
             'approved': approved_count,
             'applied': applied_count,
         },
+        'heading_structure': (analysis.wp_meta or {}).get('heading_structure') or {'current': [], 'recommended': [], 'issues_summary': []},
         'created_at': analysis.created_at.isoformat() if analysis.created_at else None,
         'completed_at': analysis.completed_at.isoformat() if analysis.completed_at else None,
     }
