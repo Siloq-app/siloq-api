@@ -29,6 +29,7 @@ from seo.differentiate_views import (
 from seo.redirect_views import create_redirect, list_redirects
 from seo.slug_change_views import change_slug, bulk_change_slugs, list_slug_changes
 from integrations.gsc_views import connect_gsc_site, get_gsc_data, analyze_gsc_cannibalization
+from sites.sites import dashboard_fix_now
 from seo.cannibalization_v2 import get_cannibalization_conflicts
 from seo.silo_health_views import silo_health_scores, silo_health_recalculate
 from seo.page_analysis_views import (
@@ -79,6 +80,7 @@ urlpatterns = [
     path('<int:site_id>/gsc/data/', get_gsc_data, name='site-gsc-data'),
     path('<int:site_id>/gsc/analyze/', analyze_gsc_cannibalization, name='site-gsc-analyze'),
     path('<int:site_id>/cannibalization/', get_cannibalization_conflicts, name='site-cannibalization-v2'),
+    path('<int:site_id>/dashboard/fix-now/', dashboard_fix_now, name='dashboard-fix-now'),
     # Silo Health
     path('<int:site_id>/silo-health/', silo_health_scores, name='site-silo-health'),
     path('<int:site_id>/silo-health/recalculate/', silo_health_recalculate, name='site-silo-health-recalculate'),

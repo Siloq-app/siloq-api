@@ -1858,3 +1858,134 @@ class SiteViewSet(viewsets.ModelViewSet):
             'total_suggested_topics': total_topics,
             'suggestions': suggestions,
         })
+
+
+# ── Dashboard Home — Fix Now feed (Section 11.2) ─────────────────────────────
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def dashboard_fix_now(request, site_id):
+    """
+    Returns the top 3–5 highest-priority actionable items across all categories.
+    Powers the 'Fix Now' column on the Dashboard Home (Section 11.2).
+
+    GET /api/v1/sites/{id}/dashboard/fix-now/
+
+    Returns items from:
+    - Active cannibalization conflicts (critical/high)
+    - Page analysis issues (critical/high severity recs)
+    - Content gaps (money pages with <2 supporting articles)
+    - Failed approvals
+    - Missing business profile fields
+    """
+    from seo.models import PageAnalysis, Page, SiteEntityProfile
+    from seo.profile_validators import get_profile_completeness
+    from django.utils import timezone
+    from datetime import timedelta
+
+    site = Site.objects.filter(id=request.user.id and True, pk=site_id).filter(user=request.user).first()
+    if not site:
+        return Response({'error': 'Site not found'}, status=404)
+
+    items = []
+
+    # 1. Failed approvals (always surface first)
+    try:
+        from seo.models import PageAnalysis
+        recent_analyses = PageAnalysis.objects.filter(
+            site=site, status='complete'
+        ).order_by('-created_at')[:20]
+
+        for analysis in recent_analyses:
+            for layer in ('geo_recommendations', 'seo_recommendations', 'cro_recommendations'):
+                for rec in (getattr(analysis, layer) or []):
+                    if rec.get('status') == 'failed':
+                        items.append({
+                            'type':     'APPROVAL_FAILED',
+                            'severity': 'high',
+                            'title':    f"Failed: {rec.get('issue', 'Recommendation')}",
+                            'detail':   rec.get('error', 'Apply failed — retry required'),
+                            'page_url': analysis.page_url,
+                            'action':   'Retry',
+                            'action_url': f'/sites/{site_id}/pages/analysis/{analysis.id}/apply/',
+                            'rec_id':   rec.get('id'),
+                        })
+    except Exception:
+        pass
+
+    # 2. Business profile blockers
+    try:
+        profile = SiteEntityProfile.objects.get(site=site)
+        completeness = get_profile_completeness(profile)
+        for field in completeness.get('missing_required', [])[:2]:
+            items.append({
+                'type':     'PROFILE_INCOMPLETE',
+                'severity': 'critical',
+                'title':    f'Business Profile incomplete: {field} missing',
+                'detail':   'Required for schema generation and content topics',
+                'action':   'Complete Profile',
+                'action_url': f'/sites/{site_id}/settings/business-profile/',
+            })
+    except Exception:
+        pass
+
+    # 3. Critical page analysis issues (high/critical recs not yet approved)
+    try:
+        analyses = PageAnalysis.objects.filter(
+            site=site, status='complete'
+        ).order_by('-overall_score')[:30]
+
+        for analysis in analyses:
+            for layer in ('seo_recommendations', 'geo_recommendations'):
+                for rec in (getattr(analysis, layer) or []):
+                    if rec.get('severity', '').lower() in ('critical', 'high') and rec.get('status') == 'pending':
+                        items.append({
+                            'type':     layer.replace('_recommendations', '').upper(),
+                            'severity': rec.get('severity', 'high').lower(),
+                            'title':    rec.get('issue', 'Page issue detected'),
+                            'detail':   rec.get('recommendation', ''),
+                            'page_url': analysis.page_url,
+                            'page_title': analysis.page_title or analysis.page_url,
+                            'action':   'Review & Approve',
+                            'action_url': f'/sites/{site_id}/pages/analysis/{analysis.id}/',
+                            'rec_id':   rec.get('id'),
+                        })
+                        break  # One item per analysis max
+            if len(items) >= 8:
+                break
+    except Exception:
+        pass
+
+    # 4. Content gaps (money pages with 0 supporting articles)
+    try:
+        from seo.models import InternalLink
+        money_pages = Page.objects.filter(
+            site=site, status='publish', is_noindex=False
+        ).order_by('id')[:50]
+
+        for page in money_pages:
+            incoming = InternalLink.objects.filter(site=site, target_url=page.url).count()
+            if incoming == 0:
+                items.append({
+                    'type':     'CONTENT_GAP',
+                    'severity': 'medium',
+                    'title':    f'No supporting content for: {page.title or page.url}',
+                    'detail':   'This page has no internal links pointing to it. Add supporting articles.',
+                    'page_url': page.url,
+                    'action':   'View Content Plan',
+                    'action_url': f'/sites/{site_id}/content-plan/',
+                })
+                if len(items) >= 8:
+                    break
+    except Exception:
+        pass
+
+    # Sort by severity, cap at 5
+    SEV = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+    items.sort(key=lambda x: SEV.get(x.get('severity', 'low'), 3))
+    items = items[:5]
+
+    return Response({
+        'fix_now': items,
+        'count':   len(items),
+    })
