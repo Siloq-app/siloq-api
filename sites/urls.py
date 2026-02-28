@@ -42,7 +42,7 @@ from seo.page_analysis_views import (
 )
 from seo.entity_extraction_views import extract_entities
 from seo.entity_profile_views import entity_profile, sync_gbp
-from seo.supporting_content_views import supporting_content_gap, about_us_analysis, schema_inventory, generate_supporting_article
+from seo.supporting_content_views import supporting_content_gap, about_us_analysis, schema_inventory, generate_supporting_article, junk_page_feed
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -98,6 +98,7 @@ urlpatterns = [
     # Supporting Content Gap Detection (Section 02)
     path('<int:site_id>/pages/<int:page_id>/supporting-content/', supporting_content_gap, name='page-supporting-content'),
     path('<int:site_id>/pages/<int:page_id>/supporting-content/generate/', generate_supporting_article, name='page-supporting-content-generate'),
+    path('<int:site_id>/junk-pages/', junk_page_feed, name='site-junk-pages'),
     # About Us Intelligence (Section 05)
     path('<int:site_id>/pages/<int:page_id>/about-analysis/', about_us_analysis, name='page-about-analysis'),
     # Schema Inventory — show existing + recommended + generated (Section 03)

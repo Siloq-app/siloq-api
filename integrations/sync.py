@@ -117,7 +117,9 @@ def sync_page(request):
     # These columns were added via raw SQL migrations with NOT NULL but no DB default.
     data.setdefault('page_type_classification', 'supporting')  # VARCHAR NOT NULL, no DB default
     data.setdefault('page_type_override', False)               # BOOLEAN NOT NULL, no DB default
-    data.setdefault('page_builder', 'unknown')                 # Set by WP plugin; default to unknown
+    data.setdefault('page_builder', 'unknown')
+    data.setdefault('junk_action', None)
+    data.setdefault('junk_reason', None)                 # Set by WP plugin; default to unknown
 
     # Get or create page
     wp_post_id = data['wp_post_id']

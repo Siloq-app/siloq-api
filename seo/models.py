@@ -101,6 +101,17 @@ class Page(models.Model):
         help_text="Page builder detected during sync (elementor, cornerstone, divi, wpbakery, beaver_builder, gutenberg, standard)",
     )
 
+    # Junk page detection (Section 04)
+    JUNK_ACTION_CHOICES = [
+        ('delete',  'Delete'),
+        ('noindex', 'Noindex'),
+        ('review',  'Needs Review'),
+    ]
+    junk_action = models.CharField(max_length=10, choices=JUNK_ACTION_CHOICES, blank=True, null=True,
+        help_text="Recommended action from junk detector (delete/noindex/review)")
+    junk_reason = models.CharField(max_length=200, blank=True, null=True,
+        help_text="Why this page was flagged as junk")
+
     last_synced_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

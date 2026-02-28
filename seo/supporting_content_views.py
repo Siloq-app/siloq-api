@@ -882,3 +882,60 @@ OUTPUT FORMAT (return as JSON):
             'next_step':    'Approve this article in the Approvals tab to publish it to WordPress.',
         }
     }, status=status.HTTP_201_CREATED)
+
+
+# =============================================================================
+# JUNK PAGE FEED — Section 04 (dashboard-facing endpoint)
+# =============================================================================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def junk_page_feed(request, site_id: int):
+    """
+    Return pages flagged as junk by the WordPress plugin scanner.
+    The WP plugin's /junk-scan REST endpoint sends results here via webhook.
+    This endpoint surfaces them to the dashboard.
+
+    GET /api/v1/sites/{id}/junk-pages/
+    Query params:
+      action=delete,noindex,review  (comma-separated filter)
+      status=pending,dismissed
+
+    The WP plugin syncs junk_flag and junk_action fields onto Page records
+    via the standard page sync payload.
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+
+    action_filter = [a.strip() for a in request.query_params.get('action', '').split(',') if a.strip()]
+    status_filter = request.query_params.get('status', 'pending')
+
+    qs = Page.objects.filter(site=site).exclude(junk_action__isnull=True).exclude(junk_action='')
+
+    if action_filter:
+        qs = qs.filter(junk_action__in=action_filter)
+
+    pages = qs.values('id', 'url', 'title', 'junk_action', 'junk_reason', 'status', 'page_builder')
+
+    # Group by recommended action
+    groups = {'delete': [], 'noindex': [], 'review': []}
+    for p in pages:
+        action = p.get('junk_action', 'review')
+        groups.setdefault(action, []).append({
+            'id':           p['id'],
+            'url':          p['url'],
+            'title':        p['title'] or p['url'],
+            'junk_action':  action,
+            'junk_reason':  p.get('junk_reason', ''),
+            'page_builder': p.get('page_builder', 'unknown'),
+        })
+
+    return Response({
+        'junk_pages':  [p for group in groups.values() for p in group],
+        'groups':      groups,
+        'meta': {
+            'total':   sum(len(v) for v in groups.values()),
+            'delete':  len(groups.get('delete', [])),
+            'noindex': len(groups.get('noindex', [])),
+            'review':  len(groups.get('review', [])),
+        }
+    })
