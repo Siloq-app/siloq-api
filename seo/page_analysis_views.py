@@ -237,25 +237,37 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
     except Exception as exc:
         logger.debug("WP REST API fetch failed for %s: %s", absolute_url, exc)
 
-    # ── Strategy 3: Scrape live page for <meta name="description"> ──
-    # Universal fallback — works for AIOSEO, Yoast, RankMath, any SEO plugin.
-    # Only fires when meta_description is still empty after DB + REST API lookups.
-    if not meta['meta_description']:
-        try:
-            resp = requests.get(absolute_url, timeout=8, headers={'User-Agent': 'Siloq/1.0'})
-            if resp.status_code == 200:
-                match = re.search(
-                    r'<meta\s+name=["\']description["\']\s+content=["\'](.*?)["\']',
-                    resp.text, re.IGNORECASE
-                ) or re.search(
-                    r'<meta\s+content=["\'](.*?)["\']\s+name=["\']description["\']',
-                    resp.text, re.IGNORECASE
+    # ── Strategy 3: Scrape live page HTML (meta description + H-tag hierarchy) ─
+    # Always fires to extract H-tags. Meta description only filled if still empty.
+    try:
+        resp = requests.get(absolute_url, timeout=8, headers={'User-Agent': 'Siloq/1.0'})
+        if resp.status_code == 200:
+            html = resp.text
+
+            # Meta description — universal fallback for any SEO plugin
+            if not meta['meta_description']:
+                m = re.search(
+                    r'<meta\s+name=["\']+description["\']+\s+content=["\']+([^"\'>]*)["\']+',
+                    html, re.IGNORECASE
                 )
-                if match:
-                    meta['meta_description'] = match.group(1).strip()
-                    meta['source'] = meta['source'] + '+html_scrape' if meta['source'] != 'unknown' else 'html_scrape'
-        except Exception as exc:
-            logger.debug("HTML scrape failed for %s: %s", absolute_url, exc)
+                if m:
+                    meta['meta_description'] = m.group(1).strip()
+
+            # Full H-tag hierarchy — extract H1–H4 in document order
+            htag_re = re.compile(r'<h([1-4])[^>]*>(.*?)</h\1>', re.IGNORECASE | re.DOTALL)
+            headings = []
+            for level, text in htag_re.findall(html):
+                clean = re.sub(r'<[^>]+>', '', text).strip()
+                if clean:
+                    headings.append({'level': f'h{level}', 'text': clean[:200]})
+            if headings:
+                meta['heading_hierarchy'] = headings
+                if not meta.get('h2_headings'):
+                    meta['h2_headings'] = [h['text'] for h in headings if h['level'] == 'h2']
+
+            meta['source'] = (meta['source'] + '+html_scrape') if meta['source'] != 'unknown' else 'html_scrape'
+    except Exception as exc:
+        logger.debug("HTML scrape failed for %s: %s", absolute_url, exc)
 
     return meta
 
@@ -290,6 +302,20 @@ def _build_analysis_prompt(absolute_url: str, gsc_data: dict, wp_meta: dict, sit
 
     h2_headings = wp_meta.get('h2_headings', [])
     h2_summary = ', '.join(f'"{h}"' for h in h2_headings[:6]) if h2_headings else 'None detected'
+
+    # Full H-tag hierarchy for Section 03 heading audit
+    heading_hierarchy = wp_meta.get('heading_hierarchy', [])
+    if heading_hierarchy:
+        h_map_lines = []
+        for h in heading_hierarchy[:20]:
+            indent = '  ' * (int(h['level'][1]) - 1)
+            h_map_lines.append(f"{indent}{h['level'].upper()}: {h['text']}")
+        h_tag_map = '\n'.join(h_map_lines)
+    elif wp_meta.get('h1'):
+        h2_lines = '\n'.join(f'  H2: {h}' for h in h2_headings[:6]) if h2_headings else '  H2: None detected'
+        h_tag_map = f"H1: {wp_meta['h1']}\n{h2_lines}"
+    else:
+        h_tag_map = 'No heading structure available'
 
     # Entity profile context (if available)
     entity_context = ''
@@ -331,7 +357,10 @@ Title tag: {wp_meta.get('title') or 'Not set'}
 H1: {wp_meta.get('h1') or 'Not set'}
 Meta description: {wp_meta.get('meta_description') or 'Not set'}
 Word count: {wp_meta.get('word_count', 0)}
-H2 headings: {h2_summary}
+H-Tag Hierarchy (current):
+{h_tag_map}
+
+
 Has schema markup: {wp_meta.get('has_schema', False)}
 Schema types: {', '.join(wp_meta.get('schema_types', [])) or 'None'}
 Internal links out: {wp_meta.get('internal_links_count', 0)}
