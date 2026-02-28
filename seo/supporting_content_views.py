@@ -733,3 +733,152 @@ def _build_schema_from_profile(page_url: str, entity: dict, wp_meta: dict, analy
     except Exception as e:
         logger.warning('Schema generation failed: %s', e)
         return {}
+
+
+# =============================================================================
+# ARTICLE GENERATION — Section 02 Step 3
+# =============================================================================
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def generate_supporting_article(request, site_id: int, page_id: int):
+    """
+    Generate a full supporting article from an approved topic plan item.
+
+    POST /api/v1/sites/{site_id}/pages/{page_id}/supporting-content/generate/
+    Body:
+    {
+        "topic": {
+            "title": "Generac Generator Installation in Olathe KS — What to Expect",
+            "target_keyword": "generac generator installation olathe ks",
+            "content_type": "supporting_article",
+            "word_count": 1200,
+            "supports_page": "Generator Installation",
+            "supports_url": "/services/generator-installation/"
+        }
+    }
+
+    Returns full article HTML + metadata, ready for the Approvals queue.
+    Publishes to WordPress when customer approves via the approvals endpoint.
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+    page = get_object_or_404(Page, id=page_id, site=site)
+
+    topic = request.data.get('topic')
+    if not topic or not isinstance(topic, dict):
+        return Response({'error': 'topic object is required'}, status=400)
+
+    title = topic.get('title', '').strip()
+    target_keyword = topic.get('target_keyword', '').strip()
+    word_count = int(topic.get('word_count', 1000))
+    content_type = topic.get('content_type', 'supporting_article')
+    supports_url = topic.get('supports_url', page.url)
+
+    if not title:
+        return Response({'error': 'topic.title is required'}, status=400)
+
+    # Get business profile for specificity
+    profile_data = {}
+    try:
+        profile = SiteEntityProfile.objects.get(site=site)
+        profile_data = {
+            'business_name': profile.business_name or site.name,
+            'city':          profile.city or '',
+            'state':         profile.state or '',
+            'phone':         profile.phone or '',
+            'services':      profile.categories[:5] if profile.categories else [],
+            'brands_used':   getattr(profile, 'brands_used', []) or [],
+            'service_cities':profile.service_cities[:5] if profile.service_cities else [],
+            'rating':        profile.gbp_star_rating,
+            'review_count':  profile.gbp_review_count,
+        }
+    except Exception:
+        profile_data = {'business_name': site.name}
+
+    # Build article generation prompt
+    location = f"{profile_data.get('city', '')}, {profile_data.get('state', '')}".strip(', ')
+    money_page_url = f"{site.url.rstrip('/')}/{supports_url.lstrip('/')}"
+    anchor_text = target_keyword or title[:50]
+
+    prompt = f"""Write a complete, publish-ready supporting article for a local service business website.
+
+ARTICLE DETAILS:
+Title: {title}
+Target keyword: {target_keyword}
+Content type: {content_type}
+Target word count: {word_count} words
+Tone: Professional, helpful, locally relevant
+
+BUSINESS PROFILE:
+Business: {profile_data.get('business_name')}
+Location: {location}
+Services: {', '.join(profile_data.get('services', []))}
+Brands used/sold: {', '.join(profile_data.get('brands_used', [])) or 'Not specified'}
+Rating: {profile_data.get('rating', 'N/A')}★ ({profile_data.get('review_count', 0)} reviews)
+
+SUPPORTING CONTENT REQUIREMENTS:
+- This article MUST include AT LEAST ONE internal link to the money page it supports:
+  URL: {money_page_url}
+  Anchor text: "{anchor_text}"
+  Placement: within the first 400 words and again near the conclusion
+- Include 2-4 H2 headings with secondary keywords
+- Include an FAQ section at the end with 3-5 real questions customers ask
+  (qualify these for FAQPage schema)
+- End with a clear CTA: call {profile_data.get('business_name')} at {profile_data.get('phone', '[phone]')} or link to contact page
+- Word count target: {word_count} words
+- Do NOT include placeholder text — use the real business name, location, and phone number throughout
+
+SPECIFICITY REQUIREMENT: Every paragraph must be specific to this business, this service, and this location.
+Do not write generic content that any competitor could publish.
+
+OUTPUT FORMAT (return as JSON):
+{{
+  "title": "Article title",
+  "slug": "url-friendly-slug",
+  "target_keyword": "{target_keyword}",
+  "meta_description": "155-char meta description with keyword",
+  "content_html": "<full HTML article content — h2s, paragraphs, FAQs, CTA>",
+  "word_count": 1150,
+  "schema": {{
+    "article": true,
+    "faq_questions": ["Q1", "Q2", "Q3"]
+  }},
+  "internal_links": [
+    {{"url": "{money_page_url}", "anchor_text": "{anchor_text}", "context": "placement description"}}
+  ]
+}}"""
+
+    # Call AI
+    ai_result = None
+    if ANTHROPIC_API_KEY:
+        try:
+            import anthropic, json
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            msg = client.messages.create(
+                model='claude-opus-4-6',
+                max_tokens=4096,
+                messages=[{'role': 'user', 'content': prompt}],
+            )
+            raw = msg.content[0].text
+            # Extract JSON
+            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if json_match:
+                ai_result = json.loads(json_match.group())
+        except Exception as exc:
+            logger.warning('Article generation AI call failed: %s', exc)
+
+    if not ai_result:
+        return Response({'error': 'Article generation failed — AI provider unavailable'}, status=502)
+
+    return Response({
+        'article': ai_result,
+        'meta': {
+            'topic':        topic,
+            'supports_url': supports_url,
+            'money_page_url': money_page_url,
+            'site_id':      site_id,
+            'page_id':      page_id,
+            'status':       'pending_approval',
+            'next_step':    'Approve this article in the Approvals tab to publish it to WordPress.',
+        }
+    }, status=status.HTTP_201_CREATED)

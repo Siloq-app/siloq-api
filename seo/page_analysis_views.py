@@ -1073,9 +1073,23 @@ def apply_recommendations(request, site_id: int, analysis_id: int):
                 for r in recs:
                     if r.get('id') == result['rec_id']:
                         r['status'] = 'applied'
+                        r['applied_at'] = timezone.now().isoformat()
                 setattr(analysis, layer_key, recs)
         else:
-            failed.append({'rec_id': result['rec_id'], 'error': result['error']})
+            error_detail = result['error'] or 'Unknown error'
+            failed_item = {'rec_id': result['rec_id'], 'error': error_detail}
+            if error_detail == 'requires_manual_action':
+                failed_item['status'] = 'manual_action'
+                failed_item['guidance'] = result.get('guidance', 'This change requires manual implementation in your page editor.')
+                # Mark the rec as manual_action in storage
+                for layer_key in ('geo_recommendations', 'seo_recommendations', 'cro_recommendations'):
+                    recs = getattr(analysis, layer_key)
+                    for r in recs:
+                        if r.get('id') == result['rec_id']:
+                            r['status'] = 'manual_action'
+                            r['guidance'] = failed_item['guidance']
+                    setattr(analysis, layer_key, recs)
+            failed.append(failed_item)
 
     # ── Verification: use webhook success as ground truth ─────────────────
     # The DB is always stale (not re-synced after apply), so text-matching
@@ -1346,3 +1360,114 @@ def analyze_all_pages(request, site_id: int):
         'force':   force,
         'message': f'Analysis started for {total_pages} pages. Results will appear as each page completes.',
     }, status=status.HTTP_202_ACCEPTED)
+
+
+# ── Site-wide Approvals Feed (Section 11.6) ───────────────────────────────────
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_approvals(request, site_id: int):
+    """
+    Aggregate all recommendations across all page analyses for a site.
+    Used by the Approvals tab in the dashboard.
+
+    GET /api/v1/sites/{id}/approvals/
+    Query params:
+      status=pending,approved,applied,verified,failed,manual_action
+        (comma-separated filter, default = all)
+      applied_since=2026-02-01   (ISO date, for "Applied This Week" view)
+      limit=50                   (default 50)
+      offset=0
+
+    Returns flat list of recommendation objects enriched with:
+      - analysis_id, page_url, page_title
+      - applied_at timestamp (when status=applied/verified)
+      - guidance text (when status=manual_action)
+    """
+    from django.utils.dateparse import parse_date
+    import datetime
+
+    site = Site.objects.filter(id=site_id, user=request.user).first()
+    if not site:
+        return Response({'error': 'Site not found'}, status=404)
+
+    status_filter_raw = request.query_params.get('status', '')
+    status_filter = {s.strip() for s in status_filter_raw.split(',') if s.strip()} if status_filter_raw else set()
+
+    applied_since_str = request.query_params.get('applied_since')
+    applied_since = None
+    if applied_since_str:
+        d = parse_date(applied_since_str)
+        if d:
+            applied_since = datetime.datetime.combine(d, datetime.time.min, tzinfo=datetime.timezone.utc)
+
+    limit = min(int(request.query_params.get('limit', 50)), 200)
+    offset = int(request.query_params.get('offset', 0))
+
+    analyses = PageAnalysis.objects.filter(
+        site=site, status='complete'
+    ).order_by('-created_at').values(
+        'id', 'page_url', 'page_title',
+        'geo_recommendations', 'seo_recommendations', 'cro_recommendations',
+    )
+
+    all_recs = []
+    for analysis in analyses:
+        for layer in ('geo_recommendations', 'seo_recommendations', 'cro_recommendations'):
+            for rec in (analysis[layer] or []):
+                rec_status = rec.get('status', 'pending')
+
+                # Status filter
+                if status_filter and rec_status not in status_filter:
+                    continue
+
+                # Date filter (applied_since)
+                if applied_since and rec_status in ('applied', 'verified'):
+                    applied_at_str = rec.get('applied_at')
+                    if applied_at_str:
+                        try:
+                            from django.utils.dateparse import parse_datetime
+                            applied_at = parse_datetime(applied_at_str)
+                            if applied_at and applied_at < applied_since:
+                                continue
+                        except Exception:
+                            pass
+
+                all_recs.append({
+                    'rec_id':      rec.get('id'),
+                    'analysis_id': analysis['id'],
+                    'page_url':    analysis['page_url'],
+                    'page_title':  analysis['page_title'] or '',
+                    'layer':       layer.replace('_recommendations', ''),
+                    'field':       rec.get('field', ''),
+                    'issue':       rec.get('issue', ''),
+                    'severity':    rec.get('severity', ''),
+                    'before':      rec.get('before', ''),
+                    'after':       rec.get('after', ''),
+                    'status':      rec_status,
+                    'applied_at':  rec.get('applied_at'),
+                    'guidance':    rec.get('guidance'),
+                })
+
+    # Sort: failed first, then manual_action, then pending, then approved, then applied/verified
+    STATUS_SORT = {'failed': 0, 'manual_action': 1, 'pending': 2, 'approved': 3, 'applied': 4, 'verified': 5}
+    all_recs.sort(key=lambda r: STATUS_SORT.get(r['status'], 9))
+
+    total = len(all_recs)
+    paginated = all_recs[offset:offset + limit]
+
+    # Summary counts
+    counts = {}
+    for rec in all_recs:
+        s = rec['status']
+        counts[s] = counts.get(s, 0) + 1
+
+    return Response({
+        'recommendations': paginated,
+        'meta': {
+            'total': total,
+            'offset': offset,
+            'limit': limit,
+            'counts': counts,
+        }
+    })

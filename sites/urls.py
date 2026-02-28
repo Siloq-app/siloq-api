@@ -32,6 +32,7 @@ from integrations.gsc_views import connect_gsc_site, get_gsc_data, analyze_gsc_c
 from seo.cannibalization_v2 import get_cannibalization_conflicts
 from seo.silo_health_views import silo_health_scores, silo_health_recalculate
 from seo.page_analysis_views import (
+    list_approvals,
     analyze_page,
     analyze_all_pages,
     list_analyses,
@@ -41,7 +42,7 @@ from seo.page_analysis_views import (
 )
 from seo.entity_extraction_views import extract_entities
 from seo.entity_profile_views import entity_profile, sync_gbp
-from seo.supporting_content_views import supporting_content_gap, about_us_analysis, schema_inventory
+from seo.supporting_content_views import supporting_content_gap, about_us_analysis, schema_inventory, generate_supporting_article
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -86,6 +87,7 @@ urlpatterns = [
     # Pages Content Optimization — Three-Layer Model (GEO + SEO + CRO)
     path('<int:site_id>/pages/analyze/', analyze_page, name='page-analyze'),
     path('<int:site_id>/pages/analyze-all/', analyze_all_pages, name='page-analyze-all'),
+    path('<int:site_id>/approvals/', list_approvals, name='site-approvals'),
     path('<int:site_id>/pages/analysis/', list_analyses, name='page-analysis-list'),
     path('<int:site_id>/pages/analysis/<int:analysis_id>/', get_analysis, name='page-analysis-detail'),
     path('<int:site_id>/pages/analysis/<int:analysis_id>/approve/', approve_recommendations, name='page-analysis-approve'),
@@ -95,6 +97,7 @@ urlpatterns = [
     path('<int:site_id>/entity-profile/sync-gbp/', sync_gbp, name='site-entity-profile-sync-gbp'),
     # Supporting Content Gap Detection (Section 02)
     path('<int:site_id>/pages/<int:page_id>/supporting-content/', supporting_content_gap, name='page-supporting-content'),
+    path('<int:site_id>/pages/<int:page_id>/supporting-content/generate/', generate_supporting_article, name='page-supporting-content-generate'),
     # About Us Intelligence (Section 05)
     path('<int:site_id>/pages/<int:page_id>/about-analysis/', about_us_analysis, name='page-about-analysis'),
     # Schema Inventory — show existing + recommended + generated (Section 03)
