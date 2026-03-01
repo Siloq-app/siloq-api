@@ -939,3 +939,133 @@ def junk_page_feed(request, site_id: int):
             'review':  len(groups.get('review', [])),
         }
     })
+
+
+# ---------------------------------------------------------------------------
+# Image Suggestion (no AI call — fast string construction)
+# GET /api/v1/sites/{site_id}/pages/{page_id}/image-suggestion/?topic={title}
+# ---------------------------------------------------------------------------
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def image_suggestion(request, site_id: int, page_id: int):
+    """
+    Return a DALL-E prompt + alt text constructed from the topic and site entity profile.
+    No external API calls — purely string construction, returns immediately.
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+    topic = request.query_params.get('topic', '').strip()
+    if not topic:
+        from rest_framework.response import Response
+        from rest_framework import status as drf_status
+        return Response({'error': 'topic query param is required'}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+    # Pull entity profile for city/state/business context
+    try:
+        profile = SiteEntityProfile.objects.get(site=site)
+        city = profile.city or ''
+        state = profile.state or ''
+        business_name = profile.business_name or ''
+    except SiteEntityProfile.DoesNotExist:
+        city = ''
+        state = ''
+        business_name = ''
+
+    location_str = f"{city} {state}".strip() if (city or state) else ''
+
+    # --- Prompt construction ---
+    # Use the topic as the primary subject description.
+    # Append location and always-on style suffix.
+    style_suffix = "photorealistic, professional, bright natural lighting, Canon DSLR quality"
+
+    if location_str:
+        dall_e_prompt = (
+            f"Professional scene showing {topic} in {location_str}, "
+            f"{style_suffix}"
+        )
+    else:
+        dall_e_prompt = f"Professional scene showing {topic}, {style_suffix}"
+
+    # Alt text: concise, keyword-relevant, factual
+    if location_str:
+        alt_text = f"{topic} in {location_str}"
+    else:
+        alt_text = topic
+
+    return Response({
+        'topic': topic,
+        'dall_e_prompt': dall_e_prompt,
+        'alt_text': alt_text,
+        'style_guidance': 'photorealistic, professional, bright natural lighting',
+        'size': '1792x1024',
+    })
+
+
+# ---------------------------------------------------------------------------
+# Image Generation — calls OpenAI DALL-E 3
+# POST /api/v1/sites/{site_id}/generate-image/
+# Body: { "prompt": "...", "size": "1792x1024" }
+# ---------------------------------------------------------------------------
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def generate_image(request, site_id: int):
+    """
+    Call OpenAI DALL-E 3 to generate an image from the supplied prompt.
+    Returns the image URL (valid ~60 minutes).
+    """
+    import os
+    from datetime import datetime, timezone, timedelta
+    from openai import OpenAI
+    from rest_framework.response import Response
+    from rest_framework import status as drf_status
+
+    # Validate site ownership
+    get_object_or_404(Site, id=site_id, user=request.user)
+
+    prompt = request.data.get('prompt', '').strip()
+    size = request.data.get('size', '1792x1024').strip()
+
+    if not prompt:
+        return Response({'error': 'prompt is required'}, status=drf_status.HTTP_400_BAD_REQUEST)
+
+    api_key = os.environ.get('OPENAI_API_KEY', '')
+    if not api_key:
+        return Response(
+            {'error': 'Image generation is not configured. OPENAI_API_KEY is not set on this server.'},
+            status=drf_status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.images.generate(
+            model='dall-e-3',
+            prompt=prompt,
+            size=size,
+            quality='standard',
+            n=1,
+        )
+    except Exception as exc:
+        error_str = str(exc)
+        # Content policy rejection
+        if 'content_policy_violation' in error_str or 'safety system' in error_str.lower():
+            return Response(
+                {'error': 'Image prompt was rejected by content filter. Try a more specific professional description.'},
+                status=drf_status.HTTP_400_BAD_REQUEST,
+            )
+        # Generic OpenAI failure
+        return Response(
+            {'error': f'Image generation failed: {error_str}'},
+            status=drf_status.HTTP_502_BAD_GATEWAY,
+        )
+
+    image_data = response.data[0]
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=60)
+
+    return Response({
+        'image_url': image_data.url,
+        'prompt': prompt,
+        'size': size,
+        'revised_prompt': getattr(image_data, 'revised_prompt', None),
+        'expires_at': expires_at.isoformat(),
+    })
