@@ -134,6 +134,15 @@ urlpatterns = [
     path('content-jobs/<str:job_id>/', content_jobs_status_view),
     # Billing and subscription management
     path('billing/', include('billing.urls')),
+    path('agency/', include('agency.urls')),
+    # Branding resolution (public SSR endpoint + plugin config)
+    path('branding/resolve/',       __import__('agency.views', fromlist=['branding_resolve']).branding_resolve,             name='branding-resolve'),
+    path('branding/plugin-config/', __import__('agency.views', fromlist=['branding_plugin_config']).branding_plugin_config, name='branding-plugin-config'),
+    path('branding/verify-domain/', __import__('agency.views', fromlist=['branding_verify_domain']).branding_verify_domain, name='branding-verify-domain'),
+    # Branding resolution — public endpoint for Next.js SSR middleware
+    path('branding/resolve/', __import__('agency.views', fromlist=['branding_resolve']).branding_resolve, name='branding-resolve'),
+    path('branding/config/',  __import__('agency.views', fromlist=['branding_config']).branding_config,   name='branding-config'),
+    path('branding/verify-domain/', __import__('agency.views', fromlist=['branding_verify_domain']).branding_verify_domain, name='branding-verify-domain'),
     # Conflicts (Anti-Cannibalization)
     path('conflicts/', conflict_list_view, name='conflict-list'),
     path('conflicts/<uuid:conflict_id>/resolve/', conflict_resolve_view, name='conflict-resolve'),

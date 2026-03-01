@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     'seo',
     'integrations',
     'billing',
+    'agency',
     'ai',
 ]
 
