@@ -134,6 +134,7 @@ urlpatterns = [
     path('content-jobs/<str:job_id>/', content_jobs_status_view),
     # Billing and subscription management
     path('billing/', include('billing.urls')),
+    path('agency/', include('agency.urls')),
     # Conflicts (Anti-Cannibalization)
     path('conflicts/', conflict_list_view, name='conflict-list'),
     path('conflicts/<uuid:conflict_id>/resolve/', conflict_resolve_view, name='conflict-resolve'),
