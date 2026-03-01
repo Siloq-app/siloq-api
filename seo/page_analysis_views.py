@@ -349,9 +349,43 @@ CONTENT SPECIFICITY REQUIREMENT: Any supporting content or blog topic recommenda
         except Exception:
             pass
 
+    # ── Homepage detection ──────────────────────────────────────────────
+    from urllib.parse import urlparse as _urlparse
+    _parsed_path = _urlparse(absolute_url).path.rstrip('/')
+    _is_homepage = _parsed_path == '' or _parsed_path == '/'
+
+    _homepage_context = ""
+    if _is_homepage:
+        _homepage_context = """
+⚠️  HOMEPAGE DOCTRINE — CRITICAL RULES FOR THIS PAGE:
+This is the site's HOMEPAGE. It is a BRAND PAGE, not a keyword-targeting page.
+
+HOMEPAGE SEO RULES (follow these exactly):
+1. Title tag: Must be brand-first format: "[Business Name] | [Short Brand Tagline or City]". Do NOT optimize for a primary service keyword — that causes cannibalization with service pages.
+2. Meta description: Brand overview only. Describe who the business is and what they do broadly. Do NOT keyword-stuff service terms.
+3. H1: Should be a brand statement or brand tagline, not a keyword phrase.
+4. NO keyword targeting recommendations on the homepage. The homepage should NOT compete with service pages.
+5. Internal linking: ALWAYS recommend adding internal links to key service/money pages. This is the homepage's primary SEO job — pass authority to the pages that DO rank for keywords.
+6. Schema: LocalBusiness/Organization — confirm it's present and complete.
+7. Content body: Focus on brand clarity, trust signals, and calls to action — not keyword density.
+
+What you SHOULD recommend:
+- Internal links to top service pages (HIGH priority)
+- Brand clarity in title/H1 (not keyword targeting)
+- LocalBusiness schema completeness
+- Trust signals (reviews, years in business, certifications)
+- CTA above the fold
+
+What you MUST NOT recommend:
+- Adding primary service keywords to the title
+- Keyword-optimizing the H1 or meta description
+- Content that targets specific service keywords
+"""
+
     return f"""Analyze this page against the Three-Layer Content Model.
 
 PAGE URL: {absolute_url}
+{_homepage_context}
 
 === SEO METADATA ===
 Title tag: {wp_meta.get('title') or 'Not set'}
@@ -836,6 +870,116 @@ def _build_breadcrumbs(url: str) -> list:
 
 # ── View: POST /api/v1/sites/{site_id}/pages/analyze/ ─────────────────────────
 
+
+# ── Homepage brand-page post-processor ───────────────────────────────────────
+
+def _is_homepage_url(absolute_url: str) -> bool:
+    """True if the URL is the site root / homepage."""
+    from urllib.parse import urlparse
+    path = urlparse(absolute_url).path.rstrip('/')
+    return path == '' or path == '/'
+
+
+def _enforce_homepage_doctrine(ai_result: dict, wp_meta: dict, business_name: str) -> dict:
+    """
+    Post-process AI recommendations for the homepage.
+
+    DOCTRINE: The homepage is a BRAND PAGE. It should never keyword-target
+    service terms because that directly causes cannibalization with service pages.
+
+    This function:
+    - Strips any SEO recs that tell the homepage to keyword-optimize its title/H1/meta
+    - Replaces them with correct brand-page recommendations
+    - Ensures internal linking to money pages is always flagged (HIGH priority)
+    - Preserves valid recs (schema, CRO, GEO) as-is
+    """
+    import re
+
+    KEYWORD_TARGETING_PATTERNS = [
+        r'keyword', r'primary keyword', r'target keyword',
+        r'optimize.*title.*keyword', r'include.*keyword.*title',
+        r'title.*not optimized', r'seo.*title', r'keyword.*title',
+        r'rank.*keyword', r'focus keyword',
+    ]
+
+    def _is_keyword_targeting_rec(rec: dict) -> bool:
+        text = f"{rec.get('issue','')} {rec.get('recommendation','')}".lower()
+        return any(re.search(p, text) for p in KEYWORD_TARGETING_PATTERNS)
+
+    def _mentions_service_keyword_in_title(rec: dict) -> bool:
+        """Catch recs like 'Change title to Electrician Kansas City | Brand'"""
+        after = rec.get('after', '')
+        issue = rec.get('issue', '').lower()
+        field = rec.get('field', '')
+        # If it's touching the title and the 'after' looks like keyword | brand
+        if field == 'title' and '|' in after:
+            # Brand-first is OK: "Able Electric Inc | ..." — keyword-first is not
+            # Heuristic: if the first word is a common service term, it's keyword-first
+            first_word = after.split()[0].lower() if after else ''
+            service_indicators = [
+                'electrician', 'plumber', 'roofer', 'dentist', 'lawyer', 'attorney',
+                'contractor', 'hvac', 'landscaper', 'cleaner', 'painter', 'mechanic',
+                'doctor', 'therapist', 'accountant', 'realtor', 'insurance',
+            ]
+            return first_word in service_indicators
+        return False
+
+    # ── Filter bad SEO recs ───────────────────────────────────────────────────
+    original_seo = ai_result.get('seo_recommendations', [])
+    clean_seo = []
+    removed_count = 0
+
+    for rec in original_seo:
+        if _is_keyword_targeting_rec(rec) or _mentions_service_keyword_in_title(rec):
+            removed_count += 1
+            continue
+        clean_seo.append(rec)
+
+    # ── Always ensure internal linking rec exists ────────────────────────────
+    has_internal_link_rec = any(
+        'internal link' in f"{r.get('issue','')} {r.get('recommendation','')}".lower()
+        for r in clean_seo
+    )
+    if not has_internal_link_rec:
+        clean_seo.insert(0, {
+            'id': 'seo_homepage_internal_links',
+            'layer': 'SEO',
+            'priority': 'high',
+            'issue': 'Homepage is not linking to key service pages.',
+            'recommendation': (
+                'Add clear text links (or a services section) to your top money pages. '
+                'The homepage primary SEO role is to pass authority to the pages that rank for your service keywords. '
+                'Without these links, service pages receive less crawl priority and PageRank.'
+            ),
+            'before': 'No internal links to service pages detected.',
+            'after': 'Add a "Our Services" section with links to each service page, or include text links in the intro paragraph.',
+            'field': 'content_body',
+            'homepage_doctrine': True,
+        })
+
+    # ── Add brand title rec if we removed a bad keyword-title rec ────────────
+    has_title_rec = any(r.get('field') == 'title' for r in clean_seo)
+    if removed_count > 0 and not has_title_rec:
+        current_title = wp_meta.get('title', 'Not set')
+        clean_seo.append({
+            'id': 'seo_homepage_brand_title',
+            'layer': 'SEO',
+            'priority': 'medium',
+            'issue': 'Homepage title should be brand-first, not keyword-first.',
+            'recommendation': (
+                f'Format: "[{business_name}] | [Short brand tagline or city]". '
+                'Never put a service keyword first in the homepage title — that creates '
+                'direct cannibalization with your service pages that are trying to rank for those keywords.'
+            ),
+            'before': current_title,
+            'after': f'{business_name} | Professional Services in Your Area',
+            'field': 'title',
+            'homepage_doctrine': True,
+        })
+
+    ai_result['seo_recommendations'] = clean_seo
+    return ai_result
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def analyze_page(request, site_id: int):
@@ -875,6 +1019,17 @@ def analyze_page(request, site_id: int):
 
         # Step 4: Call AI
         ai_result = _call_ai_for_analysis(user_message)
+
+        # Step 4b: Homepage doctrine enforcement
+        if _is_homepage_url(absolute_url):
+            _biz_name = ''
+            try:
+                from seo.models import SiteEntityProfile
+                _prof = SiteEntityProfile.objects.filter(site=site).first()
+                _biz_name = _prof.business_name if _prof else ''
+            except Exception:
+                pass
+            ai_result = _enforce_homepage_doctrine(ai_result, wp_meta, _biz_name)
 
         # Step 5: Compute overall score (weighted: GEO 30%, SEO 40%, CRO 30%)
         geo_score = int(ai_result['geo_score'])
