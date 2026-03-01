@@ -11,15 +11,14 @@ class AgencyProfile(models.Model):
     agency_slug = models.SlugField(max_length=100, unique=True)
 
     WHITE_LABEL_TIER_CHOICES = [
-        ('NO_WHITE_LABEL', 'No White Label'),
-        ('PARTIAL_WHITE_LABEL', 'Partial (Agency)'),
-        ('FULL_WHITE_LABEL', 'Full (Empire)'),
+        ('PARTIAL', 'Agency - Powered by Siloq'),
+        ('FULL', 'Agency Pro - Full Rebrand'),
     ]
     white_label_tier = models.CharField(
         max_length=50,
-        default='NO_WHITE_LABEL',
         choices=WHITE_LABEL_TIER_CHOICES,
     )
+    max_client_seats = models.IntegerField(default=10)
 
     # Branding
     logo_url = models.URLField(blank=True, max_length=2048)
@@ -56,32 +55,41 @@ class AgencyProfile(models.Model):
 
 class AgencyClientLink(models.Model):
     agency = models.ForeignKey(
-        'accounts.User',
+        AgencyProfile,
         on_delete=models.CASCADE,
-        related_name='agency_clients',
+        related_name='clients',
     )
-    client = models.ForeignKey(  # null=True for pending invites
+    client_user = models.OneToOneField(
         'accounts.User',
         on_delete=models.CASCADE,
-        related_name='agency_memberships',
+        related_name='agency_link',
         null=True,
         blank=True,
     )
-
-    STATUS_CHOICES = [
-        ('active', 'Active'),
-        ('invited', 'Invited'),
-        ('suspended', 'Suspended'),
-    ]
-    status = models.CharField(max_length=20, default='active', choices=STATUS_CHOICES)
+    sites = models.ManyToManyField('sites.Site', blank=True)
     invite_email = models.EmailField(blank=True)
     invite_token = models.CharField(max_length=64, blank=True, unique=True, null=True)
     invited_at = models.DateTimeField(auto_now_add=True)
     accepted_at = models.DateTimeField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'agency_client_links'
-        unique_together = [('agency', 'client')]
 
     def __str__(self):
-        return f"{self.agency} -> {self.client} ({self.status})"
+        return f"{self.agency} -> {self.client_user or self.invite_email}"
+
+
+def get_visible_sites(user):
+    """
+    Returns the correct Site queryset for any user type.
+    Agency sees all client sites. Client sees assigned sites. Standard sees own.
+    """
+    from sites.models import Site
+    if hasattr(user, 'agency_profile'):
+        return Site.objects.filter(
+            agencyclientlink__agency=user.agency_profile
+        ).distinct()
+    if hasattr(user, 'agency_link'):
+        return user.agency_link.sites.all()
+    return Site.objects.filter(user=user)
