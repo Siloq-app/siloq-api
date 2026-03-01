@@ -43,7 +43,7 @@ from seo.page_analysis_views import (
 )
 from seo.entity_extraction_views import extract_entities
 from seo.entity_profile_views import entity_profile, sync_gbp
-from seo.supporting_content_views import supporting_content_gap, about_us_analysis, schema_inventory, generate_supporting_article, junk_page_feed
+from seo.supporting_content_views import supporting_content_gap, about_us_analysis, schema_inventory, generate_supporting_article, junk_page_feed, image_suggestion, generate_image
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -103,6 +103,9 @@ urlpatterns = [
     path('<int:site_id>/junk-pages/', junk_page_feed, name='site-junk-pages'),
     # About Us Intelligence (Section 05)
     path('<int:site_id>/pages/<int:page_id>/about-analysis/', about_us_analysis, name='page-about-analysis'),
+    # Image Suggestion + Generation
+    path('<int:site_id>/pages/<int:page_id>/image-suggestion/', image_suggestion, name='page-image-suggestion'),
+    path('<int:site_id>/generate-image/', generate_image, name='site-generate-image'),
     # Schema Inventory — show existing + recommended + generated (Section 03)
     path('<int:site_id>/pages/analysis/<int:analysis_id>/schema/', schema_inventory, name='page-schema-inventory'),
 ]
