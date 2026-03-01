@@ -28,6 +28,7 @@ from integrations.gsc import fetch_page_search_analytics
 from integrations.gsc_views import _get_valid_access_token
 from integrations.wordpress_webhook import send_webhook_to_wordpress
 from seo.models import Page, PageAnalysis, SEOData
+from seo.geographic_grounding import compute_geographic_grounding, compute_informational_gain
 from sites.models import Site
 
 logger = logging.getLogger(__name__)
@@ -899,6 +900,47 @@ def analyze_page(request, site_id: int):
         analysis.cro_recommendations = cro_recs
         heading_struct = _normalize_heading_structure(ai_result.get('heading_structure'))
         analysis.wp_meta = {**(analysis.wp_meta or {}), 'heading_structure': heading_struct}
+
+        # ── Geographic Ghosting + Informational Gain ───────────────────────
+        try:
+            page_obj = Page.objects.filter(site=site, url=absolute_url).first()
+            h1_text = wp_meta.get('h1', '') or ''
+            page_content = wp_meta.get('content_snippet', '') or ''
+
+            if page_obj:
+                geo_grounding = compute_geographic_grounding(page_obj, h1_text)
+
+                # Fetch other pages in hub for informational gain comparison
+                hub_pages = Page.objects.filter(
+                    site=site,
+                    hub_page_id=page_obj.hub_page_id,
+                ).exclude(id=page_obj.id) if page_obj.hub_page_id else Page.objects.none()
+
+                hub_contents = []
+                for hp in hub_pages[:20]:
+                    analysis_qs = PageAnalysis.objects.filter(
+                        site=site, page_url=hp.url
+                    ).order_by('-created_at').first()
+                    if analysis_qs and analysis_qs.wp_meta:
+                        snippet = analysis_qs.wp_meta.get('content_snippet', '')
+                        if snippet:
+                            hub_contents.append(snippet)
+
+                informational_gain = compute_informational_gain(page_obj, page_content, hub_contents)
+            else:
+                geo_grounding = {'is_location_page': False, 'warning': False,
+                                 'grounding_status': None, 'recommendations': []}
+                informational_gain = {'label': 'unknown', 'warning': False,
+                                      'unique_percentage': None, 'recommendations': []}
+
+            analysis.wp_meta = {
+                **(analysis.wp_meta or {}),
+                'geographic_grounding': geo_grounding,
+                'informational_gain': informational_gain,
+            }
+        except Exception as gg_exc:
+            logger.warning("Geographic grounding/IG computation failed: %s", gg_exc)
+
         analysis.status = 'complete'
         analysis.completed_at = timezone.now()
         analysis.save()
@@ -1167,6 +1209,15 @@ def _serialize_analysis(analysis: PageAnalysis) -> dict:
             } if analysis.wp_meta else {},
         },
         'heading_structure': (analysis.wp_meta or {}).get('heading_structure') or {'current': [], 'recommended': [], 'issues_summary': []},
+        'geographic_grounding': (analysis.wp_meta or {}).get('geographic_grounding') or {
+            'is_location_page': False, 'target_location': None, 'grounding_status': None,
+            'grounding_signals': [], 'missing_signals': [], 'warning': False,
+            'warning_message': None, 'recommendations': [],
+        },
+        'informational_gain': (analysis.wp_meta or {}).get('informational_gain') or {
+            'label': 'unknown', 'warning': False, 'unique_percentage': None,
+            'swap_pattern_detected': False, 'recommendations': [],
+        },
         'created_at': analysis.created_at.isoformat() if analysis.created_at else None,
         'completed_at': analysis.completed_at.isoformat() if analysis.completed_at else None,
     }
