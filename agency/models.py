@@ -1,47 +1,40 @@
+"""
+Agency & White-Label models.
+Spec: Siloq White-Label Spec V1 (March 2026)
+"""
 from django.db import models
 
 
 class AgencyProfile(models.Model):
+    WHITE_LABEL_TIER_CHOICES = [
+        ('PARTIAL', 'Agency - Powered by Siloq'),
+        ('FULL',    'Agency Pro - Full Rebrand'),
+    ]
+
     user = models.OneToOneField(
         'accounts.User',
         on_delete=models.CASCADE,
         related_name='agency_profile',
     )
-    agency_name = models.CharField(max_length=255)
-    agency_slug = models.SlugField(max_length=100, unique=True)
+    agency_name  = models.CharField(max_length=255)
+    agency_slug  = models.SlugField(unique=True)   # {slug}.app.siloq.ai
+    white_label_tier = models.CharField(max_length=50, choices=WHITE_LABEL_TIER_CHOICES)
+    max_sites    = models.IntegerField(default=10)  # 1 seat = 1 client site
 
-    WHITE_LABEL_TIER_CHOICES = [
-        ('PARTIAL', 'Agency - Powered by Siloq'),
-        ('FULL', 'Agency Pro - Full Rebrand'),
-    ]
-    white_label_tier = models.CharField(
-        max_length=50,
-        choices=WHITE_LABEL_TIER_CHOICES,
-    )
-    max_client_seats = models.IntegerField(default=10)
+    # Display Identity (Layer 2) — agency-controlled cosmetics
+    logo_url       = models.URLField(blank=True, null=True, max_length=2048)
+    logo_small_url = models.URLField(blank=True, null=True, max_length=2048)
+    favicon_url    = models.URLField(blank=True, null=True, max_length=2048)
+    color_primary   = models.CharField(max_length=7, default='#1A1A2E')
+    color_secondary = models.CharField(max_length=7, default='#E8D48B')
+    color_accent    = models.CharField(max_length=7, default='#4ADE80')
+    support_email  = models.EmailField(blank=True, null=True)
+    support_url    = models.URLField(blank=True, null=True)
 
-    # Branding
-    logo_url = models.URLField(blank=True, max_length=2048)
-    logo_small_url = models.URLField(blank=True, max_length=2048)
-    favicon_url = models.URLField(blank=True, max_length=2048)
-    color_primary = models.CharField(max_length=7, default='#E8D48B')
-    color_secondary = models.CharField(max_length=7, default='#C8A951')
-    color_accent = models.CharField(max_length=7, default='#3B82F6')
-    color_background = models.CharField(max_length=7, default='#1A1A2E')
-    color_text = models.CharField(max_length=7, default='#F8F8F8')
-
-    # Identity
-    support_email = models.EmailField(blank=True)
-    support_url = models.URLField(blank=True)
-    tagline = models.CharField(max_length=255, blank=True)
-
-    # Domain (Empire only)
-    custom_domain = models.CharField(max_length=255, blank=True)
-    domain_verified = models.BooleanField(default=False)
+    # Domain Identity (Agency Pro only)
+    custom_domain      = models.CharField(max_length=255, blank=True, null=True, unique=True)
+    domain_verified    = models.BooleanField(default=False)
     domain_verified_at = models.DateTimeField(null=True, blank=True)
-
-    # Powered-by attribution
-    show_powered_by = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -52,44 +45,78 @@ class AgencyProfile(models.Model):
     def __str__(self):
         return self.agency_name
 
+    @property
+    def sites_used(self):
+        return self.client_sites.filter(is_active=True).count()
 
-class AgencyClientLink(models.Model):
-    agency = models.ForeignKey(
+    @property
+    def sites_remaining(self):
+        return self.max_sites - self.sites_used
+
+    @property
+    def show_powered_by(self):
+        return self.white_label_tier != 'FULL'
+
+
+class AgencyClientSite(models.Model):
+    """
+    Links an agency to each client site it manages.
+    1 site = 1 client seat. Each site belongs to one agency.
+    """
+    agency      = models.ForeignKey(
         AgencyProfile,
         on_delete=models.CASCADE,
-        related_name='clients',
+        related_name='client_sites',
     )
-    client_user = models.OneToOneField(
-        'accounts.User',
+    site        = models.OneToOneField(
+        'sites.Site',
         on_delete=models.CASCADE,
         related_name='agency_link',
-        null=True,
-        blank=True,
     )
-    sites = models.ManyToManyField('sites.Site', blank=True)
-    invite_email = models.EmailField(blank=True)
-    invite_token = models.CharField(max_length=64, blank=True, unique=True, null=True)
-    invited_at = models.DateTimeField(auto_now_add=True)
-    accepted_at = models.DateTimeField(null=True, blank=True)
+    client_user = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='agency_sites',
+    )  # client who can view this site (optional)
+    added_at  = models.DateTimeField(auto_now_add=True)
     is_active = models.BooleanField(default=True)
 
     class Meta:
-        db_table = 'agency_client_links'
+        db_table = 'agency_client_sites'
+        constraints = [
+            models.UniqueConstraint(fields=['agency', 'site'], name='unique_agency_site'),
+        ]
 
     def __str__(self):
-        return f"{self.agency} -> {self.client_user or self.invite_email}"
+        return f"{self.agency} → {self.site}"
 
+
+# ── Permission scoping utility ─────────────────────────────────────────────────
 
 def get_visible_sites(user):
     """
-    Returns the correct Site queryset for any user type.
-    Agency sees all client sites. Client sees assigned sites. Standard sees own.
+    Returns the correct Site queryset based on user type.
+    Agency owner → all their active client sites.
+    Client user  → only sites assigned to them.
+    Standard     → their own sites.
     """
     from sites.models import Site
+
     if hasattr(user, 'agency_profile'):
         return Site.objects.filter(
-            agencyclientlink__agency=user.agency_profile
-        ).distinct()
-    if hasattr(user, 'agency_link'):
-        return user.agency_link.sites.all()
-    return Site.objects.filter(user=user)
+            agency_link__agency=user.agency_profile,
+            agency_link__is_active=True,
+        )
+
+    if user.agency_sites.exists():
+        return Site.objects.filter(
+            agency_link__client_user=user,
+            agency_link__is_active=True,
+        )
+
+    return user.sites.all()
+
+
+def can_add_site(agency_profile):
+    return agency_profile.sites_used < agency_profile.max_sites

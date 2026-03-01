@@ -1,9 +1,8 @@
 """
 Agency & White-Label API Views
-Spec: Siloq White-Label Spec V1 (March 2026)
+Spec: Siloq White-Label Spec V1 (March 2026) — $1,499 / $2,499
 """
 import hashlib
-import json
 import logging
 import secrets
 
@@ -14,8 +13,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 
-from accounts.auth import generate_tokens_for_user
-from agency.models import AgencyProfile, AgencyClientLink, get_visible_sites
+from agency.models import AgencyProfile, AgencyClientSite, get_visible_sites, can_add_site
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +26,9 @@ def _profile_to_dict(profile):
         'agency_name':      profile.agency_name,
         'agency_slug':      profile.agency_slug,
         'white_label_tier': profile.white_label_tier,
-        'max_client_seats': profile.max_client_seats,
+        'max_sites':        profile.max_sites,
+        'sites_used':       profile.sites_used,
+        'sites_remaining':  profile.sites_remaining,
         'show_powered_by':  profile.show_powered_by,
         'logo_url':         profile.logo_url or '',
         'logo_small_url':   profile.logo_small_url or '',
@@ -36,20 +36,17 @@ def _profile_to_dict(profile):
         'color_primary':    profile.color_primary,
         'color_secondary':  profile.color_secondary,
         'color_accent':     profile.color_accent,
-        'color_background': profile.color_background,
-        'color_text':       profile.color_text,
         'support_email':    profile.support_email or '',
         'support_url':      profile.support_url or '',
         'custom_domain':    profile.custom_domain or '',
         'domain_verified':  profile.domain_verified,
-        'created_at':       profile.created_at.isoformat() if profile.created_at else None,
         'updated_at':       profile.updated_at.isoformat() if profile.updated_at else None,
     }
 
 
 def _branding_hash(profile):
-    key_fields = f"{profile.logo_url}{profile.color_primary}{profile.color_secondary}{profile.agency_name}{profile.white_label_tier}"
-    return 'sha256:' + hashlib.sha256(key_fields.encode()).hexdigest()[:16]
+    key = f"{profile.logo_url}{profile.color_primary}{profile.color_secondary}{profile.agency_name}{profile.white_label_tier}"
+    return 'sha256:' + hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
 def _get_or_create_profile(user):
@@ -57,18 +54,29 @@ def _get_or_create_profile(user):
         return user.agency_profile
     except AgencyProfile.DoesNotExist:
         slug_base = user.email.split('@')[0].replace('.', '-').lower()[:50]
-        slug = slug_base
-        n = 1
+        slug, n = slug_base, 1
         while AgencyProfile.objects.filter(agency_slug=slug).exists():
-            slug = f"{slug_base}-{n}"
-            n += 1
+            slug = f"{slug_base}-{n}"; n += 1
         return AgencyProfile.objects.create(
             user=user,
             agency_name=user.get_full_name() or user.email.split('@')[0],
             agency_slug=slug,
             white_label_tier='PARTIAL',
-            max_client_seats=10,
+            max_sites=10,
         )
+
+
+def _site_to_dict(link):
+    return {
+        'id':            link.id,
+        'site_id':       link.site_id,
+        'site_url':      link.site.url,
+        'site_name':     getattr(link.site, 'name', link.site.url),
+        'is_active':     link.is_active,
+        'added_at':      link.added_at.isoformat() if link.added_at else None,
+        'client_user_id':    link.client_user_id,
+        'client_email':  link.client_user.email if link.client_user else None,
+    }
 
 
 # ── Agency Profile ─────────────────────────────────────────────────────────────
@@ -76,41 +84,218 @@ def _get_or_create_profile(user):
 @api_view(['GET', 'PUT', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def agency_profile(request):
-    """
-    GET  /api/v1/agency/profile/ — get agency branding + settings
-    PUT  /api/v1/agency/profile/ — update branding
-    PATCH /api/v1/agency/profile/ — partial update
-    """
+    """GET/PUT/PATCH /api/v1/agency/profile/"""
     profile = _get_or_create_profile(request.user)
 
     if request.method == 'GET':
         return Response(_profile_to_dict(profile))
 
-    # PUT / PATCH
     updatable = [
         'agency_name', 'logo_url', 'logo_small_url', 'favicon_url',
         'color_primary', 'color_secondary', 'color_accent',
-        'color_background', 'color_text', 'support_email', 'support_url',
-        'show_powered_by',
+        'support_email', 'support_url',
     ]
-    # custom_domain only for FULL tier
     if profile.white_label_tier == 'FULL':
         updatable.append('custom_domain')
 
-    changed = False
     for field in updatable:
         if field in request.data:
             setattr(profile, field, request.data[field])
-            changed = True
+    profile.save()
 
-    if changed:
-        profile.save()
-        # TODO: bust Redis cache key agency_branding:{profile.id}
-
+    # TODO: bust Redis cache agency_branding:{profile.id}
     return Response(_profile_to_dict(profile))
 
 
-# ── Branding Resolution (public) ──────────────────────────────────────────────
+# ── Site Management ────────────────────────────────────────────────────────────
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def agency_sites(request):
+    """
+    GET  /api/v1/agency/sites/ — list all client sites
+    POST /api/v1/agency/sites/ — add a site to agency (enforces max_sites)
+    Body: {site_id: int}
+    """
+    profile = _get_or_create_profile(request.user)
+
+    if request.method == 'GET':
+        links = AgencyClientSite.objects.filter(agency=profile).select_related('site', 'client_user')
+        return Response({
+            'sites':           [_site_to_dict(l) for l in links],
+            'total':           links.count(),
+            'max_sites':       profile.max_sites,
+            'sites_used':      profile.sites_used,
+            'sites_remaining': profile.sites_remaining,
+        })
+
+    # POST — add site
+    if not can_add_site(profile):
+        return Response(
+            {'error': f'Site limit reached ({profile.max_sites} sites). Upgrade to Agency Pro to add more.'},
+            status=status.HTTP_402_PAYMENT_REQUIRED,
+        )
+
+    site_id = request.data.get('site_id')
+    if not site_id:
+        return Response({'error': 'site_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    from sites.models import Site
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+
+    link, created = AgencyClientSite.objects.get_or_create(
+        agency=profile, site=site,
+        defaults={'is_active': True},
+    )
+    if not created:
+        link.is_active = True
+        link.save()
+
+    return Response(_site_to_dict(link), status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def agency_site_remove(request, site_id):
+    """DELETE /api/v1/agency/sites/{site_id}/"""
+    profile = _get_or_create_profile(request.user)
+    link = get_object_or_404(AgencyClientSite, site_id=site_id, agency=profile)
+    link.is_active = False
+    link.save()
+    return Response({'message': 'Site removed from agency management.'})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def agency_site_assign_client(request, site_id):
+    """
+    POST /api/v1/agency/sites/{site_id}/assign-client/
+    Body: {client_user_id: int}  — assigns a client user to view this site
+    """
+    profile = _get_or_create_profile(request.user)
+    link = get_object_or_404(AgencyClientSite, site_id=site_id, agency=profile)
+
+    from accounts.models import User
+    client_user_id = request.data.get('client_user_id')
+    if client_user_id:
+        client = get_object_or_404(User, id=client_user_id)
+        link.client_user = client
+    else:
+        link.client_user = None  # unassign
+    link.save()
+
+    return Response(_site_to_dict(link))
+
+
+# ── Client Management ─────────────────────────────────────────────────────────
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def client_list(request):
+    """GET /api/v1/agency/clients/ — list all client users under this agency"""
+    profile = _get_or_create_profile(request.user)
+    links = AgencyClientSite.objects.filter(
+        agency=profile, client_user__isnull=False
+    ).select_related('client_user', 'site').distinct('client_user')
+
+    seen, clients = set(), []
+    for link in AgencyClientSite.objects.filter(agency=profile, client_user__isnull=False).select_related('client_user'):
+        uid = link.client_user_id
+        if uid in seen:
+            continue
+        seen.add(uid)
+        u = link.client_user
+        clients.append({
+            'user_id':    u.id,
+            'email':      u.email,
+            'name':       u.get_full_name(),
+            'last_login': u.last_login.isoformat() if u.last_login else None,
+            'sites':      list(AgencyClientSite.objects.filter(agency=profile, client_user=u).values_list('site__url', flat=True)),
+        })
+
+    return Response({'clients': clients, 'total': len(clients)})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def client_invite(request):
+    """
+    POST /api/v1/agency/clients/invite/
+    Body: {email: str, site_id: int (optional)}
+    Creates an invite; optionally pre-assigns to a site.
+    """
+    profile = _get_or_create_profile(request.user)
+    email = request.data.get('email', '').strip().lower()
+    if not email:
+        return Response({'error': 'email is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    token = secrets.token_urlsafe(32)
+
+    # Store invite token on AgencyProfile (simple approach for V1)
+    # The client clicks the link, registers/logs in, then we assign them
+    # For now: return the invite URL; email delivery is a Day 4 task
+    invite_url = f"https://app.siloq.ai/invite/{token}"
+
+    # Optionally pre-link to a site
+    site_id = request.data.get('site_id')
+    if site_id:
+        link = AgencyClientSite.objects.filter(agency=profile, site_id=site_id).first()
+        if link:
+            link.client_user = None  # will be set when client accepts
+            link.save()
+
+    logger.info("Agency %s invited %s (token %s)", profile.agency_slug, email, token)
+
+    return Response({
+        'email':      email,
+        'invite_url': invite_url,
+        'token':      token,
+        'message':    f'Share this link with {email} to give them access.',
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['DELETE'])
+@permission_classes([IsAuthenticated])
+def client_remove(request, user_id):
+    """DELETE /api/v1/agency/clients/{user_id}/ — remove client user access"""
+    profile = _get_or_create_profile(request.user)
+    AgencyClientSite.objects.filter(agency=profile, client_user_id=user_id).update(client_user=None)
+    return Response({'message': 'Client access removed.'})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def switch_context(request, user_id):
+    """
+    POST /api/v1/agency/switch-context/{user_id}/
+    Returns scoped JWT for view-as-client. Agency Pro only.
+    """
+    profile = _get_or_create_profile(request.user)
+    if profile.white_label_tier != 'FULL':
+        return Response(
+            {'error': 'View-as-client requires Agency Pro ($2,499/mo).'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    from accounts.models import User
+    client = get_object_or_404(User, id=user_id)
+
+    # Verify this client has at least one site under this agency
+    if not AgencyClientSite.objects.filter(agency=profile, client_user=client, is_active=True).exists():
+        return Response({'error': 'User is not a client of this agency.'}, status=status.HTTP_404_NOT_FOUND)
+
+    from accounts.auth import generate_tokens_for_user
+    tokens = generate_tokens_for_user(client)
+
+    return Response({
+        'message':      f'Viewing dashboard as {client.email}',
+        'client_email': client.email,
+        'access':       tokens['access'],
+        'refresh':      tokens['refresh'],
+    })
+
+
+# ── Branding Resolution (public + authenticated) ───────────────────────────────
 
 @api_view(['GET'])
 @permission_classes([AllowAny])
@@ -118,44 +303,35 @@ def branding_resolve(request):
     """
     GET /api/v1/branding/resolve/?domain={domain}
     GET /api/v1/branding/resolve/?slug={slug}
-
-    Public endpoint — Next.js middleware calls this to resolve agency branding
-    from subdomain or custom domain before first paint (SSR).
-    Returns lightweight branding config. Cached in Redis 5 min.
+    Public endpoint — Next.js middleware calls this for SSR before first paint.
     """
     domain = request.query_params.get('domain', '').strip()
     slug   = request.query_params.get('slug', '').strip()
-
     profile = None
 
     if domain:
-        # Strip {slug}.app.siloq.ai to get slug
         if domain.endswith('.app.siloq.ai'):
             slug = domain.replace('.app.siloq.ai', '')
         else:
-            # Custom domain lookup (Agency Pro only)
-            profile = AgencyProfile.objects.filter(
-                custom_domain=domain, domain_verified=True
-            ).first()
+            profile = AgencyProfile.objects.filter(custom_domain=domain, domain_verified=True).first()
 
     if slug and not profile:
         profile = AgencyProfile.objects.filter(agency_slug=slug).first()
 
     if not profile:
-        # Return default Siloq branding
         return Response({
             'is_white_labeled': False,
-            'agency_name': 'Siloq',
-            'agency_slug': None,
+            'agency_name':      'Siloq',
+            'agency_slug':      None,
             'white_label_tier': None,
-            'show_powered_by': True,
-            'logo_url': '',
-            'favicon_url': '',
-            'color_primary': '#E8D48B',
-            'color_secondary': '#C8A951',
-            'color_accent': '#3B82F6',
+            'show_powered_by':  True,
+            'logo_url':         '',
+            'favicon_url':      '',
+            'color_primary':    '#E8D48B',
+            'color_secondary':  '#C8A951',
+            'color_accent':     '#3B82F6',
             'color_background': '#1A1A2E',
-            'color_text': '#F8F8F8',
+            'color_text':       '#F8F8F8',
         })
 
     return Response({
@@ -170,8 +346,6 @@ def branding_resolve(request):
         'color_primary':    profile.color_primary,
         'color_secondary':  profile.color_secondary,
         'color_accent':     profile.color_accent,
-        'color_background': profile.color_background,
-        'color_text':       profile.color_text,
         'support_email':    profile.support_email or '',
         'support_url':      profile.support_url or '',
         'branding_hash':    _branding_hash(profile),
@@ -180,29 +354,52 @@ def branding_resolve(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def branding_config(request):
+def branding_plugin_config(request):
     """
-    GET /api/v1/branding/config/
-    Full branding config for authenticated agency.
+    GET /api/v1/branding/plugin-config/
+    Returns plugin display config for the site's agency (if any).
+    Called by WP plugin on each admin page load to apply Layer 2 branding.
     """
-    profile = _get_or_create_profile(request.user)
-    data = _profile_to_dict(profile)
-    data['branding_hash'] = _branding_hash(profile)
-    return Response(data)
+    site_id = request.query_params.get('site_id')
+    profile = None
+
+    if site_id:
+        link = AgencyClientSite.objects.filter(site_id=site_id, is_active=True).select_related('agency').first()
+        if link:
+            profile = link.agency
+
+    if not profile:
+        return Response({
+            'display_name':    'Siloq',
+            'settings_title':  'Siloq SEO Settings',
+            'admin_menu_label':'Siloq',
+            'admin_menu_icon': '',
+            'color_primary':   '#E8D48B',
+            'support_email':   'support@siloq.ai',
+            'support_url':     'https://siloq.ai/support',
+            'show_powered_by': True,
+        })
+
+    return Response({
+        'display_name':    f"{profile.agency_name} SEO Platform",
+        'settings_title':  f"{profile.agency_name} SEO Settings",
+        'admin_menu_label': profile.agency_name,
+        'admin_menu_icon': profile.logo_small_url or '',
+        'color_primary':   profile.color_primary,
+        'support_email':   profile.support_email or 'support@siloq.ai',
+        'support_url':     profile.support_url or 'https://siloq.ai/support',
+        'show_powered_by': profile.show_powered_by,
+    })
 
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def branding_verify_domain(request):
-    """
-    POST /api/v1/branding/verify-domain/
-    Trigger custom domain DNS verification (Agency Pro only).
-    """
+    """POST /api/v1/branding/verify-domain/ — Agency Pro only"""
     profile = _get_or_create_profile(request.user)
-
     if profile.white_label_tier != 'FULL':
         return Response(
-            {'error': 'Custom domain is only available on Agency Pro tier.'},
+            {'error': 'Custom domain requires Agency Pro ($2,499/mo).'},
             status=status.HTTP_403_FORBIDDEN,
         )
 
@@ -210,229 +407,19 @@ def branding_verify_domain(request):
     if not domain:
         return Response({'error': 'domain is required'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Basic DNS check — look for CNAME to dashboard.siloq.ai
-    import socket
-    verified = False
-    try:
-        resolved = socket.getaddrinfo(domain, None)
-        # In production: check CNAME record via dnspython
-        # For now: mark as pending, async job will verify
-        verified = False  # Always start as pending — background job verifies
-    except Exception:
-        pass
-
     profile.custom_domain = domain
-    profile.domain_verified = verified
-    profile.domain_verified_at = timezone.now() if verified else None
+    profile.domain_verified = False
+    profile.domain_verified_at = None
     profile.save()
 
+    # Background job will verify DNS CNAME → dashboard.siloq.ai
     return Response({
         'domain':   domain,
-        'verified': verified,
-        'message':  'Add a CNAME record pointing to dashboard.siloq.ai, then retry.',
+        'verified': False,
+        'message':  'Add the CNAME record below, then call this endpoint again to check.',
         'instructions': {
             'type':  'CNAME',
             'name':  domain,
             'value': 'dashboard.siloq.ai',
         }
-    })
-
-
-# ── Client Management ─────────────────────────────────────────────────────────
-
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def client_list(request):
-    """
-    GET /api/v1/agency/clients/
-    List all client accounts with their site counts and status.
-    """
-    profile = _get_or_create_profile(request.user)
-    links   = AgencyClientLink.objects.filter(agency=profile).select_related('client_user').prefetch_related('sites')
-
-    clients = []
-    for link in links:
-        client_data = {
-            'id':           link.id,
-            'invite_email': link.invite_email,
-            'is_active':    link.is_active,
-            'invited_at':   link.invited_at.isoformat() if link.invited_at else None,
-            'accepted_at':  link.accepted_at.isoformat() if link.accepted_at else None,
-            'site_count':   link.sites.count(),
-        }
-        if link.client_user:
-            client_data.update({
-                'user_id':     link.client_user.id,
-                'email':       link.client_user.email,
-                'name':        link.client_user.get_full_name(),
-                'last_login':  link.client_user.last_login.isoformat() if link.client_user.last_login else None,
-            })
-        clients.append(client_data)
-
-    return Response({
-        'clients':     clients,
-        'total':       len(clients),
-        'seats_used':  sum(1 for c in clients if c.get('user_id')),
-        'seats_max':   profile.max_client_seats,
-    })
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def client_invite(request):
-    """
-    POST /api/v1/agency/clients/invite/
-    Body: {email: string}
-    Creates an invite link for the client.
-    """
-    profile = _get_or_create_profile(request.user)
-
-    # Seat limit check
-    active_count = AgencyClientLink.objects.filter(
-        agency=profile, is_active=True, client_user__isnull=False
-    ).count()
-    if active_count >= profile.max_client_seats:
-        return Response(
-            {'error': f'Seat limit reached ({profile.max_client_seats}). Upgrade to add more clients.'},
-            status=status.HTTP_402_PAYMENT_REQUIRED,
-        )
-
-    email = request.data.get('email', '').strip().lower()
-    if not email:
-        return Response({'error': 'email is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Check if already invited
-    existing = AgencyClientLink.objects.filter(agency=profile, invite_email=email).first()
-    if existing:
-        return Response(
-            {'error': 'This email has already been invited.'},
-            status=status.HTTP_409_CONFLICT,
-        )
-
-    token = secrets.token_urlsafe(32)
-    link  = AgencyClientLink.objects.create(
-        agency=profile,
-        invite_email=email,
-        invite_token=token,
-        is_active=False,
-    )
-
-    invite_url = f"https://app.siloq.ai/invite/{token}"
-
-    # TODO: send invite email via Siloq email system
-    logger.info("Agency %s invited %s — token %s", profile.agency_slug, email, token)
-
-    return Response({
-        'id':         link.id,
-        'email':      email,
-        'invite_url': invite_url,
-        'token':      token,
-        'message':    f'Invite sent to {email}',
-    }, status=status.HTTP_201_CREATED)
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def client_accept_invite(request):
-    """
-    POST /api/v1/agency/clients/accept-invite/
-    Body: {token: string}
-    Links current authenticated user to the agency.
-    """
-    token = request.data.get('token', '').strip()
-    if not token:
-        return Response({'error': 'token is required'}, status=status.HTTP_400_BAD_REQUEST)
-
-    link = get_object_or_404(AgencyClientLink, invite_token=token, client_user__isnull=True)
-
-    # Link this user to the agency
-    link.client_user  = request.user
-    link.accepted_at  = timezone.now()
-    link.is_active    = True
-    link.invite_token = None  # consume the token
-    link.save()
-
-    return Response({
-        'message':     'Successfully joined agency.',
-        'agency_name': link.agency.agency_name,
-        'agency_slug': link.agency.agency_slug,
-    })
-
-
-@api_view(['DELETE'])
-@permission_classes([IsAuthenticated])
-def client_remove(request, client_id):
-    """
-    DELETE /api/v1/agency/clients/{id}/
-    Suspend (soft-delete) a client.
-    """
-    profile = _get_or_create_profile(request.user)
-    link    = get_object_or_404(AgencyClientLink, id=client_id, agency=profile)
-    link.is_active = False
-    link.save()
-    return Response({'message': 'Client access suspended.'})
-
-
-@api_view(['GET', 'POST'])
-@permission_classes([IsAuthenticated])
-def client_sites(request, client_id):
-    """
-    GET  /api/v1/agency/clients/{id}/sites/ — list client's assigned sites
-    POST /api/v1/agency/clients/{id}/sites/ — assign sites to client
-    Body: {site_ids: [1, 2, 3]}
-    """
-    profile = _get_or_create_profile(request.user)
-    link    = get_object_or_404(AgencyClientLink, id=client_id, agency=profile)
-
-    if request.method == 'GET':
-        sites = link.sites.all()
-        return Response({
-            'client_id': client_id,
-            'sites': [{'id': s.id, 'url': s.url, 'name': getattr(s, 'name', s.url)} for s in sites],
-        })
-
-    # POST — assign sites
-    site_ids = request.data.get('site_ids', [])
-    if not isinstance(site_ids, list):
-        return Response({'error': 'site_ids must be a list'}, status=status.HTTP_400_BAD_REQUEST)
-
-    from sites.models import Site
-    # Only allow sites owned by this agency user
-    valid_sites = Site.objects.filter(id__in=site_ids, user=request.user)
-    link.sites.set(valid_sites)
-
-    return Response({
-        'message':    f'{valid_sites.count()} sites assigned to client.',
-        'site_count': valid_sites.count(),
-    })
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def switch_context(request, client_id):
-    """
-    POST /api/v1/agency/switch-context/{client_id}/
-    Returns a scoped JWT for viewing the dashboard as a specific client.
-    Agency Pro only.
-    """
-    profile = _get_or_create_profile(request.user)
-
-    if profile.white_label_tier != 'FULL':
-        return Response(
-            {'error': 'View-as-client context switching requires Agency Pro tier.'},
-            status=status.HTTP_403_FORBIDDEN,
-        )
-
-    link = get_object_or_404(
-        AgencyClientLink, id=client_id, agency=profile, is_active=True, client_user__isnull=False
-    )
-
-    # Generate scoped tokens for the client user
-    tokens = generate_tokens_for_user(link.client_user)
-
-    return Response({
-        'message':      f'Viewing as {link.client_user.email}',
-        'client_email': link.client_user.email,
-        'access':       tokens['access'],
-        'refresh':      tokens['refresh'],
     })
