@@ -458,7 +458,7 @@ Top ranking queries for this page:
 {f"""
 === FAQ QUESTIONS DETECTED ON THIS PAGE ===
 {chr(10).join(f'  - {q}' for q in wp_meta.get('faq_questions', []))}
-(These FAQs are confirmed present on the page — do NOT recommend adding FAQs)
+(These FAQs are confirmed present on the page - do NOT recommend adding FAQs)
 """ if wp_meta.get('faq_questions') else ""}
 Generate GEO, SEO, and CRO scores and specific recommendations based on the ACTUAL content shown above. Every recommendation must reference specific text from this page."""
 
