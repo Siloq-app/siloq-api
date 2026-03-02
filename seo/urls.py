@@ -6,6 +6,7 @@ from rest_framework.routers import DefaultRouter
 from .pages import PageViewSet
 from . import conflict_views
 from . import content_plan_views
+from . import dashboard_views
 
 router = DefaultRouter()
 router.register(r'', PageViewSet, basename='page')
@@ -22,4 +23,6 @@ urlpatterns = [
     path('sites/<uuid:site_id>/pages/<uuid:page_id>/supporting-content/', content_plan_views.supporting_content, name='supporting-content'),
     path('sites/<uuid:site_id>/pages/<uuid:page_id>/add-to-pipeline/', content_plan_views.add_to_pipeline, name='add-to-pipeline'),
     path('sites/<uuid:site_id>/content-pipeline/', content_plan_views.content_pipeline, name='content-pipeline'),
+    # Dashboard Home endpoints (11.2 - 3-column layout)
+    path('sites/<uuid:site_id>/dashboard/', dashboard_views.dashboard_home, name='dashboard-home'),
 ]
