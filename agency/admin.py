@@ -12,7 +12,7 @@ class AgencyProfileAdmin(admin.ModelAdmin):
 
 @admin.register(AgencyClientSite)
 class AgencyClientSiteAdmin(admin.ModelAdmin):
-    list_display = ('agency', 'site', 'status', 'created_at')
-    list_filter = ('status',)
+    list_display = ('agency', 'site', 'is_active', 'added_at')
+    list_filter = ('is_active',)
     search_fields = ('agency__agency_name', 'site__url')
-    readonly_fields = ('created_at',)
+    readonly_fields = ('added_at',)
