@@ -78,16 +78,27 @@ def generate_supporting_content(
         )
         
         result = json.loads(response.choices[0].message.content)
+        layers = result.get('layers', [])
+        # Build full content from layers (geo + seo + cro) for backward compatibility
+        if layers:
+            content = ''.join(
+                block.get('content', '')
+                for block in layers
+                if isinstance(block, dict) and block.get('content')
+            )
+        else:
+            content = result.get('content', '')
         
         return {
             'success': True,
             'title': result.get('title', ''),
-            'content': result.get('content', ''),
+            'content': content,
             'meta_description': result.get('meta_description', ''),
             'suggested_slug': result.get('slug', ''),
             'internal_links': result.get('internal_links', []),
             'headings': result.get('headings', []),
-            'word_count': len(result.get('content', '').split()),
+            'layers': layers,  # each item: {"layer": "geo"|"seo"|"cro", "content": "<html>"}
+            'word_count': len(content.split()),
             'model_used': OPENAI_MODEL,
             'tokens_used': response.usage.total_tokens if response.usage else 0,
         }
@@ -101,19 +112,44 @@ def generate_supporting_content(
 
 
 def _build_system_prompt(business_name: str, business_type: str) -> str:
-    """Build system prompt for content generation."""
-    return f"""You are an expert SEO content writer specializing in the Reverse Silo architecture.
+    """Build system prompt for content generation. Output must include all 3 layers (GEO, SEO, CRO)."""
+    return f"""You are an expert SEO content writer specializing in the Reverse Silo architecture and the Three-Layer content model (GEO, SEO, CRO).
+
 Your job is to write supporting pages that:
 1. Link UP to their target/money page naturally
 2. Are self-contained and extractable by AI engines (GEO-optimized)
 3. Use the business name ("{business_name}") in the first paragraph for entity grounding
 4. Include question-format H2 headings for AI query matching
-5. Lead with a 40-80 word Answer Capsule with specific data
+
+You MUST output content in three distinct layers. Each layer is a separate block with a "layer" field and "content" (HTML) field:
+
+**Layer 1 — GEO (Answer Capsule):**
+- "layer": "geo"
+- "content": A single 40–80 word Answer Capsule in HTML (e.g. one <p>). Dense, specific, data-rich. Written so AI/search can extract it as a direct answer. Must mention "{business_name}" and the page topic. No fluff.
+
+**Layer 2 — SEO (Body):**
+- "layer": "seo"
+- "content": The main body in HTML. Multiple paragraphs, H2s (use question format where possible), internal links (anchor_text + target_url), lists/tables as needed. Self-contained; no "as mentioned above." Optimized for relevance and crawlability.
+
+**Layer 3 — CRO (Conversion section):**
+- "layer": "cro"
+- "content": The closing conversion block in HTML. Clear CTA, next steps, or "what to do next" that directs the reader to the target/money page. One or two short paragraphs plus a prominent CTA (e.g. link or button).
 
 Business: {business_name}
 Business Type: {business_type}
 
-Output JSON with keys: title, slug, content (HTML), meta_description, internal_links (array of {{anchor_text, target_url}}), headings (array of H2 text)."""
+Output valid JSON with these keys:
+- title (string)
+- slug (string)
+- meta_description (string)
+- internal_links (array of {{anchor_text, target_url}})
+- headings (array of H2 text strings)
+- layers (array of exactly 3 objects, each with "layer" and "content"):
+  - {{"layer": "geo", "content": "<p>...</p>"}}
+  - {{"layer": "seo", "content": "<p>...</h2>...</p>..."}}
+  - {{"layer": "cro", "content": "<p>...</p>"}}
+
+Order of layers must be geo, then seo, then cro. The full page content is the concatenation of the three layer contents."""
 
 
 def _build_user_prompt(

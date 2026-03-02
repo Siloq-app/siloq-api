@@ -17,7 +17,7 @@ from sites.models import Site, APIKey
 from seo.models import Page, SEOData
 from seo.serializers import PageSyncSerializer as SEOPageSyncSerializer
 from .models import Scan
-from .serializers import SEODataSyncSerializer
+from .serializers import SEODataSyncSerializer, ScanCreateSerializer, ScanSerializer
 from .permissions import IsAPIKeyAuthenticated, IsJWTOrAPIKeyAuthenticated
 from .authentication import APIKeyAuthentication
 
@@ -42,20 +42,35 @@ def verify_api_key(request):
     Verify API key endpoint for WordPress plugin Test Connection.
     
     POST /api/v1/auth/verify
-    Headers: Authorization: Bearer <api_key>   (api_key must be sk_siloq_...)
+    Headers: Authorization: Bearer <api_key>   (sk_siloq_ or ak_siloq_)
     
     Returns: { "authenticated": true, "valid": true, "site_id": ..., "site_name": "...", "site_url": "..." }
     WordPress plugin expects 200 and body.authenticated === true for success.
     """
-    site = request.auth['site']
+    site = request.auth.get('site')
+    auth_type = request.auth.get('auth_type', 'site_key')
     
-    return Response({
+    response_data = {
         'authenticated': True,
         'valid': True,
-        'site_id': site.id,
-        'site_name': site.name,
-        'site_url': site.url,
-    }, status=status.HTTP_200_OK)
+        'auth_type': auth_type,
+    }
+    
+    if site:
+        response_data.update({
+            'site_id': site.id,
+            'site_name': site.name,
+            'site_url': site.url,
+        })
+    else:
+        response_data.update({
+            'site_id': None,
+            'site_name': None,
+            'site_url': None,
+            'message': 'Account key verified. Site will be auto-created on first sync.',
+        })
+    
+    return Response(response_data, status=status.HTTP_200_OK)
 
 
 @csrf_exempt
@@ -97,7 +112,17 @@ def sync_page(request):
     else:
         wp_post_id = raw_wp_post_id
     data['wp_post_id'] = wp_post_id
-    
+
+    # Ensure all NOT NULL columns that the WP plugin doesn't send have safe defaults.
+    # These columns were added via raw SQL migrations with NOT NULL but no DB default.
+    data.setdefault('page_type_classification', 'supporting')  # VARCHAR NOT NULL, no DB default
+    data.setdefault('page_type_override', False)               # BOOLEAN NOT NULL, no DB default
+    data.setdefault('page_builder', 'unknown')
+    data.setdefault('junk_action', None)
+    data.setdefault('junk_reason', None)                 # Set by WP plugin; default to unknown
+    # faq_questions is not a Page model field — extract before get_or_create
+    _faq_questions = data.pop('faq_questions', [])
+
     # Get or create page
     wp_post_id = data['wp_post_id']
     page, created = Page.objects.get_or_create(
@@ -116,12 +141,37 @@ def sync_page(request):
     if data.get('is_homepage', False):
         Page.objects.filter(site=site, is_homepage=True).exclude(id=page.id).update(is_homepage=False)
     
+    # Auto-classify page (skip if manually overridden)
+    if not page.page_type_override:
+        try:
+            from seo.page_classifier import classify_and_save, _get_business_profile
+            profile = _get_business_profile(site)
+            classify_and_save(page, business_profile=profile)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to classify page {page.id}", exc_info=True)
+
+    # Store faq_questions from plugin into PageAnalysis.wp_meta so analysis can use them
+    if _faq_questions:
+        try:
+            from seo.models import PageAnalysis
+            analysis = PageAnalysis.objects.filter(page=page).order_by('-created_at').first()
+            if analysis:
+                wp_meta = analysis.wp_meta or {}
+                wp_meta['faq_questions'] = _faq_questions
+                analysis.wp_meta = wp_meta
+                analysis.save(update_fields=['wp_meta'])
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to store faq_questions for page {page.id}", exc_info=True)
+
     # Update site's last_synced_at
     site.last_synced_at = timezone.now()
     site.save(update_fields=['last_synced_at'])
     
     return Response({
         'page_id': page.id,
+        'site_id': str(site.id),
         'message': 'Page synced successfully',
         'created': created
     }, status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
@@ -336,4 +386,51 @@ def debug_page_count(request):
         'pages_sample': pages_sample
     })
 
-    return Response(report)
+
+@csrf_exempt
+@api_view(['POST'])
+@authentication_classes([APIKeyAuthentication])
+@permission_classes([IsAPIKeyAuthenticated])
+def purge_deleted_pages(request):
+    """
+    POST /api/v1/pages/purge-deleted/
+
+    Called by WP plugin after a full "Sync All Pages" completes.
+    Accepts the list of wp_post_ids currently active in WordPress,
+    then removes any Page records in the DB that are NOT in that list.
+
+    Body: { "active_wp_post_ids": [1, 2, 3, 42, ...] }
+
+    Returns: { "deleted_count": N, "deleted_pages": [{id, title, url}, ...] }
+    """
+    from seo.models import Page
+
+    site = request.auth['site']
+
+    active_ids = request.data.get('active_wp_post_ids', [])
+    if not isinstance(active_ids, list):
+        return Response({'error': 'active_wp_post_ids must be a list'}, status=400)
+
+    if not active_ids:
+        # Safety guard: never purge everything if the list is empty
+        # (could indicate a failed sync sending an empty payload)
+        return Response({
+            'success': False,
+            'error': 'active_wp_post_ids is empty — purge skipped to prevent data loss. Only call this after a successful full sync.',
+        }, status=400)
+
+    # Find pages in our DB that no longer exist in WordPress
+    stale_pages = Page.objects.filter(site=site).exclude(wp_post_id__in=active_ids)
+
+    deleted = list(stale_pages.values('id', 'title', 'url', 'wp_post_id'))
+    deleted_count = stale_pages.count()
+
+    if deleted_count > 0:
+        stale_pages.delete()
+
+    return Response({
+        'success': True,
+        'deleted_count': deleted_count,
+        'deleted_pages': deleted,
+        'remaining_pages': Page.objects.filter(site=site).count(),
+    })

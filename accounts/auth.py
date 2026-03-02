@@ -5,14 +5,19 @@ Handles login, register, logout, and user profile.
 import logging
 import os
 
+from datetime import timedelta
+
 from dotenv import load_dotenv
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
+
+from billing.models import Subscription
 
 from .serializers import LoginSerializer, RegisterSerializer, UserSerializer
 
@@ -66,6 +71,19 @@ def register(request):
     if serializer.is_valid():
         user = serializer.save()
 
+        # Auto-create trial subscription so trial page limits are enforced
+        Subscription.objects.get_or_create(
+            user=user,
+            defaults={
+                'tier': 'free_trial',
+                'status': 'trialing',
+                'trial_started_at': timezone.now(),
+                'trial_ends_at': timezone.now() + timedelta(days=10),
+                'trial_pages_limit': 10,
+                'trial_pages_used': 0,
+            }
+        )
+
         # Generate JWT token so frontend can log in immediately
         refresh = RefreshToken.for_user(user)
         access_token = str(refresh.access_token)
@@ -101,19 +119,54 @@ def logout(request):
         return Response({'error': 'Logout failed'}, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(['GET'])
+@api_view(['GET', 'PATCH'])
 @permission_classes([IsAuthenticated])
 def me(request):
     """
-    Get current authenticated user.
+    Get or update current authenticated user.
     
     GET /api/v1/auth/me
     Headers: Authorization: Bearer <token>
+    Returns: { "user": {...} }
     
+    PATCH /api/v1/auth/me
+    Headers: Authorization: Bearer <token>
+    Body: { "name": "...", "first_name": "...", "last_name": "..." }
     Returns: { "user": {...} }
     """
+    if request.method == 'GET':
+        return Response({
+            'user': UserSerializer(request.user).data
+        })
+    
+    # PATCH - Update user profile
+    user = request.user
+    data = request.data
+    
+    # Handle 'name' field - split into first_name and last_name
+    if 'name' in data:
+        name = data['name'].strip()
+        if ' ' in name:
+            # Split on first space
+            parts = name.split(' ', 1)
+            user.first_name = parts[0]
+            user.last_name = parts[1]
+        else:
+            # No space - treat as first name
+            user.first_name = name
+            user.last_name = ''
+    
+    # Allow direct first_name/last_name updates (override 'name' if provided)
+    if 'first_name' in data:
+        user.first_name = data['first_name'].strip()
+    if 'last_name' in data:
+        user.last_name = data['last_name'].strip()
+    
+    user.save()
+    
     return Response({
-        'user': UserSerializer(request.user).data
+        'user': UserSerializer(user).data,
+        'message': 'Profile updated successfully'
     })
 
 
@@ -253,3 +306,98 @@ def _verify_account_key(api_key):
             'unlimited_sites': True,
         }
     }, status=status.HTTP_200_OK)
+
+
+@csrf_exempt
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def request_password_reset(request):
+    """
+    POST /api/v1/auth/reset-password/
+    Body: { "email": "user@example.com" }
+
+    Sends a password reset link. Always returns 200 to prevent email enumeration.
+    Local dev: set EMAIL_BACKEND=console in .env — email prints to Django terminal.
+    Production: sent via Resend SMTP.
+    """
+    from django.contrib.auth.tokens import default_token_generator
+    from django.utils.encoding import force_bytes
+    from django.utils.http import urlsafe_base64_encode
+    from django.core.mail import send_mail
+    from django.conf import settings
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    email = request.data.get('email', '').strip().lower()
+
+    if not email:
+        return Response({'error': 'Email is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Silently succeed even if email not found (prevent enumeration)
+    try:
+        user = User.objects.get(email=email)
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+        token = default_token_generator.make_token(user)
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'https://app.siloq.ai')
+        reset_url = f"{frontend_url}/reset-password?uid={uid}&token={token}"
+
+        send_mail(
+            subject='Reset your Siloq password',
+            message=(
+                f"Hi {user.email},\n\n"
+                f"Click the link below to reset your password. This link expires in 24 hours.\n\n"
+                f"{reset_url}\n\n"
+                f"If you didn't request this, you can ignore this email.\n\n"
+                f"— The Siloq Team"
+            ),
+            from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@siloq.ai'),
+            recipient_list=[user.email],
+            fail_silently=True,
+        )
+    except User.DoesNotExist:
+        pass  # Don't reveal whether the email exists
+
+    return Response({
+        'message': 'If that email is registered, a reset link has been sent.'
+    }, status=status.HTTP_200_OK)
+
+
+@csrf_exempt
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def confirm_password_reset(request):
+    """
+    POST /api/v1/auth/reset-password/confirm/
+    Body: { "uid": "...", "token": "...", "new_password": "..." }
+
+    Validates the reset token and sets the new password.
+    """
+    from django.contrib.auth.tokens import default_token_generator
+    from django.utils.encoding import force_str
+    from django.utils.http import urlsafe_base64_decode
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    uid = request.data.get('uid', '')
+    token = request.data.get('token', '')
+    new_password = request.data.get('new_password', '')
+
+    if not uid or not token or not new_password:
+        return Response({'error': 'uid, token, and new_password are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if len(new_password) < 8:
+        return Response({'error': 'Password must be at least 8 characters.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        user_pk = force_str(urlsafe_base64_decode(uid))
+        user = User.objects.get(pk=user_pk)
+    except (User.DoesNotExist, ValueError, TypeError, OverflowError):
+        return Response({'error': 'Invalid reset link.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not default_token_generator.check_token(user, token):
+        return Response({'error': 'Reset link is invalid or has expired.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.set_password(new_password)
+    user.save()
+
+    return Response({'message': 'Password reset successfully. You can now log in.'}, status=status.HTTP_200_OK)

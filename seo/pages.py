@@ -2,6 +2,7 @@
 Page management views.
 Handles listing and retrieving pages with SEO data.
 """
+import logging
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.pagination import PageNumberPagination
@@ -10,6 +11,8 @@ from rest_framework.response import Response
 from .models import Page
 from .serializers import PageSerializer, PageListSerializer
 from sites.models import Site
+
+logger = logging.getLogger(__name__)
 
 
 class LargeResultsSetPagination(PageNumberPagination):
@@ -52,6 +55,65 @@ class PageViewSet(viewsets.ReadOnlyModelViewSet):
         if self.action == 'list':
             return PageListSerializer
         return PageSerializer
+
+    def list(self, request, *args, **kwargs):
+        """Override list to enrich pages with GSC metrics (clicks, impressions, position)."""
+        response = super().list(request, *args, **kwargs)
+
+        # Determine site from query param
+        site_id = request.query_params.get('site_id')
+        if not site_id:
+            return response
+
+        try:
+            site = Site.objects.get(id=site_id, user=request.user)
+        except Site.DoesNotExist:
+            return response
+
+        # Check if GSC is connected
+        if not getattr(site, 'gsc_refresh_token', None):
+            return response
+
+        # Fetch GSC page-level data
+        try:
+            from integrations.gsc import refresh_access_token, fetch_search_analytics
+            tokens = refresh_access_token(site.gsc_refresh_token)
+            access_token = tokens.get('access_token', '')
+            if not access_token or not site.gsc_site_url:
+                return response
+
+            rows = fetch_search_analytics(
+                access_token, site.gsc_site_url,
+                dimensions=['page'], row_limit=5000,
+            )
+
+            # Build lookup maps with URL normalization
+            gsc_data = {}  # normalized_url -> {clicks, impressions, position}
+            for row in rows:
+                page_url = row.get('keys', [''])[0] if row.get('keys') else row.get('page', '')
+                normalized = page_url.rstrip('/')
+                if normalized not in gsc_data:
+                    gsc_data[normalized] = {'clicks': 0, 'impressions': 0, 'position': None}
+                gsc_data[normalized]['clicks'] += row.get('clicks', 0)
+                gsc_data[normalized]['impressions'] += row.get('impressions', 0)
+                pos = row.get('position', 0)
+                if gsc_data[normalized]['position'] is None or pos < gsc_data[normalized]['position']:
+                    gsc_data[normalized]['position'] = round(pos, 1)
+
+            # Enrich each page in the response
+            pages_list = response.data.get('results', response.data) if isinstance(response.data, dict) else response.data
+            if isinstance(pages_list, list):
+                for page_data in pages_list:
+                    url = (page_data.get('url') or '').rstrip('/')
+                    metrics = gsc_data.get(url, {})
+                    page_data['gsc_clicks'] = metrics.get('clicks', 0)
+                    page_data['gsc_impressions'] = metrics.get('impressions', 0)
+                    page_data['gsc_position'] = metrics.get('position', None)
+
+        except Exception as e:
+            logger.warning(f"Failed to enrich pages with GSC data for site {site_id}: {e}")
+
+        return response
 
     @action(detail=True, methods=['post'])
     def toggle_money_page(self, request, pk=None):
