@@ -268,8 +268,8 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
 
             # FAQ extraction — static HTML patterns (Elementor accordion titles are NOT JS-rendered)
             _faq_qs = []
-            # 1. Elementor accordion/toggle: <a class="elementor-accordion-title">Q: ...</a>
-            for _q in re.findall(r'<a[^>]+elementor-accordion-title[^>]*>([^<]{5,})</a>', html, re.IGNORECASE):
+            # 1. Elementor accordion/toggle widgets
+            for _q in re.findall(r'<a[^>]+elementor-(?:accordion|toggle)-title[^>]*>([^<]{5,})</a>', html, re.IGNORECASE):
                 _clean = _q.strip()
                 if _clean and len(_clean) > 5:
                     _faq_qs.append(_clean)
