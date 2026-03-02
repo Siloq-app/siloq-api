@@ -204,8 +204,15 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
 
         # Fallback: if meta_description still empty, use yoast_description synced from WP plugin.
         # This field is populated by AIOSEO, Yoast, or RankMath via sync_page() in the WP plugin.
-        if not meta['meta_description']:
-            meta['meta_description'] = page_qs.yoast_description or ''
+        # yoast_description from plugin sync = live AIOSEO/Yoast/RankMath value.
+        # Always prefer it over stale SEOData — plugin reads fresh from DB on every sync.
+        if page_qs.yoast_description:
+            meta['meta_description'] = page_qs.yoast_description
+
+        # Also pull faq_questions from wp_meta if plugin synced them (Elementor pages)
+        wp_meta_data = getattr(page_qs, 'wp_meta', {}) or {}
+        if wp_meta_data.get('faq_questions'):
+            meta['faq_questions'] = wp_meta_data['faq_questions']
 
         if meta['title']:
             return meta
@@ -246,14 +253,38 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
         if resp.status_code == 200:
             html = resp.text
 
-            # Meta description — universal fallback for any SEO plugin
-            if not meta['meta_description']:
-                m = re.search(
-                    r'<meta\s+name=["\']+description["\']+\s+content=["\']+([^"\'>]*)["\']+',
-                    html, re.IGNORECASE
-                )
-                if m:
-                    meta['meta_description'] = m.group(1).strip()
+            # Meta description — robust extraction, always use live HTML value (DB may be stale)
+            # Handles AIOSEO, Yoast, RankMath, and native WP meta tags
+            for _pattern in [
+                r'<meta\s+name=["\']description["\']\s+content=["\']([^"\'>]{10,})["\']',
+                r'<meta\s+content=["\']([^"\'>]{10,})["\']\s+name=["\']description["\']',
+            ]:
+                _m = re.search(_pattern, html, re.IGNORECASE)
+                if _m:
+                    _candidate = _m.group(1).strip()
+                    if len(_candidate) > 10:
+                        meta['meta_description'] = _candidate
+                        break
+
+            # FAQ extraction — catches questions rendered in static HTML
+            # (covers non-JS accordions; Elementor JS-rendered FAQs handled via plugin sync)
+            _faq_qs = []
+            # Headings that end with ? are FAQ questions
+            for _h_text in re.findall(r'<h[2-5][^>]*>([^<]*\?[^<]*)</h[2-5]>', html, re.IGNORECASE):
+                _clean = re.sub(r'<[^>]+>', '', _h_text).strip()
+                if _clean and len(_clean) > 10:
+                    _faq_qs.append(_clean)
+            # dt/summary/button patterns for accordion widgets
+            for _pattern in [
+                r'<(?:dt|summary)[^>]*>\s*([^<]{15,}\?[^<]*?)\s*</(?:dt|summary)>',
+                r'<button[^>]*class=[^>]*(?:faq|accordion|toggle)[^>]*>\s*([^<]{15,})\s*</button>',
+            ]:
+                for _q in re.findall(_pattern, html, re.IGNORECASE | re.DOTALL):
+                    _clean = re.sub(r'<[^>]+>', '', _q).strip()
+                    if _clean and len(_clean) > 10:
+                        _faq_qs.append(_clean)
+            if _faq_qs:
+                meta['faq_questions'] = list(dict.fromkeys(_faq_qs))[:12]  # dedupe, cap at 12
 
             # Full H-tag hierarchy — extract H1–H4 in document order
             htag_re = re.compile(r'<h([1-4])[^>]*>(.*?)</h\1>', re.IGNORECASE | re.DOTALL)
@@ -350,9 +381,43 @@ CONTENT SPECIFICITY REQUIREMENT: Any supporting content or blog topic recommenda
         except Exception:
             pass
 
+    # ── Homepage detection ──────────────────────────────────────────────
+    from urllib.parse import urlparse as _urlparse
+    _parsed_path = _urlparse(absolute_url).path.rstrip('/')
+    _is_homepage = _parsed_path == '' or _parsed_path == '/'
+
+    _homepage_context = ""
+    if _is_homepage:
+        _homepage_context = """
+⚠️  HOMEPAGE DOCTRINE — CRITICAL RULES FOR THIS PAGE:
+This is the site's HOMEPAGE. It is a BRAND PAGE, not a keyword-targeting page.
+
+HOMEPAGE SEO RULES (follow these exactly):
+1. Title tag: Must be brand-first format: "[Business Name] | [Short Brand Tagline or City]". Do NOT optimize for a primary service keyword — that causes cannibalization with service pages.
+2. Meta description: Brand overview only. Describe who the business is and what they do broadly. Do NOT keyword-stuff service terms.
+3. H1: Should be a brand statement or brand tagline, not a keyword phrase.
+4. NO keyword targeting recommendations on the homepage. The homepage should NOT compete with service pages.
+5. Internal linking: ALWAYS recommend adding internal links to key service/money pages. This is the homepage's primary SEO job — pass authority to the pages that DO rank for keywords.
+6. Schema: LocalBusiness/Organization — confirm it's present and complete.
+7. Content body: Focus on brand clarity, trust signals, and calls to action — not keyword density.
+
+What you SHOULD recommend:
+- Internal links to top service pages (HIGH priority)
+- Brand clarity in title/H1 (not keyword targeting)
+- LocalBusiness schema completeness
+- Trust signals (reviews, years in business, certifications)
+- CTA above the fold
+
+What you MUST NOT recommend:
+- Adding primary service keywords to the title
+- Keyword-optimizing the H1 or meta description
+- Content that targets specific service keywords
+"""
+
     return f"""Analyze this page against the Three-Layer Content Model.
 
 PAGE URL: {absolute_url}
+{_homepage_context}
 
 === SEO METADATA ===
 Title tag: {wp_meta.get('title') or 'Not set'}
@@ -379,6 +444,12 @@ Average position: {gsc_data.get('avg_position', 0)}
 Top ranking queries for this page:
 {query_summary}
 
+
+{f"""
+=== FAQ QUESTIONS DETECTED ON THIS PAGE ===
+{chr(10).join(f'  - {q}' for q in wp_meta.get('faq_questions', []))}
+(These FAQs are confirmed present on the page — do NOT recommend adding FAQs)
+""" if wp_meta.get('faq_questions') else ""}
 Generate GEO, SEO, and CRO scores and specific recommendations based on the ACTUAL content shown above. Every recommendation must reference specific text from this page."""
 
 
@@ -837,6 +908,116 @@ def _build_breadcrumbs(url: str) -> list:
 
 # ── View: POST /api/v1/sites/{site_id}/pages/analyze/ ─────────────────────────
 
+
+# ── Homepage brand-page post-processor ───────────────────────────────────────
+
+def _is_homepage_url(absolute_url: str) -> bool:
+    """True if the URL is the site root / homepage."""
+    from urllib.parse import urlparse
+    path = urlparse(absolute_url).path.rstrip('/')
+    return path == '' or path == '/'
+
+
+def _enforce_homepage_doctrine(ai_result: dict, wp_meta: dict, business_name: str) -> dict:
+    """
+    Post-process AI recommendations for the homepage.
+
+    DOCTRINE: The homepage is a BRAND PAGE. It should never keyword-target
+    service terms because that directly causes cannibalization with service pages.
+
+    This function:
+    - Strips any SEO recs that tell the homepage to keyword-optimize its title/H1/meta
+    - Replaces them with correct brand-page recommendations
+    - Ensures internal linking to money pages is always flagged (HIGH priority)
+    - Preserves valid recs (schema, CRO, GEO) as-is
+    """
+    import re
+
+    KEYWORD_TARGETING_PATTERNS = [
+        r'keyword', r'primary keyword', r'target keyword',
+        r'optimize.*title.*keyword', r'include.*keyword.*title',
+        r'title.*not optimized', r'seo.*title', r'keyword.*title',
+        r'rank.*keyword', r'focus keyword',
+    ]
+
+    def _is_keyword_targeting_rec(rec: dict) -> bool:
+        text = f"{rec.get('issue','')} {rec.get('recommendation','')}".lower()
+        return any(re.search(p, text) for p in KEYWORD_TARGETING_PATTERNS)
+
+    def _mentions_service_keyword_in_title(rec: dict) -> bool:
+        """Catch recs like 'Change title to Electrician Kansas City | Brand'"""
+        after = rec.get('after', '')
+        issue = rec.get('issue', '').lower()
+        field = rec.get('field', '')
+        # If it's touching the title and the 'after' looks like keyword | brand
+        if field == 'title' and '|' in after:
+            # Brand-first is OK: "Able Electric Inc | ..." — keyword-first is not
+            # Heuristic: if the first word is a common service term, it's keyword-first
+            first_word = after.split()[0].lower() if after else ''
+            service_indicators = [
+                'electrician', 'plumber', 'roofer', 'dentist', 'lawyer', 'attorney',
+                'contractor', 'hvac', 'landscaper', 'cleaner', 'painter', 'mechanic',
+                'doctor', 'therapist', 'accountant', 'realtor', 'insurance',
+            ]
+            return first_word in service_indicators
+        return False
+
+    # ── Filter bad SEO recs ───────────────────────────────────────────────────
+    original_seo = ai_result.get('seo_recommendations', [])
+    clean_seo = []
+    removed_count = 0
+
+    for rec in original_seo:
+        if _is_keyword_targeting_rec(rec) or _mentions_service_keyword_in_title(rec):
+            removed_count += 1
+            continue
+        clean_seo.append(rec)
+
+    # ── Always ensure internal linking rec exists ────────────────────────────
+    has_internal_link_rec = any(
+        'internal link' in f"{r.get('issue','')} {r.get('recommendation','')}".lower()
+        for r in clean_seo
+    )
+    if not has_internal_link_rec:
+        clean_seo.insert(0, {
+            'id': 'seo_homepage_internal_links',
+            'layer': 'SEO',
+            'priority': 'high',
+            'issue': 'Homepage is not linking to key service pages.',
+            'recommendation': (
+                'Add clear text links (or a services section) to your top money pages. '
+                'The homepage primary SEO role is to pass authority to the pages that rank for your service keywords. '
+                'Without these links, service pages receive less crawl priority and PageRank.'
+            ),
+            'before': 'No internal links to service pages detected.',
+            'after': 'Add a "Our Services" section with links to each service page, or include text links in the intro paragraph.',
+            'field': 'content_body',
+            'homepage_doctrine': True,
+        })
+
+    # ── Add brand title rec if we removed a bad keyword-title rec ────────────
+    has_title_rec = any(r.get('field') == 'title' for r in clean_seo)
+    if removed_count > 0 and not has_title_rec:
+        current_title = wp_meta.get('title', 'Not set')
+        clean_seo.append({
+            'id': 'seo_homepage_brand_title',
+            'layer': 'SEO',
+            'priority': 'medium',
+            'issue': 'Homepage title should be brand-first, not keyword-first.',
+            'recommendation': (
+                f'Format: "[{business_name}] | [Short brand tagline or city]". '
+                'Never put a service keyword first in the homepage title — that creates '
+                'direct cannibalization with your service pages that are trying to rank for those keywords.'
+            ),
+            'before': current_title,
+            'after': f'{business_name} | Professional Services in Your Area',
+            'field': 'title',
+            'homepage_doctrine': True,
+        })
+
+    ai_result['seo_recommendations'] = clean_seo
+    return ai_result
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def analyze_page(request, site_id: int):
@@ -876,6 +1057,17 @@ def analyze_page(request, site_id: int):
 
         # Step 4: Call AI
         ai_result = _call_ai_for_analysis(user_message)
+
+        # Step 4b: Homepage doctrine enforcement
+        if _is_homepage_url(absolute_url):
+            _biz_name = ''
+            try:
+                from seo.models import SiteEntityProfile
+                _prof = SiteEntityProfile.objects.filter(site=site).first()
+                _biz_name = _prof.business_name if _prof else ''
+            except Exception:
+                pass
+            ai_result = _enforce_homepage_doctrine(ai_result, wp_meta, _biz_name)
 
         # Step 5: Compute overall score (weighted: GEO 30%, SEO 40%, CRO 30%)
         geo_score = int(ai_result['geo_score'])
