@@ -2,7 +2,10 @@
 Page and SEO metrics models.
 """
 from django.db import models
+from django.contrib.auth import get_user_model
 from sites.models import Site
+
+User = get_user_model()
 
 
 class Page(models.Model):
@@ -61,6 +64,16 @@ class Page(models.Model):
         related_name='supporting_pages',
         help_text="The money page this supporting page belongs to"
     )
+    
+    # Related pages for supporting content calculation
+    related_pages = models.ManyToManyField(
+        'self',
+        blank=True,
+        symmetrical=False,
+        related_name='related_to_pages',
+        help_text="Pages that support or are supported by this page"
+    )
+    
     last_synced_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -379,3 +392,261 @@ class SEOData(models.Model):
 
     def __str__(self):
         return f"SEO Data for {self.page.title}"
+
+
+class GSCData(models.Model):
+    """
+    Google Search Console performance data for pages.
+    Stores impressions, clicks, position, and CTR for specific queries.
+    """
+    page = models.ForeignKey(
+        Page,
+        on_delete=models.CASCADE,
+        related_name='gsc_data'
+    )
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.CASCADE,
+        related_name='gsc_data'
+    )
+    
+    # Query and metrics
+    query = models.CharField(
+        max_length=500,
+        help_text="The search query"
+    )
+    impressions = models.IntegerField(default=0)
+    clicks = models.IntegerField(default=0)
+    position = models.FloatField(default=0)
+    ctr = models.FloatField(default=0)
+    
+    # Date range
+    date_start = models.DateField()
+    date_end = models.DateField()
+    
+    # Device and location breakdowns (optional)
+    device = models.CharField(
+        max_length=20,
+        blank=True,
+        help_text="Device type: desktop, mobile, tablet"
+    )
+    country = models.CharField(
+        max_length=2,
+        blank=True,
+        help_text="Country code"
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'gsc_data'
+        ordering = ['-impressions', '-clicks']
+        unique_together = [
+            ['page', 'site', 'query', 'date_start', 'date_end', 'device', 'country']
+        ]
+        indexes = [
+            models.Index(fields=['page', 'query']),
+            models.Index(fields=['site', 'query']),
+            models.Index(fields=['impressions']),
+            models.Index(fields=['position']),
+        ]
+
+    def __str__(self):
+        return f"GSC: {self.query} → {self.page.title} ({self.impressions} impressions)"
+
+
+class Conflict(models.Model):
+    """
+    Keyword cannibalization conflicts between pages.
+    Tracks when multiple pages compete for the same search query.
+    """
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.CASCADE,
+        related_name='conflicts'
+    )
+    
+    # The conflicting pages
+    page1 = models.ForeignKey(
+        Page,
+        on_delete=models.CASCADE,
+        related_name='conflicts_as_page1'
+    )
+    page2 = models.ForeignKey(
+        Page,
+        on_delete=models.CASCADE,
+        related_name='conflicts_as_page2'
+    )
+    
+    # The query string they're competing for
+    query_string = models.CharField(
+        max_length=500,
+        help_text="The GSC query string these pages compete for"
+    )
+    
+    # Winner determination
+    winner_page = models.ForeignKey(
+        Page,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='won_conflicts',
+        help_text="The page that should rank for this query"
+    )
+    
+    # Location differentiation
+    location_differentiation = models.JSONField(
+        default=list,
+        help_text="Location-based differentiation data"
+    )
+    
+    # Recommendation
+    recommendation = models.TextField(
+        blank=True,
+        help_text="AI-generated recommendation for resolving this conflict"
+    )
+    
+    # Status tracking
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ('active', 'Active'),
+            ('in_approval_queue', 'In Approval Queue'),
+            ('resolved', 'Resolved'),
+        ],
+        default='active'
+    )
+    
+    is_dismissed = models.BooleanField(default=False)
+    severity_score = models.IntegerField(
+        default=50,
+        help_text="Severity score (0-100)"
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'conflicts'
+        ordering = ['-severity_score', '-created_at']
+        unique_together = [['site', 'page1', 'page2', 'query_string']]
+        indexes = [
+            models.Index(fields=['site', 'status']),
+            models.Index(fields=['query_string']),
+            models.Index(fields=['severity_score']),
+        ]
+
+    def __str__(self):
+        return f"Conflict: {self.query_string} between {self.page1.title} and {self.page2.title}"
+
+
+class ContentJob(models.Model):
+    """
+    Content generation and management jobs.
+    Tracks content creation from suggestion to completion.
+    """
+    JOB_TYPES = [
+        ('conflict_resolution', 'Conflict Resolution'),
+        ('supporting_content', 'Supporting Content'),
+        ('money_page_optimization', 'Money Page Optimization'),
+        ('homepage_optimization', 'Homepage Optimization'),
+    ]
+    
+    STATUSES = [
+        ('pending', 'Pending'),
+        ('pending_approval', 'Pending Approval'),
+        ('approved', 'Approved'),
+        ('in_progress', 'In Progress'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+    ]
+    
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.CASCADE,
+        related_name='content_jobs'
+    )
+    
+    # Job details
+    job_type = models.CharField(max_length=50, choices=JOB_TYPES)
+    topic = models.CharField(max_length=500, blank=True)
+    recommendation = models.TextField(blank=True)
+    
+    # Associated objects
+    page = models.ForeignKey(
+        Page,
+        on_delete=models.CASCADE,
+        related_name='content_jobs',
+        null=True,
+        blank=True
+    )
+    conflict = models.ForeignKey(
+        Conflict,
+        on_delete=models.CASCADE,
+        related_name='content_jobs',
+        null=True,
+        blank=True
+    )
+    target_page = models.ForeignKey(
+        Page,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='targeted_content_jobs'
+    )
+    
+    # Status tracking
+    status = models.CharField(max_length=20, choices=STATUSES, default='pending')
+    priority = models.CharField(
+        max_length=10,
+        choices=[
+            ('low', 'Low'),
+            ('medium', 'Medium'),
+            ('high', 'High'),
+        ],
+        default='medium'
+    )
+    
+    # Content details
+    estimated_word_count = models.IntegerField(null=True, blank=True)
+    actual_word_count = models.IntegerField(null=True, blank=True)
+    generated_content = models.TextField(blank=True)
+    
+    # WordPress integration
+    wp_post_id = models.IntegerField(null=True, blank=True)
+    wp_status = models.CharField(max_length=20, blank=True)
+    
+    # Metadata
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    approved_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_content_jobs'
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'content_jobs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['site', 'status']),
+            models.Index(fields=['job_type']),
+            models.Index(fields=['priority']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.get_job_type_display()}: {self.topic or self.recommendation[:50]}"
