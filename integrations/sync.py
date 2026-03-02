@@ -120,6 +120,8 @@ def sync_page(request):
     data.setdefault('page_builder', 'unknown')
     data.setdefault('junk_action', None)
     data.setdefault('junk_reason', None)                 # Set by WP plugin; default to unknown
+    # faq_questions is not a Page model field — extract before get_or_create
+    _faq_questions = data.pop('faq_questions', [])
 
     # Get or create page
     wp_post_id = data['wp_post_id']
@@ -148,6 +150,20 @@ def sync_page(request):
         except Exception:
             import logging
             logging.getLogger(__name__).warning(f"Failed to classify page {page.id}", exc_info=True)
+
+    # Store faq_questions from plugin into PageAnalysis.wp_meta so analysis can use them
+    if _faq_questions:
+        try:
+            from seo.models import PageAnalysis
+            analysis = PageAnalysis.objects.filter(page=page).order_by('-created_at').first()
+            if analysis:
+                wp_meta = analysis.wp_meta or {}
+                wp_meta['faq_questions'] = _faq_questions
+                analysis.wp_meta = wp_meta
+                analysis.save(update_fields=['wp_meta'])
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to store faq_questions for page {page.id}", exc_info=True)
 
     # Update site's last_synced_at
     site.last_synced_at = timezone.now()
