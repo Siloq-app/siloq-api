@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import AgencyProfile, AgencyClientLink
+from .models import AgencyProfile, AgencyClientSite
 
 
 @admin.register(AgencyProfile)
@@ -10,9 +10,9 @@ class AgencyProfileAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'updated_at')
 
 
-@admin.register(AgencyClientLink)
-class AgencyClientLinkAdmin(admin.ModelAdmin):
-    list_display = ('agency', 'client', 'status', 'invite_email', 'invited_at', 'accepted_at')
+@admin.register(AgencyClientSite)
+class AgencyClientSiteAdmin(admin.ModelAdmin):
+    list_display = ('agency', 'site', 'status', 'created_at')
     list_filter = ('status',)
-    search_fields = ('agency__email', 'client__email', 'invite_email')
-    readonly_fields = ('invited_at',)
+    search_fields = ('agency__agency_name', 'site__url')
+    readonly_fields = ('created_at',)
