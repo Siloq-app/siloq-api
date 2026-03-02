@@ -266,25 +266,35 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
                         meta['meta_description'] = _candidate
                         break
 
-            # FAQ extraction — catches questions rendered in static HTML
-            # (covers non-JS accordions; Elementor JS-rendered FAQs handled via plugin sync)
+            # FAQ extraction — static HTML patterns (Elementor accordion titles are NOT JS-rendered)
             _faq_qs = []
-            # Headings that end with ? are FAQ questions
+            # 1. Elementor accordion/toggle: <a class="elementor-accordion-title">Q: ...</a>
+            for _q in re.findall(r'<a[^>]+elementor-accordion-title[^>]*>([^<]{5,})</a>', html, re.IGNORECASE):
+                _clean = _q.strip()
+                if _clean and len(_clean) > 5:
+                    _faq_qs.append(_clean)
+            # 2. h2-h5 headings containing ? (FAQ questions used as headings)
             for _h_text in re.findall(r'<h[2-5][^>]*>([^<]*\?[^<]*)</h[2-5]>', html, re.IGNORECASE):
                 _clean = re.sub(r'<[^>]+>', '', _h_text).strip()
                 if _clean and len(_clean) > 10:
                     _faq_qs.append(_clean)
-            # dt/summary/button patterns for accordion widgets
+            # 3. dt/summary/button accordion patterns
             for _pattern in [
-                r'<(?:dt|summary)[^>]*>\s*([^<]{15,}\?[^<]*?)\s*</(?:dt|summary)>',
-                r'<button[^>]*class=[^>]*(?:faq|accordion|toggle)[^>]*>\s*([^<]{15,})\s*</button>',
+                r'<(?:dt|summary)[^>]*>\s*([^<]{10,}\?[^<]*?)\s*</(?:dt|summary)>',
+                r'<button[^>]*class=[^>]*(?:faq|accordion|toggle)[^>]*>\s*([^<]{10,})\s*</button>',
+                r'<[^>]+class=[^>]*(?:faq|accordion)[^>]*title[^>]*>([^<]{10,})</[^>]+>',
             ]:
                 for _q in re.findall(_pattern, html, re.IGNORECASE | re.DOTALL):
                     _clean = re.sub(r'<[^>]+>', '', _q).strip()
                     if _clean and len(_clean) > 10:
                         _faq_qs.append(_clean)
+            # 4. FAQ section heading detection (even without individual questions extracted)
+            if not _faq_qs:
+                _faq_heading = re.search(r'(?:frequently asked questions|FAQ section)', html, re.IGNORECASE)
+                if _faq_heading:
+                    _faq_qs.append('FAQ section present (questions JS-rendered)')
             if _faq_qs:
-                meta['faq_questions'] = list(dict.fromkeys(_faq_qs))[:12]  # dedupe, cap at 12
+                meta['faq_questions'] = list(dict.fromkeys(_faq_qs))[:15]  # dedupe, cap at 15
 
             # Full H-tag hierarchy — extract H1–H4 in document order
             htag_re = re.compile(r'<h([1-4])[^>]*>(.*?)</h\1>', re.IGNORECASE | re.DOTALL)
