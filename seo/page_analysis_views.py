@@ -424,6 +424,12 @@ What you MUST NOT recommend:
 - Content that targets specific service keywords
 """
 
+    faq_questions = wp_meta.get("faq_questions", [])
+    faq_section = ""
+    if faq_questions:
+        faq_section = "\n=== FAQ QUESTIONS DETECTED ON THIS PAGE ===\n"
+        faq_section += "\n".join("  - " + q for q in faq_questions)
+        faq_section += "\n(These FAQs are confirmed present - do NOT recommend adding FAQs)\n"
     return f"""Analyze this page against the Three-Layer Content Model.
 
 PAGE URL: {absolute_url}
@@ -455,11 +461,7 @@ Top ranking queries for this page:
 {query_summary}
 
 
-{f"""
-=== FAQ QUESTIONS DETECTED ON THIS PAGE ===
-{chr(10).join(f'  - {q}' for q in wp_meta.get('faq_questions', []))}
-(These FAQs are confirmed present on the page - do NOT recommend adding FAQs)
-""" if wp_meta.get('faq_questions') else ""}
+{faq_section}
 Generate GEO, SEO, and CRO scores and specific recommendations based on the ACTUAL content shown above. Every recommendation must reference specific text from this page."""
 
 
