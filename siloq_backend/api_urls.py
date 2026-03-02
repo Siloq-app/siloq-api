@@ -94,6 +94,16 @@ def _lazy(module, attr):
         return getattr(mod, attr)(*args, **kwargs)
     return view
 
+def _lazy_agency(fn_name):
+    """Lazy wrapper for agency views — prevents AppRegistryNotReady during migrate."""
+    def view(request, *args, **kwargs):
+        import importlib
+        mod = importlib.import_module('agency.views')
+        return getattr(mod, fn_name)(request, *args, **kwargs)
+    view.__name__ = fn_name
+    return view
+
+
 urlpatterns = [
     # Health check (no auth) - GET /api/v1/health/
     path('health/', health_check),
@@ -135,14 +145,11 @@ urlpatterns = [
     # Billing and subscription management
     path('billing/', include('billing.urls')),
     path('agency/', include('agency.urls')),
-    # Branding resolution (public SSR endpoint + plugin config)
-    path('branding/resolve/',       __import__('agency.views', fromlist=['branding_resolve']).branding_resolve,             name='branding-resolve'),
-    path('branding/plugin-config/', __import__('agency.views', fromlist=['branding_plugin_config']).branding_plugin_config, name='branding-plugin-config'),
-    path('branding/verify-domain/', __import__('agency.views', fromlist=['branding_verify_domain']).branding_verify_domain, name='branding-verify-domain'),
-    # Branding resolution — public endpoint for Next.js SSR middleware
-    path('branding/resolve/', __import__('agency.views', fromlist=['branding_resolve']).branding_resolve, name='branding-resolve'),
-    path('branding/config/',  __import__('agency.views', fromlist=['branding_config']).branding_config,   name='branding-config'),
-    path('branding/verify-domain/', __import__('agency.views', fromlist=['branding_verify_domain']).branding_verify_domain, name='branding-verify-domain'),
+    # Branding resolution — lazy wrappers to avoid AppRegistryNotReady during migrate
+    path('branding/resolve/',       _lazy_agency('branding_resolve'),       name='branding-resolve'),
+    path('branding/plugin-config/', _lazy_agency('branding_plugin_config'), name='branding-plugin-config'),
+    path('branding/config/',        _lazy_agency('branding_config'),        name='branding-config'),
+    path('branding/verify-domain/', _lazy_agency('branding_verify_domain'), name='branding-verify-domain'),
     # Conflicts (Anti-Cannibalization)
     path('conflicts/', conflict_list_view, name='conflict-list'),
     path('conflicts/<uuid:conflict_id>/resolve/', conflict_resolve_view, name='conflict-resolve'),
