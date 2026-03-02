@@ -203,8 +203,15 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
 
         # Fallback: if meta_description still empty, use yoast_description synced from WP plugin.
         # This field is populated by AIOSEO, Yoast, or RankMath via sync_page() in the WP plugin.
-        if not meta['meta_description']:
-            meta['meta_description'] = page_qs.yoast_description or ''
+        # yoast_description from plugin sync = live AIOSEO/Yoast/RankMath value.
+        # Always prefer it over stale SEOData — plugin reads fresh from DB on every sync.
+        if page_qs.yoast_description:
+            meta['meta_description'] = page_qs.yoast_description
+
+        # Also pull faq_questions from wp_meta if plugin synced them (Elementor pages)
+        wp_meta_data = getattr(page_qs, 'wp_meta', {}) or {}
+        if wp_meta_data.get('faq_questions'):
+            meta['faq_questions'] = wp_meta_data['faq_questions']
 
         if meta['title']:
             return meta
@@ -245,14 +252,38 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
         if resp.status_code == 200:
             html = resp.text
 
-            # Meta description — universal fallback for any SEO plugin
-            if not meta['meta_description']:
-                m = re.search(
-                    r'<meta\s+name=["\']+description["\']+\s+content=["\']+([^"\'>]*)["\']+',
-                    html, re.IGNORECASE
-                )
-                if m:
-                    meta['meta_description'] = m.group(1).strip()
+            # Meta description — robust extraction, always use live HTML value (DB may be stale)
+            # Handles AIOSEO, Yoast, RankMath, and native WP meta tags
+            for _pattern in [
+                r'<meta\s+name=["\']description["\']\s+content=["\']([^"\'>]{10,})["\']',
+                r'<meta\s+content=["\']([^"\'>]{10,})["\']\s+name=["\']description["\']',
+            ]:
+                _m = re.search(_pattern, html, re.IGNORECASE)
+                if _m:
+                    _candidate = _m.group(1).strip()
+                    if len(_candidate) > 10:
+                        meta['meta_description'] = _candidate
+                        break
+
+            # FAQ extraction — catches questions rendered in static HTML
+            # (covers non-JS accordions; Elementor JS-rendered FAQs handled via plugin sync)
+            _faq_qs = []
+            # Headings that end with ? are FAQ questions
+            for _h_text in re.findall(r'<h[2-5][^>]*>([^<]*\?[^<]*)</h[2-5]>', html, re.IGNORECASE):
+                _clean = re.sub(r'<[^>]+>', '', _h_text).strip()
+                if _clean and len(_clean) > 10:
+                    _faq_qs.append(_clean)
+            # dt/summary/button patterns for accordion widgets
+            for _pattern in [
+                r'<(?:dt|summary)[^>]*>\s*([^<]{15,}\?[^<]*?)\s*</(?:dt|summary)>',
+                r'<button[^>]*class=[^>]*(?:faq|accordion|toggle)[^>]*>\s*([^<]{15,})\s*</button>',
+            ]:
+                for _q in re.findall(_pattern, html, re.IGNORECASE | re.DOTALL):
+                    _clean = re.sub(r'<[^>]+>', '', _q).strip()
+                    if _clean and len(_clean) > 10:
+                        _faq_qs.append(_clean)
+            if _faq_qs:
+                meta['faq_questions'] = list(dict.fromkeys(_faq_qs))[:12]  # dedupe, cap at 12
 
             # Full H-tag hierarchy — extract H1–H4 in document order
             htag_re = re.compile(r'<h([1-4])[^>]*>(.*?)</h\1>', re.IGNORECASE | re.DOTALL)
@@ -378,6 +409,12 @@ Average position: {gsc_data.get('avg_position', 0)}
 Top ranking queries for this page:
 {query_summary}
 
+
+{f"""
+=== FAQ QUESTIONS DETECTED ON THIS PAGE ===
+{chr(10).join(f'  - {q}' for q in wp_meta.get('faq_questions', []))}
+(These FAQs are confirmed present on the page — do NOT recommend adding FAQs)
+""" if wp_meta.get('faq_questions') else ""}
 Generate GEO, SEO, and CRO scores and specific recommendations based on the ACTUAL content shown above. Every recommendation must reference specific text from this page."""
 
 
