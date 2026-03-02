@@ -106,6 +106,9 @@ class PageSyncSerializer(serializers.Serializer):
     page_builder = serializers.CharField(required=False, allow_blank=True, default='unknown')
     junk_action = serializers.CharField(required=False, allow_null=True, default=None)
     junk_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
+    faq_questions = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list
+    )  # Elementor accordion/toggle/FAQ widget questions
 
     def to_internal_value(self, data):
         """Flatten nested meta fields if present (yoast_title, yoast_description, featured_image, is_noindex)."""
