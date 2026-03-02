@@ -91,6 +91,10 @@ def sync_page(request):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     data = dict(serializer.validated_data)
+    # Map 'type' alias to 'post_type' — older plugin versions send 'type' instead of 'post_type'
+    if data.get('type') and (not data.get('post_type') or data.get('post_type') == 'page'):
+        data['post_type'] = data['type']
+    data.pop('type', None)  # remove alias field before saving
     data['slug'] = _sanitize_slug(data.get('slug') or '')
     
     # Handle wp_post_id - can be integer or string like "term_123" for taxonomy terms
