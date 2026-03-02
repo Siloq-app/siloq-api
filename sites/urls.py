@@ -44,6 +44,7 @@ from seo.page_analysis_views import (
 from seo.entity_extraction_views import extract_entities
 from seo.entity_profile_views import entity_profile, sync_gbp
 from seo.supporting_content_views import supporting_content_gap, about_us_analysis, schema_inventory, generate_supporting_article, junk_page_feed, image_suggestion, generate_image
+from seo.freshness_views import site_freshness, page_freshness
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -89,6 +90,9 @@ urlpatterns = [
     # Pages Content Optimization — Three-Layer Model (GEO + SEO + CRO)
     path('<int:site_id>/pages/analyze/', analyze_page, name='page-analyze'),
     path('<int:site_id>/pages/analyze-all/', analyze_all_pages, name='page-analyze-all'),
+
+    path('<int:site_id>/freshness/', site_freshness, name='site-freshness'),
+    path('<int:site_id>/pages/<int:page_id>/freshness/', page_freshness, name='page-freshness'),
     path('<int:site_id>/approvals/', list_approvals, name='site-approvals'),
     path('<int:site_id>/pages/analysis/', list_analyses, name='page-analysis-list'),
     path('<int:site_id>/pages/analysis/<int:analysis_id>/', get_analysis, name='page-analysis-detail'),

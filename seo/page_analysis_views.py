@@ -29,6 +29,7 @@ from integrations.gsc_views import _get_valid_access_token
 from integrations.wordpress_webhook import send_webhook_to_wordpress
 from seo.models import Page, PageAnalysis, SEOData
 from seo.geographic_grounding import compute_geographic_grounding, compute_informational_gain
+from seo.freshness_scoring import compute_freshness_score
 from sites.models import Site
 
 logger = logging.getLogger(__name__)
@@ -1125,10 +1126,19 @@ def analyze_page(request, site_id: int):
                 informational_gain = {'label': 'unknown', 'warning': False,
                                       'unique_percentage': None, 'recommendations': []}
 
+            # Freshness score
+            try:
+                page_for_freshness = page_obj if page_obj else None
+                freshness = compute_freshness_score(page_for_freshness, analysis)
+            except Exception as fs_exc:
+                logger.warning("Freshness scoring failed: %s", fs_exc)
+                freshness = {'score': None, 'label': 'unknown', 'warning': False, 'recommendations': []}
+
             analysis.wp_meta = {
                 **(analysis.wp_meta or {}),
                 'geographic_grounding': geo_grounding,
                 'informational_gain': informational_gain,
+                'freshness': freshness,
             }
         except Exception as gg_exc:
             logger.warning("Geographic grounding/IG computation failed: %s", gg_exc)
@@ -1409,6 +1419,10 @@ def _serialize_analysis(analysis: PageAnalysis) -> dict:
         'informational_gain': (analysis.wp_meta or {}).get('informational_gain') or {
             'label': 'unknown', 'warning': False, 'unique_percentage': None,
             'swap_pattern_detected': False, 'recommendations': [],
+        },
+        'freshness': (analysis.wp_meta or {}).get('freshness') or {
+            'score': None, 'label': 'unknown', 'emoji': '○', 'warning': False,
+            'components': {}, 'outdated_flags': [], 'recommendations': [],
         },
         'created_at': analysis.created_at.isoformat() if analysis.created_at else None,
         'completed_at': analysis.completed_at.isoformat() if analysis.completed_at else None,
