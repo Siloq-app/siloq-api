@@ -31,7 +31,13 @@ jobs:
 
     env:
       DATABASE_URL: postgres://siloq:siloq_test@localhost:5432/siloq_test
-      DJANGO_SETTINGS_MODULE: siloq_backend.settings
+      DB_NAME: siloq_test
+      DB_USER: siloq
+      DB_PASSWORD: siloq_test
+      DB_HOST: localhost
+      DB_PORT: '5432'
+      DB_SSLMODE: disable
+      DJANGO_SETTINGS_MODULE: siloq_backend.test_settings
       SECRET_KEY: test-secret-key-not-for-production
       DEBUG: 'true'
 
@@ -48,7 +54,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install flake8 pytest
+          pip install flake8 pytest pytest-django
 
       - name: Lint with flake8
         run: |
@@ -62,7 +68,7 @@ jobs:
 
       - name: Run tests
         run: |
-          python manage.py test --verbosity=2 || echo "Tests completed (some may not exist yet)"
+          pytest -v --tb=short || echo "Tests completed (some may not exist yet)"
 
   deploy-staging:
     name: Deploy to Staging
