@@ -171,16 +171,21 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
     }
 
     # ── Strategy 1: local Page model ────────────────────────
-    page_qs = Page.objects.filter(site=site, url__icontains=slug).select_related('seo_data').first()
-    if not page_qs:
-        # Try exact URL match variants
-        page_qs = (
-            Page.objects
-            .filter(site=site)
-            .filter(url__in=[absolute_url, absolute_url.rstrip('/'), absolute_url.rstrip('/') + '/'])
-            .select_related('seo_data')
-            .first()
-        )
+    # Always try exact URL match first to avoid empty-slug matching wrong pages.
+    # An empty slug (homepage) with url__icontains='' would match ALL pages.
+    page_qs = (
+        Page.objects
+        .filter(site=site)
+        .filter(url__in=[absolute_url, absolute_url.rstrip('/'), absolute_url.rstrip('/') + '/'])
+        .select_related('seo_data')
+        .first()
+    )
+    if not page_qs and not slug:
+        # Homepage fallback: look for is_homepage=True
+        page_qs = Page.objects.filter(site=site, is_homepage=True).select_related('seo_data').first()
+    if not page_qs and slug:
+        # Non-homepage fallback: slug-based search (safe since slug is non-empty)
+        page_qs = Page.objects.filter(site=site, url__icontains=slug).select_related('seo_data').first()
 
     if page_qs:
         meta['title'] = page_qs.title or ''
