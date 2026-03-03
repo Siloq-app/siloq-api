@@ -73,7 +73,7 @@ OUTPUT FORMAT — respond with ONLY valid JSON:
       "recommendation": "Specific fix",
       "before": "Current text or 'Not present'",
       "after": "Improved version",
-      "field": "content_body|title|meta_description|h1|schema"
+      "field": "content_body|title|meta_description|h1|schema|internal_links"
     }
   ],
   "seo_recommendations": [...],
@@ -83,7 +83,14 @@ OUTPUT FORMAT — respond with ONLY valid JSON:
     "recommended": [{"level": "h1", "text": "..."}, {"level": "h2", "text": "..."}],
     "issues_summary": ["Missing H2s", "H1 lacks city"]
   }
-}"""
+}
+
+FIELD USAGE RULES (strictly enforce):
+- "internal_links": use for ANY recommendation about adding/fixing internal links. NEVER auto-injected. "after" = plain-text description of which links to add and where (e.g. "Add links to /services/, /contact/, and /about/ in the first paragraph"). Do NOT use "content_body" for internal link recs.
+- "content_body": use ONLY when adding substantive new content (FAQ, testimonials, service descriptions, CTAs). Never for link instructions.
+- "title", "meta_description", "h1": for those specific elements only.
+- "schema": for schema markup recommendations only.
+"""
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -596,6 +603,16 @@ def _apply_recommendation_to_wordpress(site: Site, analysis: PageAnalysis, rec: 
     after = rec.get('after', '')
     rec_id = rec.get('id')
 
+    # internal_links — NEVER auto-apply. Injecting links programmatically into page builder
+    # pages destroys layout and can duplicate structural HTML. Always manual action.
+    if field == 'internal_links':
+        return {
+            'rec_id': rec_id,
+            'success': False,
+            'error': 'requires_manual_action',
+            'guidance': after or 'Add these internal links manually in your page editor.',
+        }
+
     # content_body — send via content.apply_content (WP plugin handles find/replace + append)
     if field == 'content_body':
         # Guard: if the AI generated an instruction/guidance as the AFTER text rather than
@@ -1008,7 +1025,7 @@ def _enforce_homepage_doctrine(ai_result: dict, wp_meta: dict, business_name: st
             ),
             'before': 'No internal links to service pages detected.',
             'after': 'Add a "Our Services" section with links to each service page, or include text links in the intro paragraph.',
-            'field': 'content_body',
+            'field': 'internal_links',
             'homepage_doctrine': True,
         })
 
