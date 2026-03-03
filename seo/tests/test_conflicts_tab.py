@@ -291,7 +291,7 @@ class ConflictsTabDeepTestCase(TestCase):
     def test_resolve_conflict(self):
         """Test resolve conflict endpoint."""
         url = f'/api/v1/sites/{self.site.id}/conflicts/{self.conflict.id}/resolve/'
-        response = self.client.post(url, {'notes': 'Resolved by merging content'})
+        response = self.client.post(url, {'notes': 'Resolved by merging content'}, format='json')
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.json()
@@ -427,7 +427,7 @@ class ConflictsTabDeepTestCase(TestCase):
         data = response.json()
         
         site_info = data['site_info']
-        self.assertEqual(site_info['id'], str(self.site.id))
+        self.assertEqual(site_info['id'], self.site.id)
         self.assertEqual(site_info['name'], self.site.name)
         self.assertEqual(site_info['url'], self.site.url)
     

@@ -61,12 +61,15 @@ def conflicts_list(request, site_id):
         elif severity_filter == 'low':
             conflicts_query = conflicts_query.filter(severity_score__lt=50)
     
+    # If NO conflicts exist for the site at all, run detection (before applying filters)
+    site_has_conflicts = Conflict.objects.filter(
+        Q(page1__site=site) | Q(page2__site=site)
+    ).exists()
+    if not site_has_conflicts:
+        detect_and_create_conflicts(site)
+
     # Order by severity and creation date
     conflicts = conflicts_query.order_by('-severity_score', '-created_at')[:limit]
-    
-    # If no conflicts exist, run conflict detection (Ahmad's endpoint integration)
-    if not conflicts.exists():
-        conflicts = detect_and_create_conflicts(site)
     
     conflicts_data = []
     for conflict in conflicts:
@@ -276,22 +279,35 @@ def detect_and_create_conflicts(site):
                 ).first()
                 
                 if not existing_conflict:
+                    # Convert GSCData model instances to dicts for helper functions
+                    gsc1_dict = {
+                        'impressions': competing_pages[i].impressions,
+                        'clicks': competing_pages[i].clicks,
+                        'position': competing_pages[i].position,
+                        'ctr': competing_pages[i].ctr,
+                    }
+                    gsc2_dict = {
+                        'impressions': competing_pages[j].impressions,
+                        'clicks': competing_pages[j].clicks,
+                        'position': competing_pages[j].position,
+                        'ctr': competing_pages[j].ctr,
+                    }
+
                     # Calculate severity score
                     severity = calculate_conflict_severity(
-                        competing_pages[i], competing_pages[j], query_data
+                        gsc1_dict, gsc2_dict, query_data
                     )
                     
-                    # Determine winner
-                    winner = determine_conflict_winner(
-                        competing_pages[i].__dict__, competing_pages[j].__dict__
-                    )
+                    # Determine winner (returns True if page1 wins, False if page2 wins)
+                    page1_wins = determine_conflict_winner(gsc1_dict, gsc2_dict)
+                    winner = page1 if page1_wins else page2
                     
                     # Generate location differentiation
                     location_diff = analyze_location_differentiation(site, query, page1, page2)
                     
                     # Generate AI recommendation
                     recommendation = generate_ai_recommendation(
-                        None, competing_pages[i].__dict__, competing_pages[j].__dict__
+                        None, gsc1_dict, gsc2_dict
                     )
                     
                     conflict = Conflict.objects.create(

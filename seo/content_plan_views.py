@@ -50,9 +50,10 @@ def content_plan(request, site_id):
     ).select_related('seo_data').order_by('-created_at')
     
     # Count money pages with <2 supporting articles (for tab badge)
-    pages_with_gaps = money_pages.filter(
-        Q(related_pages__count__lt=min_supporting) | Q(related_pages__isnull=True)
-    ).distinct()
+    from django.db.models import Count as DjangoCount
+    pages_with_gaps = money_pages.annotate(
+        supporting_count=DjangoCount('related_pages')
+    ).filter(supporting_count__lt=min_supporting).distinct()
     
     # Calculate supporting content counts for each money page
     content_plan_data = []
@@ -147,6 +148,11 @@ def supporting_content(request, site_id, page_id):
     gap_analysis = analyze_content_gaps(page, supporting_pages)
     
     return Response({
+        'site_info': {
+            'id': site.id,
+            'name': site.name,
+            'url': site.url,
+        },
         'money_page': {
             'id': str(page.id),
             'title': page.title,
@@ -304,22 +310,21 @@ def generate_topic_suggestions(page, supporting_count):
 def calculate_content_gap_score(page, supporting_count):
     """
     Calculate a content gap score (0-100) based on supporting content analysis.
+    Article count is the dominant factor — modifiers are capped at 10 points
+    and cannot bridge the 25-point gap between article tiers.
     """
-    # Base score starts at 100 and decreases with more supporting content
-    base_score = 100
-    
-    # Deduction for each supporting article
-    deduction = supporting_count * 20
-    
-    # SEO score factor
-    seo_factor = (100 - (page.seo_data.seo_score if page.seo_data else 0)) * 0.3
-    
-    # Word count factor (under 1000 words needs more support)
+    # Base: 0 articles=100, 1=75, 2=50, 3=25, 4+=0
+    base_score = max(0, 100 - (supporting_count * 25))
+
+    # Small modifiers (max 10 pts total) — won't flip tier ordering
+    seo_score = page.seo_data.seo_score if page.seo_data else 50
+    seo_modifier = min(5, (100 - seo_score) * 0.05)
+
     word_count = page.seo_data.word_count if page.seo_data else 0
-    word_factor = max(0, (1000 - word_count) * 0.05) if word_count < 1000 else 0
-    
-    gap_score = max(0, base_score - deduction + seo_factor + word_factor)
-    return min(100, gap_score)
+    word_modifier = 5 if word_count < 500 else (3 if word_count < 1000 else 0)
+
+    gap_score = base_score + seo_modifier + word_modifier
+    return min(100, round(gap_score))
 
 
 def determine_priority(page, supporting_count, seo_score):

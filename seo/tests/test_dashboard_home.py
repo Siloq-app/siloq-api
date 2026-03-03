@@ -174,7 +174,7 @@ class DashboardHomeTestCase(TestCase):
         
         # Verify site info
         site_info = data['site_info']
-        self.assertEqual(site_info['id'], str(self.site.id))
+        self.assertEqual(site_info['id'], self.site.id)
         self.assertEqual(site_info['name'], self.site.name)
         self.assertEqual(site_info['url'], self.site.url)
     
