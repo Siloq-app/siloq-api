@@ -131,6 +131,8 @@ urlpatterns = [
     path('account-keys/', include('sites.account_key_urls')),
     # Site management
     path('sites/', include('sites.urls')),
+    # SEO endpoints nested under sites (conflicts, content-plan, etc.)
+    path('', include('seo.urls')),
     # Google Search Console integration
     path('gsc/', include('integrations.gsc_urls')),
     # WordPress integration endpoints (scans, page sync) - MUST be before pages/
