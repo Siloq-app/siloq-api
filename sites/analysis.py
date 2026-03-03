@@ -274,9 +274,14 @@ def detect_static_cannibalization(pages, include_noindex: bool = False, impressi
                 folder_names_in_conflict.add(folder_name)
                 
                 for pd in folder_pages:
+                    url = pd['url']
+                    imp = impressions_map.get(url, 0) or impressions_map.get(url.rstrip('/'), 0)
+                    clk = pd.get('clicks', 0) or 0
+                    pos = pd.get('position', 999) or 999
                     all_dup_pages.append({
-                        'id': pd['page'].id, 'url': pd['url'],
+                        'id': pd['page'].id, 'url': url,
                         'title': pd['title'], 'page_type': pd['type'],
+                        'impressions': imp, 'clicks': clk, 'position': pos,
                     })
                     page_types_in_conflict.add(pd['type'])
                     folder_dup_ids.add(pd['page'].id)
@@ -328,7 +333,17 @@ def detect_static_cannibalization(pages, include_noindex: bool = False, impressi
                 'explanation': f"'{slug}' exists under {len(folder_groups)} different URL folders. Each duplicate splits authority for the same keywords.",
                 'recommendation': "Pick ONE canonical folder structure, 301 redirect the others to it.",
                 'competing_pages': all_dup_pages,
-                'suggested_king': all_dup_pages[0] if all_dup_pages else None,
+                # Pick winner by GSC data: most impressions wins; break ties by clicks,
+                # then by best (lowest) position. Never pick a 0-impression page over
+                # one that is actually ranking.
+                'suggested_king': max(
+                    all_dup_pages,
+                    key=lambda p: (
+                        p.get('impressions', 0),
+                        p.get('clicks', 0),
+                        -p.get('position', 999),  # lower position = better ranking
+                    )
+                ) if all_dup_pages else None,
             })
     
     # =========================================================================
