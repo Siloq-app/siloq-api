@@ -526,3 +526,119 @@ class ContentJob(models.Model):
 
     def __str__(self):
         return f"{self.get_job_type_display()}: {self.topic or self.recommendation[:50]}"
+
+
+# ── Model stubs for imports that reference planned models ──────────────────────
+# These are managed=False so Django won't try to create/migrate tables.
+# They exist solely to prevent ImportError in views that reference them.
+# Replace with real models when building the corresponding features.
+
+class SiloDefinition(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='silo_definitions')
+    name = models.CharField(max_length=255)
+    target_page = models.ForeignKey(Page, on_delete=models.SET_NULL, null=True, blank=True, related_name='silo_target')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'silo_definitions'
+
+    def __str__(self):
+        return self.name
+
+
+class SiloKeyword(models.Model):
+    silo = models.ForeignKey(SiloDefinition, on_delete=models.CASCADE, related_name='keywords')
+    keyword = models.CharField(max_length=500)
+    search_volume = models.IntegerField(default=0)
+
+    class Meta:
+        managed = False
+        db_table = 'silo_keywords'
+
+
+class KeywordAssignment(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='keyword_assignments')
+    keyword = models.CharField(max_length=500)
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, null=True, blank=True, related_name='keyword_assignments')
+    silo = models.ForeignKey(SiloDefinition, on_delete=models.SET_NULL, null=True, blank=True, related_name='assignments')
+    status = models.CharField(max_length=20, default='active')
+    assigned_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'keyword_assignments'
+
+
+class KeywordAssignmentHistory(models.Model):
+    assignment = models.ForeignKey(KeywordAssignment, on_delete=models.CASCADE, null=True, blank=True, related_name='history')
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='keyword_history')
+    keyword = models.CharField(max_length=500)
+    action = models.CharField(max_length=50)
+    old_page = models.ForeignKey(Page, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    new_page = models.ForeignKey(Page, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = 'keyword_assignment_history'
+
+
+class PageMetadata(models.Model):
+    page = models.OneToOneField(Page, on_delete=models.CASCADE, related_name='metadata')
+    word_count = models.IntegerField(default=0)
+    readability_score = models.FloatField(default=0)
+    last_crawled = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        managed = False
+        db_table = 'page_metadata'
+
+
+class CannibalizationConflict(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='cannibalization_conflicts')
+    keyword = models.CharField(max_length=500)
+    severity = models.CharField(max_length=20, default='medium')
+    status = models.CharField(max_length=20, default='active')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'cannibalization_conflicts'
+
+
+class ConflictPage(models.Model):
+    conflict = models.ForeignKey(CannibalizationConflict, on_delete=models.CASCADE, related_name='conflict_pages')
+    page = models.ForeignKey(Page, on_delete=models.CASCADE)
+    impressions = models.IntegerField(default=0)
+    clicks = models.IntegerField(default=0)
+    position = models.FloatField(default=0)
+
+    class Meta:
+        managed = False
+        db_table = 'conflict_pages'
+
+
+class ConflictResolution(models.Model):
+    conflict = models.ForeignKey(CannibalizationConflict, on_delete=models.CASCADE, related_name='resolutions')
+    resolution_type = models.CharField(max_length=50)
+    notes = models.TextField(blank=True)
+    resolved_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'conflict_resolutions'
+
+
+class RedirectRegistry(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='redirects')
+    source_url = models.URLField()
+    target_url = models.URLField()
+    redirect_type = models.CharField(max_length=10, default='301')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'redirect_registry'
