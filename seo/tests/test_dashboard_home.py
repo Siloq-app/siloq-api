@@ -3,7 +3,8 @@ Test cases for Dashboard Home endpoints (Section 11.2).
 Tests 3-column layout with Fix Now, In Progress, and Done This Month columns.
 """
 from django.test import TestCase
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
+User = get_user_model()
 from rest_framework.test import APIClient
 from rest_framework import status
 from uuid import uuid4
