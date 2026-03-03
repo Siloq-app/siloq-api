@@ -3,7 +3,8 @@ Test cases for Content Plan tab endpoints (Section 11.5).
 Tests content gaps analysis, topic suggestions, and pipeline management.
 """
 from django.test import TestCase
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
+User = get_user_model()
 from rest_framework.test import APIClient
 from rest_framework import status
 from uuid import uuid4

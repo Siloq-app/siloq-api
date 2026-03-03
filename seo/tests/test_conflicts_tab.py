@@ -3,7 +3,8 @@ Deep test cases for Conflicts tab endpoints (Section 11.3).
 Tests real GSC data integration, conflict detection, and approval queue workflow.
 """
 from django.test import TestCase
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
+User = get_user_model()
 from rest_framework.test import APIClient
 from rest_framework import status
 from uuid import uuid4
