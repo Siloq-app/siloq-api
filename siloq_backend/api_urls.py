@@ -35,12 +35,13 @@ urlpatterns = [
     path('account-keys/', include('sites.account_key_urls')),
     # Site management
     path('sites/', include('sites.urls')),
-    # SEO endpoints nested under sites (conflicts, content-plan, etc.)
-    path('', include('seo.urls')),
+    # WordPress integration endpoints (scans, page sync) - MUST be before seo.urls
+    # to prevent the seo PageViewSet router from swallowing single-segment paths like /scans/
+    path('', include('integrations.urls')),
     # Google Search Console integration
     path('gsc/', include('integrations.gsc_urls')),
-    # WordPress integration endpoints (scans, page sync) - MUST be before pages/
-    path('', include('integrations.urls')),
+    # SEO endpoints nested under sites (conflicts, content-plan, etc.)
+    path('', include('seo.urls')),
     # Page management (dashboard) - comes after integrations to avoid conflicts
     path('pages/', include('seo.urls')),
     # Content generation jobs (WordPress plugin compatibility)
