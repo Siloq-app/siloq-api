@@ -9,7 +9,7 @@ class Migration(migrations.Migration):
     dependencies = [
         ('sites', '0001_initial'),
         ('seo', '0005_page_post_type'),
-        ('auth', '0012_alter_user_options'),
+        ('auth', '0012_alter_user_first_name_max_length'),
     ]
 
     operations = [
