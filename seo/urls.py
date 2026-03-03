@@ -5,6 +5,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .pages import PageViewSet
 from . import conflict_views
+from .content_recommendations import get_content_recommendations, generate_from_recommendation, approve_content
 
 router = DefaultRouter()
 router.register(r'', PageViewSet, basename='page')
