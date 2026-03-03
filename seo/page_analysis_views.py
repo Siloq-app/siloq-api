@@ -214,8 +214,8 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
         if wp_meta_data.get('faq_questions'):
             meta['faq_questions'] = wp_meta_data['faq_questions']
 
-        if meta['title']:
-            return meta
+        # NOTE: do NOT return early here — fall through to Strategy 3 (live HTML)
+        # so FAQ detection, H-tag hierarchy, and meta description always run.
 
     # ── Strategy 2: WordPress REST API ──────────────────────
     try:
