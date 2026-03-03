@@ -31,6 +31,12 @@ jobs:
 
     env:
       DATABASE_URL: postgres://siloq:siloq_test@localhost:5432/siloq_test
+      DB_NAME: siloq_test
+      DB_USER: siloq
+      DB_PASSWORD: siloq_test
+      DB_HOST: localhost
+      DB_PORT: '5432'
+      DB_SSLMODE: disable
       DJANGO_SETTINGS_MODULE: siloq_backend.settings
       SECRET_KEY: test-secret-key-not-for-production
       DEBUG: 'true'
