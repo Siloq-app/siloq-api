@@ -766,3 +766,118 @@ class RedirectRegistry(models.Model):
     class Meta:
         managed = False
         db_table = 'redirect_registry'
+
+
+class PageAnalysis(models.Model):
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name='analyses')
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='page_analyses', null=True)
+    analysis_data = models.JSONField(default=dict)
+    score = models.FloatField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'page_analyses'
+
+
+class SiteEntityProfile(models.Model):
+    site = models.OneToOneField('sites.Site', on_delete=models.CASCADE, related_name='entity_profile')
+    business_name = models.CharField(max_length=255, blank=True)
+    business_type = models.CharField(max_length=50, blank=True)
+    main_services = models.JSONField(default=list)
+    service_areas = models.JSONField(default=list)
+    logo_url = models.URLField(blank=True)
+    brands_used = models.JSONField(default=list)
+    url_yelp = models.URLField(blank=True)
+    team_members = models.JSONField(default=list)
+    is_service_area_business = models.BooleanField(default=False)
+
+    class Meta:
+        managed = False
+        db_table = 'site_entity_profiles'
+
+
+class SlugChangeLog(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='slug_changes')
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name='slug_changes')
+    old_slug = models.CharField(max_length=500)
+    new_slug = models.CharField(max_length=500)
+    redirect_created = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'slug_change_log'
+
+
+class SiloHealthScore(models.Model):
+    silo = models.ForeignKey(SiloDefinition, on_delete=models.CASCADE, related_name='health_scores')
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='silo_health_scores')
+    score = models.FloatField(default=0)
+    details = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'silo_health_scores'
+
+
+class FreshnessAlert(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='freshness_alerts')
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name='freshness_alerts')
+    alert_type = models.CharField(max_length=50)
+    message = models.TextField(blank=True)
+    is_resolved = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'freshness_alerts'
+
+
+class ContentHealthScore(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='content_health_scores')
+    score = models.FloatField(default=0)
+    details = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'content_health_scores'
+
+
+class ContentAuditLog(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='content_audit_logs')
+    action = models.CharField(max_length=100)
+    details = models.JSONField(default=dict)
+    created_by = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'content_audit_logs'
+
+
+class LifecycleQueue(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='lifecycle_queue')
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name='lifecycle_entries')
+    action = models.CharField(max_length=50)
+    status = models.CharField(max_length=20, default='pending')
+    priority = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'lifecycle_queue'
+
+
+class ValidationLog(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='validation_logs')
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, null=True, blank=True, related_name='validation_logs')
+    validation_type = models.CharField(max_length=50)
+    result = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'validation_logs'
