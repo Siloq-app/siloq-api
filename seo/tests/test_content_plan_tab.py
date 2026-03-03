@@ -245,7 +245,7 @@ class ContentPlanTabTestCase(TestCase):
             'recommendation': 'Create comprehensive guide covering content planning, creation, and distribution',
             'priority': 'high'
         }
-        response = self.client.post(url, payload)
+        response = self.client.post(url, payload, format='json')
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         data = response.json()
@@ -274,7 +274,7 @@ class ContentPlanTabTestCase(TestCase):
         url = f'/api/v1/sites/{self.site.id}/pages/{self.money_page3.id}/add-to-pipeline/'
         
         # Test missing topic
-        response = self.client.post(url, {'recommendation': 'test'})
+        response = self.client.post(url, {'recommendation': 'test'}, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('error', response.json())
         self.assertEqual(response.json()['error'], 'Topic is required')
@@ -437,6 +437,6 @@ class ContentPlanTabTestCase(TestCase):
             
             self.assertIn('site_info', data)
             site_info = data['site_info']
-            self.assertEqual(site_info['id'], str(self.site.id))
+            self.assertEqual(site_info['id'], self.site.id)
             self.assertEqual(site_info['name'], self.site.name)
             self.assertEqual(site_info['url'], self.site.url)
