@@ -136,7 +136,8 @@ def supporting_content_gap(request, site_id: int, page_id: int):
     - supporting_pages: list of pages that link TO this page
     - gap_count: how many more supporting pages are needed
     - missing_supporting_content: bool
-    - topic_plan: list of 3-5 business-specific article topics
+    - needed_supporting_pages: suggested pages to create (title + keyword)
+    - topic_plan: full generated topic list (backward compatible)
     - profile_completeness: partial check for topic generation blocking
     """
     site = get_object_or_404(Site, id=site_id, user=request.user)
@@ -185,9 +186,21 @@ def supporting_content_gap(request, site_id: int, page_id: int):
         'blocked_features': ['content_topic_generation'],
     }
 
+    gap_count = max(0, MIN_SUPPORTING_PAGES - current_count)
+
     topic_plan = []
     if not completeness.get('content_blocked') and missing_supporting_content:
         topic_plan = _generate_topic_plan(page, profile, site)
+
+    needed_supporting_pages = [
+        {
+            'title': t.get('title', ''),
+            'target_keyword': t.get('target_keyword', ''),
+            'content_type': t.get('content_type', 'supporting_article'),
+            'word_count': t.get('word_count', 1000),
+        }
+        for t in topic_plan[:gap_count]
+    ]
 
     return Response({
         'page_id':    page.id,
@@ -198,7 +211,8 @@ def supporting_content_gap(request, site_id: int, page_id: int):
         'supporting_page_count':     current_count,
         'min_recommended':           MIN_SUPPORTING_PAGES,
         'missing_supporting_content': missing_supporting_content,
-        'gap_count': max(0, MIN_SUPPORTING_PAGES - current_count),
+        'gap_count': gap_count,
+        'needed_supporting_pages': needed_supporting_pages,
         'topic_plan': topic_plan,
         'profile_completeness': {
             'content_blocked':   completeness.get('content_blocked', False),
