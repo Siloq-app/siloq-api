@@ -387,6 +387,12 @@ def _build_analysis_prompt(absolute_url: str, gsc_data: dict, wp_meta: dict, sit
                         for r in top_reviews if r.get("text")
                     ])
                 brands_used = getattr(profile, 'brands_used', None) or []
+                                # For homepage analysis: only use primary city — never a random service area city
+                _service_cities_line = (
+                    f"Primary Market: {profile.city}, {profile.state} (use this city ONLY in homepage recommendations)"
+                    if _is_homepage
+                    else f"Service Area Cities: {', '.join(profile.service_cities[:8]) if profile.service_cities else 'Not specified'}"
+                )
                 entity_context = f"""
 === BUSINESS ENTITY PROFILE ===
 Business: {profile.business_name}
@@ -394,11 +400,12 @@ Location: {profile.city}, {profile.state}
 Phone: {profile.phone}
 Services: {', '.join(profile.categories[:5]) if profile.categories else 'Not specified'}
 Brands/Products Used or Sold: {', '.join(brands_used[:8]) if brands_used else 'Not specified'}
-Service Area Cities: {', '.join(profile.service_cities[:8]) if profile.service_cities else 'Not specified'}
+{_service_cities_line}
 Google Rating: {profile.gbp_star_rating}★ ({profile.gbp_review_count} reviews)
 {f'Real Customer Reviews (USE THESE for CRO testimonial recommendations):{chr(10)}{reviews_text}' if reviews_text else 'No GBP reviews synced yet — for CRO testimonial recommendations, tell the user to connect their Google Business Profile in Settings.'}
 
 CONTENT SPECIFICITY REQUIREMENT: Any supporting content or blog topic recommendations MUST use the actual business name, services, brands, and cities listed above. Do NOT suggest generic topics like "5 Electrical Safety Tips". Instead use the formula: [Brand they use] + [service] + [city], or [problem] + [city], or [service] + cost + [city]. Every topic must be ownable by THIS specific business.
+{"HOMEPAGE LOCATION RULE: This is a homepage. Use ONLY the primary business city above in any location examples — NEVER use individual service area suburbs." if _is_homepage else ""}
 """
         except Exception:
             pass
