@@ -68,6 +68,8 @@ def create_draft(request, site_id: int):
     page_type = (request.data.get('page_type') or '').strip()
     target_keyword = (request.data.get('target_keyword') or '').strip()
     hub_page_id = request.data.get('hub_page_id')
+    gap_id = request.data.get('gap_id')
+    suggested_silo_id = request.data.get('suggested_silo_id')
 
     if not topic_title:
         return Response({'error': 'topic_title is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -112,6 +114,37 @@ def create_draft(request, site_id: int):
     if not edit_url and wp_post_id:
         edit_url = f"{site.url.rstrip('/')}/wp-admin/post.php?post={wp_post_id}&action=edit"
 
+    # Track create-draft entries for content pipeline view.
+    # This is a local mirror and does not replace the WP source of truth.
+    try:
+        if wp_post_id:
+            wp_post_id = int(wp_post_id)
+            post_status = str(wp_response.get('status', 'draft')).strip().lower()
+            local_status = 'publish' if post_status in {'publish', 'published'} else 'draft' if post_status == 'draft' else 'private'
+
+            marker_parts = ['draft_pipeline']
+            if gap_id:
+                marker_parts.append(f"gap:{str(gap_id).strip()}")
+            if suggested_silo_id is not None and str(suggested_silo_id).strip() != '':
+                marker_parts.append(f"silo:{str(suggested_silo_id).strip()}")
+
+            Page.objects.update_or_create(
+                site=site,
+                wp_post_id=wp_post_id,
+                defaults={
+                    'title': topic_title,
+                    'slug': slugify(topic_title),
+                    'url': f"{site.url.rstrip('/')}/{slugify(topic_title)}/",
+                    'status': local_status,
+                    'post_type': 'page' if page_type == 'sub_page' else 'post',
+                    'parent_id': hub_page_id if page_type == 'sub_page' else None,
+                    'siloq_page_id': '|'.join(marker_parts),
+                    'excerpt': target_keyword,
+                },
+            )
+    except Exception as exc:
+        logger.warning('Failed to mirror create-draft in local pipeline for site %s: %s', site.id, exc)
+
     return Response(
         {
             'wp_post_id': wp_post_id,
@@ -120,6 +153,70 @@ def create_draft(request, site_id: int):
         },
         status=status.HTTP_201_CREATED,
     )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def content_pipeline(request, site_id: int):
+    """
+    GET /api/v1/sites/{site_id}/content-pipeline/
+
+    Returns pages created through create-draft flow.
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+
+    pipeline_qs = (
+        Page.objects
+        .filter(site=site, siloq_page_id__startswith='draft_pipeline')
+        .order_by('-created_at')
+    )
+
+    pipeline = []
+    by_status = {'draft': 0, 'queued': 0, 'published': 0}
+
+    for page in pipeline_qs:
+        status_raw = (page.status or '').lower()
+        if status_raw == 'publish':
+            status_value = 'published'
+        elif status_raw == 'draft':
+            status_value = 'draft'
+        else:
+            status_value = 'queued'
+
+        marker = page.siloq_page_id or ''
+        gap_value = None
+        silo_value = None
+        for token in marker.split('|'):
+            if token.startswith('gap:'):
+                parsed_gap = token[4:].strip()
+                gap_value = parsed_gap or None
+            elif token.startswith('silo:'):
+                raw_silo = token[5:].strip()
+                if raw_silo:
+                    try:
+                        silo_value = int(raw_silo)
+                    except ValueError:
+                        silo_value = None
+
+        if silo_value is None and page.parent_id:
+            silo_value = page.parent_id
+
+        by_status[status_value] += 1
+        pipeline.append({
+            'id': page.id,
+            'title': page.title,
+            'status': status_value,
+            'suggested_silo_id': silo_value,
+            'wp_post_id': page.wp_post_id,
+            'gap_id': gap_value,
+            'created_at': page.created_at.isoformat() if page.created_at else None,
+        })
+
+    return Response({
+        'pipeline': pipeline,
+        'total': len(pipeline),
+        'by_status': by_status,
+    })
 
 
 @api_view(['POST'])

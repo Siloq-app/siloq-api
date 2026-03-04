@@ -50,6 +50,7 @@ from seo.supporting_content_views import (
     schema_inventory,
     generate_supporting_article,
     generate_snippet,
+    content_pipeline,
     junk_page_feed,
     create_draft,
     image_suggestion,
@@ -119,6 +120,7 @@ urlpatterns = [
     path('<int:site_id>/pages/<int:page_id>/supporting-content/generate/', generate_supporting_article, name='page-supporting-content-generate'),
     path('<int:site_id>/pages/<int:page_id>/generate-snippet/', generate_snippet, name='page-generate-snippet'),
     path('<int:site_id>/pages/create-draft/', create_draft, name='page-create-draft'),
+    path('<int:site_id>/content-pipeline/', content_pipeline, name='site-content-pipeline'),
     path('<int:site_id>/junk-pages/', junk_page_feed, name='site-junk-pages'),
     # About Us Intelligence (Section 05)
     path('<int:site_id>/pages/<int:page_id>/about-analysis/', about_us_analysis, name='page-about-analysis'),
