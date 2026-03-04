@@ -122,6 +122,64 @@ def create_draft(request, site_id: int):
     )
 
 
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def generate_snippet(request, site_id: int, page_id: int):
+    """
+    POST /api/v1/sites/{site_id}/pages/{page_id}/generate-snippet/
+
+    Body:
+    {
+      "content_type": "faq" | "services" | "about"
+    }
+
+    Returns:
+    {
+      "content": "generated text..."
+    }
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+    page = get_object_or_404(Page, id=page_id, site=site)
+
+    content_type = (request.data.get('content_type') or '').strip().lower()
+    allowed_types = {'faq', 'services', 'about'}
+    if content_type not in allowed_types:
+        return Response(
+            {'error': "content_type must be one of: faq, services, about"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        profile = SiteEntityProfile.objects.get(site=site)
+    except SiteEntityProfile.DoesNotExist:
+        profile = None
+
+    business_name = (getattr(profile, 'business_name', '') or site.name).strip()
+    city = (getattr(profile, 'city', '') or '').strip()
+    state = (getattr(profile, 'state', '') or '').strip()
+    location = ', '.join([v for v in [city, state] if v])
+    location_phrase = f" in {location}" if location else ''
+    service = page.title or 'this service'
+
+    snippet_by_type = {
+        'faq': (
+            f"What should customers know about {service}{location_phrase}? "
+            f"{business_name} recommends starting with a site-specific assessment, "
+            "reviewing timeline and budget expectations, and confirming the exact scope before work begins."
+        ),
+        'services': (
+            f"{business_name} provides {service}{location_phrase} with a focus on clear recommendations, "
+            "transparent pricing, and dependable execution from planning through completion."
+        ),
+        'about': (
+            f"{business_name} is a trusted team specializing in {service}{location_phrase}, "
+            "known for practical expertise, responsive communication, and quality-first results."
+        ),
+    }
+
+    return Response({'content': snippet_by_type[content_type]}, status=status.HTTP_200_OK)
+
+
 # =============================================================================
 # SUPPORTING CONTENT GAP DETECTION
 # =============================================================================
