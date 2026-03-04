@@ -28,6 +28,8 @@ from integrations.gsc import fetch_page_search_analytics
 from integrations.gsc_views import _get_valid_access_token
 from integrations.wordpress_webhook import send_webhook_to_wordpress
 from seo.models import Page, PageAnalysis, SEOData
+from seo.geographic_grounding import compute_geographic_grounding, compute_informational_gain
+from seo.freshness_scoring import compute_freshness_score
 from sites.models import Site
 
 logger = logging.getLogger(__name__)
@@ -71,7 +73,7 @@ OUTPUT FORMAT — respond with ONLY valid JSON:
       "recommendation": "Specific fix",
       "before": "Current text or 'Not present'",
       "after": "Improved version",
-      "field": "content_body|title|meta_description|h1|schema"
+      "field": "content_body|title|meta_description|h1|schema|internal_links"
     }
   ],
   "seo_recommendations": [...],
@@ -81,7 +83,14 @@ OUTPUT FORMAT — respond with ONLY valid JSON:
     "recommended": [{"level": "h1", "text": "..."}, {"level": "h2", "text": "..."}],
     "issues_summary": ["Missing H2s", "H1 lacks city"]
   }
-}"""
+}
+
+FIELD USAGE RULES (strictly enforce):
+- "internal_links": use for ANY recommendation about adding/fixing internal links. NEVER auto-injected. "after" = plain-text description of which links to add and where (e.g. "Add links to /services/, /contact/, and /about/ in the first paragraph"). Do NOT use "content_body" for internal link recs.
+- "content_body": use ONLY when adding substantive new content (FAQ, testimonials, service descriptions, CTAs). Never for link instructions.
+- "title", "meta_description", "h1": for those specific elements only.
+- "schema": for schema markup recommendations only.
+"""
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -169,16 +178,21 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
     }
 
     # ── Strategy 1: local Page model ────────────────────────
-    page_qs = Page.objects.filter(site=site, url__icontains=slug).select_related('seo_data').first()
-    if not page_qs:
-        # Try exact URL match variants
-        page_qs = (
-            Page.objects
-            .filter(site=site)
-            .filter(url__in=[absolute_url, absolute_url.rstrip('/'), absolute_url.rstrip('/') + '/'])
-            .select_related('seo_data')
-            .first()
-        )
+    # Always try exact URL match first to avoid empty-slug matching wrong pages.
+    # An empty slug (homepage) with url__icontains='' would match ALL pages.
+    page_qs = (
+        Page.objects
+        .filter(site=site)
+        .filter(url__in=[absolute_url, absolute_url.rstrip('/'), absolute_url.rstrip('/') + '/'])
+        .select_related('seo_data')
+        .first()
+    )
+    if not page_qs and not slug:
+        # Homepage fallback: look for is_homepage=True
+        page_qs = Page.objects.filter(site=site, is_homepage=True).select_related('seo_data').first()
+    if not page_qs and slug:
+        # Non-homepage fallback: slug-based search (safe since slug is non-empty)
+        page_qs = Page.objects.filter(site=site, url__icontains=slug).select_related('seo_data').first()
 
     if page_qs:
         meta['title'] = page_qs.title or ''
@@ -202,11 +216,18 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
 
         # Fallback: if meta_description still empty, use yoast_description synced from WP plugin.
         # This field is populated by AIOSEO, Yoast, or RankMath via sync_page() in the WP plugin.
-        if not meta['meta_description']:
-            meta['meta_description'] = page_qs.yoast_description or ''
+        # yoast_description from plugin sync = live AIOSEO/Yoast/RankMath value.
+        # Always prefer it over stale SEOData — plugin reads fresh from DB on every sync.
+        if page_qs.yoast_description:
+            meta['meta_description'] = page_qs.yoast_description
 
-        if meta['title']:
-            return meta
+        # Also pull faq_questions from wp_meta if plugin synced them (Elementor pages)
+        wp_meta_data = getattr(page_qs, 'wp_meta', {}) or {}
+        if wp_meta_data.get('faq_questions'):
+            meta['faq_questions'] = wp_meta_data['faq_questions']
+
+        # NOTE: do NOT return early here — fall through to Strategy 3 (live HTML)
+        # so FAQ detection, H-tag hierarchy, and meta description always run.
 
     # ── Strategy 2: WordPress REST API ──────────────────────
     try:
@@ -244,14 +265,48 @@ def _fetch_wp_meta_for_page(site: Site, absolute_url: str) -> dict:
         if resp.status_code == 200:
             html = resp.text
 
-            # Meta description — universal fallback for any SEO plugin
-            if not meta['meta_description']:
-                m = re.search(
-                    r'<meta\s+name=["\']+description["\']+\s+content=["\']+([^"\'>]*)["\']+',
-                    html, re.IGNORECASE
-                )
-                if m:
-                    meta['meta_description'] = m.group(1).strip()
+            # Meta description — robust extraction, always use live HTML value (DB may be stale)
+            # Handles AIOSEO, Yoast, RankMath, and native WP meta tags
+            for _pattern in [
+                r'<meta\s+name=["\']description["\']\s+content=["\']([^"\'>]{10,})["\']',
+                r'<meta\s+content=["\']([^"\'>]{10,})["\']\s+name=["\']description["\']',
+            ]:
+                _m = re.search(_pattern, html, re.IGNORECASE)
+                if _m:
+                    _candidate = _m.group(1).strip()
+                    if len(_candidate) > 10:
+                        meta['meta_description'] = _candidate
+                        break
+
+            # FAQ extraction — static HTML patterns (Elementor accordion titles are NOT JS-rendered)
+            _faq_qs = []
+            # 1. Elementor accordion/toggle widgets
+            for _q in re.findall(r'<a[^>]+elementor-(?:accordion|toggle)-title[^>]*>([^<]{5,})</a>', html, re.IGNORECASE):
+                _clean = _q.strip()
+                if _clean and len(_clean) > 5:
+                    _faq_qs.append(_clean)
+            # 2. h2-h5 headings containing ? (FAQ questions used as headings)
+            for _h_text in re.findall(r'<h[2-5][^>]*>([^<]*\?[^<]*)</h[2-5]>', html, re.IGNORECASE):
+                _clean = re.sub(r'<[^>]+>', '', _h_text).strip()
+                if _clean and len(_clean) > 10:
+                    _faq_qs.append(_clean)
+            # 3. dt/summary/button accordion patterns
+            for _pattern in [
+                r'<(?:dt|summary)[^>]*>\s*([^<]{10,}\?[^<]*?)\s*</(?:dt|summary)>',
+                r'<button[^>]*class=[^>]*(?:faq|accordion|toggle)[^>]*>\s*([^<]{10,})\s*</button>',
+                r'<[^>]+class=[^>]*(?:faq|accordion)[^>]*title[^>]*>([^<]{10,})</[^>]+>',
+            ]:
+                for _q in re.findall(_pattern, html, re.IGNORECASE | re.DOTALL):
+                    _clean = re.sub(r'<[^>]+>', '', _q).strip()
+                    if _clean and len(_clean) > 10:
+                        _faq_qs.append(_clean)
+            # 4. FAQ section heading detection (even without individual questions extracted)
+            if not _faq_qs:
+                _faq_heading = re.search(r'(?:frequently asked questions|FAQ section)', html, re.IGNORECASE)
+                if _faq_heading:
+                    _faq_qs.append('FAQ section present (questions JS-rendered)')
+            if _faq_qs:
+                meta['faq_questions'] = list(dict.fromkeys(_faq_qs))[:15]  # dedupe, cap at 15
 
             # Full H-tag hierarchy — extract H1–H4 in document order
             htag_re = re.compile(r'<h([1-4])[^>]*>(.*?)</h\1>', re.IGNORECASE | re.DOTALL)
@@ -348,9 +403,49 @@ CONTENT SPECIFICITY REQUIREMENT: Any supporting content or blog topic recommenda
         except Exception:
             pass
 
+    # ── Homepage detection ──────────────────────────────────────────────
+    from urllib.parse import urlparse as _urlparse
+    _parsed_path = _urlparse(absolute_url).path.rstrip('/')
+    _is_homepage = _parsed_path == '' or _parsed_path == '/'
+
+    _homepage_context = ""
+    if _is_homepage:
+        _homepage_context = """
+⚠️  HOMEPAGE DOCTRINE — CRITICAL RULES FOR THIS PAGE:
+This is the site's HOMEPAGE. It is a BRAND PAGE, not a keyword-targeting page.
+
+HOMEPAGE SEO RULES (follow these exactly):
+1. Title tag: Must be brand-first format: "[Business Name] | [Short Brand Tagline or City]". Do NOT optimize for a primary service keyword — that causes cannibalization with service pages.
+2. Meta description: Brand overview only. Describe who the business is and what they do broadly. Do NOT keyword-stuff service terms.
+3. H1: Should be a brand statement or brand tagline, not a keyword phrase.
+4. NO keyword targeting recommendations on the homepage. The homepage should NOT compete with service pages.
+5. Internal linking: ALWAYS recommend adding internal links to key service/money pages. This is the homepage's primary SEO job — pass authority to the pages that DO rank for keywords.
+6. Schema: LocalBusiness/Organization — confirm it's present and complete.
+7. Content body: Focus on brand clarity, trust signals, and calls to action — not keyword density.
+
+What you SHOULD recommend:
+- Internal links to top service pages (HIGH priority)
+- Brand clarity in title/H1 (not keyword targeting)
+- LocalBusiness schema completeness
+- Trust signals (reviews, years in business, certifications)
+- CTA above the fold
+
+What you MUST NOT recommend:
+- Adding primary service keywords to the title
+- Keyword-optimizing the H1 or meta description
+- Content that targets specific service keywords
+"""
+
+    faq_questions = wp_meta.get("faq_questions", [])
+    faq_section = ""
+    if faq_questions:
+        faq_section = "\n=== FAQ QUESTIONS DETECTED ON THIS PAGE ===\n"
+        faq_section += "\n".join("  - " + q for q in faq_questions)
+        faq_section += "\n(These FAQs are confirmed present - do NOT recommend adding FAQs)\n"
     return f"""Analyze this page against the Three-Layer Content Model.
 
 PAGE URL: {absolute_url}
+{_homepage_context}
 
 === SEO METADATA ===
 Title tag: {wp_meta.get('title') or 'Not set'}
@@ -377,6 +472,8 @@ Average position: {gsc_data.get('avg_position', 0)}
 Top ranking queries for this page:
 {query_summary}
 
+
+{faq_section}
 Generate GEO, SEO, and CRO scores and specific recommendations based on the ACTUAL content shown above. Every recommendation must reference specific text from this page."""
 
 
@@ -505,6 +602,16 @@ def _apply_recommendation_to_wordpress(site: Site, analysis: PageAnalysis, rec: 
     field = rec.get('field', '')
     after = rec.get('after', '')
     rec_id = rec.get('id')
+
+    # internal_links — NEVER auto-apply. Injecting links programmatically into page builder
+    # pages destroys layout and can duplicate structural HTML. Always manual action.
+    if field == 'internal_links':
+        return {
+            'rec_id': rec_id,
+            'success': False,
+            'error': 'requires_manual_action',
+            'guidance': after or 'Add these internal links manually in your page editor.',
+        }
 
     # content_body — send via content.apply_content (WP plugin handles find/replace + append)
     if field == 'content_body':
@@ -835,6 +942,116 @@ def _build_breadcrumbs(url: str) -> list:
 
 # ── View: POST /api/v1/sites/{site_id}/pages/analyze/ ─────────────────────────
 
+
+# ── Homepage brand-page post-processor ───────────────────────────────────────
+
+def _is_homepage_url(absolute_url: str) -> bool:
+    """True if the URL is the site root / homepage."""
+    from urllib.parse import urlparse
+    path = urlparse(absolute_url).path.rstrip('/')
+    return path == '' or path == '/'
+
+
+def _enforce_homepage_doctrine(ai_result: dict, wp_meta: dict, business_name: str) -> dict:
+    """
+    Post-process AI recommendations for the homepage.
+
+    DOCTRINE: The homepage is a BRAND PAGE. It should never keyword-target
+    service terms because that directly causes cannibalization with service pages.
+
+    This function:
+    - Strips any SEO recs that tell the homepage to keyword-optimize its title/H1/meta
+    - Replaces them with correct brand-page recommendations
+    - Ensures internal linking to money pages is always flagged (HIGH priority)
+    - Preserves valid recs (schema, CRO, GEO) as-is
+    """
+    import re
+
+    KEYWORD_TARGETING_PATTERNS = [
+        r'keyword', r'primary keyword', r'target keyword',
+        r'optimize.*title.*keyword', r'include.*keyword.*title',
+        r'title.*not optimized', r'seo.*title', r'keyword.*title',
+        r'rank.*keyword', r'focus keyword',
+    ]
+
+    def _is_keyword_targeting_rec(rec: dict) -> bool:
+        text = f"{rec.get('issue','')} {rec.get('recommendation','')}".lower()
+        return any(re.search(p, text) for p in KEYWORD_TARGETING_PATTERNS)
+
+    def _mentions_service_keyword_in_title(rec: dict) -> bool:
+        """Catch recs like 'Change title to Electrician Kansas City | Brand'"""
+        after = rec.get('after', '')
+        issue = rec.get('issue', '').lower()
+        field = rec.get('field', '')
+        # If it's touching the title and the 'after' looks like keyword | brand
+        if field == 'title' and '|' in after:
+            # Brand-first is OK: "Able Electric Inc | ..." — keyword-first is not
+            # Heuristic: if the first word is a common service term, it's keyword-first
+            first_word = after.split()[0].lower() if after else ''
+            service_indicators = [
+                'electrician', 'plumber', 'roofer', 'dentist', 'lawyer', 'attorney',
+                'contractor', 'hvac', 'landscaper', 'cleaner', 'painter', 'mechanic',
+                'doctor', 'therapist', 'accountant', 'realtor', 'insurance',
+            ]
+            return first_word in service_indicators
+        return False
+
+    # ── Filter bad SEO recs ───────────────────────────────────────────────────
+    original_seo = ai_result.get('seo_recommendations', [])
+    clean_seo = []
+    removed_count = 0
+
+    for rec in original_seo:
+        if _is_keyword_targeting_rec(rec) or _mentions_service_keyword_in_title(rec):
+            removed_count += 1
+            continue
+        clean_seo.append(rec)
+
+    # ── Always ensure internal linking rec exists ────────────────────────────
+    has_internal_link_rec = any(
+        'internal link' in f"{r.get('issue','')} {r.get('recommendation','')}".lower()
+        for r in clean_seo
+    )
+    if not has_internal_link_rec:
+        clean_seo.insert(0, {
+            'id': 'seo_homepage_internal_links',
+            'layer': 'SEO',
+            'priority': 'high',
+            'issue': 'Homepage is not linking to key service pages.',
+            'recommendation': (
+                'Add clear text links (or a services section) to your top money pages. '
+                'The homepage primary SEO role is to pass authority to the pages that rank for your service keywords. '
+                'Without these links, service pages receive less crawl priority and PageRank.'
+            ),
+            'before': 'No internal links to service pages detected.',
+            'after': 'Add a "Our Services" section with links to each service page, or include text links in the intro paragraph.',
+            'field': 'internal_links',
+            'homepage_doctrine': True,
+        })
+
+    # ── Add brand title rec if we removed a bad keyword-title rec ────────────
+    has_title_rec = any(r.get('field') == 'title' for r in clean_seo)
+    if removed_count > 0 and not has_title_rec:
+        current_title = wp_meta.get('title', 'Not set')
+        clean_seo.append({
+            'id': 'seo_homepage_brand_title',
+            'layer': 'SEO',
+            'priority': 'medium',
+            'issue': 'Homepage title should be brand-first, not keyword-first.',
+            'recommendation': (
+                f'Format: "[{business_name}] | [Short brand tagline or city]". '
+                'Never put a service keyword first in the homepage title — that creates '
+                'direct cannibalization with your service pages that are trying to rank for those keywords.'
+            ),
+            'before': current_title,
+            'after': f'{business_name} | Professional Services in Your Area',
+            'field': 'title',
+            'homepage_doctrine': True,
+        })
+
+    ai_result['seo_recommendations'] = clean_seo
+    return ai_result
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def analyze_page(request, site_id: int):
@@ -875,6 +1092,17 @@ def analyze_page(request, site_id: int):
         # Step 4: Call AI
         ai_result = _call_ai_for_analysis(user_message)
 
+        # Step 4b: Homepage doctrine enforcement
+        if _is_homepage_url(absolute_url):
+            _biz_name = ''
+            try:
+                from seo.models import SiteEntityProfile
+                _prof = SiteEntityProfile.objects.filter(site=site).first()
+                _biz_name = _prof.business_name if _prof else ''
+            except Exception:
+                pass
+            ai_result = _enforce_homepage_doctrine(ai_result, wp_meta, _biz_name)
+
         # Step 5: Compute overall score (weighted: GEO 30%, SEO 40%, CRO 30%)
         geo_score = int(ai_result['geo_score'])
         seo_score = int(ai_result['seo_score'])
@@ -899,6 +1127,56 @@ def analyze_page(request, site_id: int):
         analysis.cro_recommendations = cro_recs
         heading_struct = _normalize_heading_structure(ai_result.get('heading_structure'))
         analysis.wp_meta = {**(analysis.wp_meta or {}), 'heading_structure': heading_struct}
+
+        # ── Geographic Ghosting + Informational Gain ───────────────────────
+        try:
+            page_obj = Page.objects.filter(site=site, url=absolute_url).first()
+            h1_text = wp_meta.get('h1', '') or ''
+            page_content = wp_meta.get('content_snippet', '') or ''
+
+            if page_obj:
+                geo_grounding = compute_geographic_grounding(page_obj, h1_text)
+
+                # Fetch other pages in hub for informational gain comparison
+                hub_pages = Page.objects.filter(
+                    site=site,
+                    hub_page_id=page_obj.hub_page_id,
+                ).exclude(id=page_obj.id) if page_obj.hub_page_id else Page.objects.none()
+
+                hub_contents = []
+                for hp in hub_pages[:20]:
+                    analysis_qs = PageAnalysis.objects.filter(
+                        site=site, page_url=hp.url
+                    ).order_by('-created_at').first()
+                    if analysis_qs and analysis_qs.wp_meta:
+                        snippet = analysis_qs.wp_meta.get('content_snippet', '')
+                        if snippet:
+                            hub_contents.append(snippet)
+
+                informational_gain = compute_informational_gain(page_obj, page_content, hub_contents)
+            else:
+                geo_grounding = {'is_location_page': False, 'warning': False,
+                                 'grounding_status': None, 'recommendations': []}
+                informational_gain = {'label': 'unknown', 'warning': False,
+                                      'unique_percentage': None, 'recommendations': []}
+
+            # Freshness score
+            try:
+                page_for_freshness = page_obj if page_obj else None
+                freshness = compute_freshness_score(page_for_freshness, analysis)
+            except Exception as fs_exc:
+                logger.warning("Freshness scoring failed: %s", fs_exc)
+                freshness = {'score': None, 'label': 'unknown', 'warning': False, 'recommendations': []}
+
+            analysis.wp_meta = {
+                **(analysis.wp_meta or {}),
+                'geographic_grounding': geo_grounding,
+                'informational_gain': informational_gain,
+                'freshness': freshness,
+            }
+        except Exception as gg_exc:
+            logger.warning("Geographic grounding/IG computation failed: %s", gg_exc)
+
         analysis.status = 'complete'
         analysis.completed_at = timezone.now()
         analysis.save()
@@ -1167,6 +1445,19 @@ def _serialize_analysis(analysis: PageAnalysis) -> dict:
             } if analysis.wp_meta else {},
         },
         'heading_structure': (analysis.wp_meta or {}).get('heading_structure') or {'current': [], 'recommended': [], 'issues_summary': []},
+        'geographic_grounding': (analysis.wp_meta or {}).get('geographic_grounding') or {
+            'is_location_page': False, 'target_location': None, 'grounding_status': None,
+            'grounding_signals': [], 'missing_signals': [], 'warning': False,
+            'warning_message': None, 'recommendations': [],
+        },
+        'informational_gain': (analysis.wp_meta or {}).get('informational_gain') or {
+            'label': 'unknown', 'warning': False, 'unique_percentage': None,
+            'swap_pattern_detected': False, 'recommendations': [],
+        },
+        'freshness': (analysis.wp_meta or {}).get('freshness') or {
+            'score': None, 'label': 'unknown', 'emoji': '○', 'warning': False,
+            'components': {}, 'outdated_flags': [], 'recommendations': [],
+        },
         'created_at': analysis.created_at.isoformat() if analysis.created_at else None,
         'completed_at': analysis.completed_at.isoformat() if analysis.completed_at else None,
     }

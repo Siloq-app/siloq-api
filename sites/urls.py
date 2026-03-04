@@ -50,7 +50,10 @@ from seo.supporting_content_views import (
     generate_supporting_article,
     junk_page_feed,
     create_draft,
+    image_suggestion,
+    generate_image,
 )
+from seo.freshness_views import site_freshness, page_freshness
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -96,6 +99,9 @@ urlpatterns = [
     # Pages Content Optimization — Three-Layer Model (GEO + SEO + CRO)
     path('<int:site_id>/pages/analyze/', analyze_page, name='page-analyze'),
     path('<int:site_id>/pages/analyze-all/', analyze_all_pages, name='page-analyze-all'),
+
+    path('<int:site_id>/freshness/', site_freshness, name='site-freshness'),
+    path('<int:site_id>/pages/<int:page_id>/freshness/', page_freshness, name='page-freshness'),
     path('<int:site_id>/approvals/', list_approvals, name='site-approvals'),
     path('<int:site_id>/pages/analysis/', list_analyses, name='page-analysis-list'),
     path('<int:site_id>/pages/analysis/<int:analysis_id>/', get_analysis, name='page-analysis-detail'),
@@ -111,6 +117,9 @@ urlpatterns = [
     path('<int:site_id>/junk-pages/', junk_page_feed, name='site-junk-pages'),
     # About Us Intelligence (Section 05)
     path('<int:site_id>/pages/<int:page_id>/about-analysis/', about_us_analysis, name='page-about-analysis'),
+    # Image Suggestion + Generation
+    path('<int:site_id>/pages/<int:page_id>/image-suggestion/', image_suggestion, name='page-image-suggestion'),
+    path('<int:site_id>/generate-image/', generate_image, name='site-generate-image'),
     # Schema Inventory — show existing + recommended + generated (Section 03)
     path('<int:site_id>/pages/analysis/<int:analysis_id>/schema/', schema_inventory, name='page-schema-inventory'),
 ]

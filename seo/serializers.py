@@ -93,6 +93,7 @@ class PageSyncSerializer(serializers.Serializer):
     excerpt = serializers.CharField(required=False, allow_blank=True)
     status = serializers.CharField(default='publish')
     post_type = serializers.CharField(required=False, default='page')  # page, post, product, product_cat
+    type = serializers.CharField(required=False, allow_blank=True, default='')  # alias sent by older plugin versions; mapped to post_type below
     published_at = FlexibleDateTimeField(required=False, allow_null=True)
     modified_at = FlexibleDateTimeField(required=False, allow_null=True)
     slug = serializers.CharField(max_length=500, required=False, allow_blank=True)
@@ -106,6 +107,9 @@ class PageSyncSerializer(serializers.Serializer):
     page_builder = serializers.CharField(required=False, allow_blank=True, default='unknown')
     junk_action = serializers.CharField(required=False, allow_null=True, default=None)
     junk_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
+    faq_questions = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list
+    )  # Elementor accordion/toggle/FAQ widget questions
 
     def to_internal_value(self, data):
         """Flatten nested meta fields if present (yoast_title, yoast_description, featured_image, is_noindex)."""

@@ -113,3 +113,47 @@ def freshness_alert_snooze(request, alert_id):
     alert.save(update_fields=['snoozed_until', 'status', 'updated_at'])
 
     return Response({'data': _serialize_alert(alert)})
+
+
+# ── New: Freshness Score Endpoints (March 2026) ───────────────────────────────
+
+from seo.freshness_scoring import compute_freshness_score, compute_site_freshness_summary
+from seo.models import Page, PageAnalysis
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def site_freshness(request, site_id: int):
+    """
+    GET /api/v1/sites/{site_id}/freshness/
+    Returns freshness scores for all pages in the site, sorted most stale first.
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+    pages = Page.objects.filter(site=site, is_active=True).order_by('url')
+
+    pairs = []
+    for page in pages:
+        analysis = PageAnalysis.objects.filter(
+            site=site, page_url=page.url, status='complete'
+        ).order_by('-created_at').first()
+        pairs.append((page, analysis))
+
+    summary = compute_site_freshness_summary(pairs)
+    return Response(summary)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def page_freshness(request, site_id: int, page_id: int):
+    """
+    GET /api/v1/sites/{site_id}/pages/{page_id}/freshness/
+    Returns detailed freshness score for a single page.
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+    page = get_object_or_404(Page, id=page_id, site=site)
+    analysis = PageAnalysis.objects.filter(
+        site=site, page_url=page.url, status='complete'
+    ).order_by('-created_at').first()
+
+    result = compute_freshness_score(page, analysis)
+    return Response({'page_id': page_id, 'page_url': page.url, **result})
