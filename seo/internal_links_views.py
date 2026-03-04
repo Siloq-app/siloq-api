@@ -390,17 +390,51 @@ def suggest_widget_edit(request, site_id: int, page_id: int):
             + '\n'.join(link_lines)
         )
 
+    # Build entity/business context for more targeted suggestions
+    entity_context = ""
+    try:
+        from seo.models import SiteEntityProfile
+        profile = SiteEntityProfile.objects.filter(site_id=site_id).first()
+        if profile:
+            parts = []
+            if getattr(profile, 'business_name', None):
+                parts.append(f"Business: {profile.business_name}")
+            if getattr(profile, 'business_type', None):
+                parts.append(f"Type: {profile.business_type}")
+            if getattr(profile, 'primary_services', None):
+                services = profile.primary_services
+                if isinstance(services, list):
+                    parts.append(f"Services: {', '.join(services[:5])}")
+            if parts:
+                entity_context = "\n\nBusiness context:\n" + "\n".join(parts)
+    except Exception:
+        pass
+
     system_prompt = (
-        "You are a professional SEO content editor. You edit website content widgets "
-        "to improve clarity, engagement, and SEO value while maintaining the original voice and intent. "
-        "Return ONLY the edited HTML — no explanation, no markdown fences."
+        "You are a conversion-focused SEO content editor working on a local business website. "
+        "Your job is to make meaningful, substantive rewrites — not light paraphrasing. "
+        "When editing:\n"
+        "- Rewrite sentences to be clearer, more specific, and more compelling\n"
+        "- Add concrete detail where content is vague (specific services, outcomes, locations)\n"
+        "- Lead with the most important information — cut throat-clearing openers\n"
+        "- Use active voice and direct language\n"
+        "- If the edit instruction says to improve SEO: naturally include the target keyword 2-3 times, "
+        "  improve heading hierarchy, and make the content more comprehensive\n"
+        "- If the edit instruction says to improve conversions: add specifics, social proof language, "
+        "  urgency, or a stronger call to action\n"
+        "- Preserve all HTML tags and structure — only change the text content\n"
+        "- The result should be noticeably different from the original and clearly better\n"
+        "Return ONLY the edited HTML — no explanation, no markdown fences, no preamble."
     )
 
     user_prompt = (
-        f"Page: {page.title}\nURL: {page.url}\n\n"
+        f"Page: {page.title}\nURL: {page.url}"
+        f"{entity_context}\n\n"
         f"Edit instruction: {edit_instruction}\n\n"
         f"Current widget content:\n{widget_content}"
-        f"{link_context}"
+        f"{link_context}\n\n"
+        "Important: Make this meaningfully better, not just slightly rephrased. "
+        "The client should immediately see the improvement."
     )
 
     # Call Claude API
