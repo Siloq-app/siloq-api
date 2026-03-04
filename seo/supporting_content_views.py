@@ -21,10 +21,12 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
+from django.utils.text import slugify
 
 from sites.models import Site
 from seo.models import Page, InternalLink, SiteEntityProfile
 from seo.profile_validators import get_profile_completeness
+from integrations.wordpress_webhook import send_webhook_to_wordpress
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,88 @@ MIN_SUPPORTING_PAGES = 2
 
 # Money page types that benefit from supporting content
 MONEY_PAGE_TYPES = {'money', 'service', 'service_hub', 'location', 'product'}
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_draft(request, site_id: int):
+    """
+    POST /api/v1/sites/{site_id}/pages/create-draft/
+
+    Body:
+    {
+      "topic_title": "...",
+      "page_type": "sub_page" | "blog_post",
+      "target_keyword": "...",
+      "hub_page_id": 123
+    }
+
+    Action:
+    - Fire content.create_draft webhook to WP plugin
+
+    Returns:
+    - wp_post_id
+    - edit_url
+    - status
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+
+    topic_title = (request.data.get('topic_title') or '').strip()
+    page_type = (request.data.get('page_type') or '').strip()
+    target_keyword = (request.data.get('target_keyword') or '').strip()
+    hub_page_id = request.data.get('hub_page_id')
+
+    if not topic_title:
+        return Response({'error': 'topic_title is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if page_type not in {'sub_page', 'blog_post'}:
+        return Response({'error': 'page_type must be either sub_page or blog_post'}, status=status.HTTP_400_BAD_REQUEST)
+    if not target_keyword:
+        return Response({'error': 'target_keyword is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if page_type == 'sub_page' and not hub_page_id:
+        return Response({'error': 'hub_page_id is required for sub_page'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if hub_page_id:
+        try:
+            hub_page_id = int(hub_page_id)
+        except (TypeError, ValueError):
+            return Response({'error': 'hub_page_id must be an integer'}, status=status.HTTP_400_BAD_REQUEST)
+
+        hub_exists = Page.objects.filter(id=hub_page_id, site=site).exists()
+        if not hub_exists:
+            return Response({'error': f'Hub page with ID {hub_page_id} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    webhook_payload = {
+        'topic_title': topic_title,
+        'title': topic_title,
+        'page_type': page_type,
+        'target_keyword': target_keyword,
+        'hub_page_id': hub_page_id,
+        'slug': slugify(topic_title),
+        'status': 'draft',
+    }
+
+    wp_result = send_webhook_to_wordpress(site, 'content.create_draft', webhook_payload)
+    if not wp_result.get('success'):
+        return Response(
+            {'error': f"WordPress webhook failed: {wp_result.get('error', 'unknown error')}"},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    wp_response = wp_result.get('response') or {}
+    wp_post_id = wp_response.get('wp_post_id') or wp_response.get('post_id')
+    edit_url = wp_response.get('edit_url')
+    if not edit_url and wp_post_id:
+        edit_url = f"{site.url.rstrip('/')}/wp-admin/post.php?post={wp_post_id}&action=edit"
+
+    return Response(
+        {
+            'wp_post_id': wp_post_id,
+            'edit_url': edit_url,
+            'status': wp_response.get('status', 'draft'),
+        },
+        status=status.HTTP_201_CREATED,
+    )
 
 
 # =============================================================================
