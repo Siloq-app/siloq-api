@@ -57,6 +57,7 @@ from seo.supporting_content_views import (
     generate_image,
 )
 from seo.freshness_views import site_freshness, page_freshness
+from seo.internal_links_views import get_related_pages, suggest_widget_edit
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -129,4 +130,7 @@ urlpatterns = [
     path('<int:site_id>/generate-image/', generate_image, name='site-generate-image'),
     # Schema Inventory — show existing + recommended + generated (Section 03)
     path('<int:site_id>/pages/analysis/<int:analysis_id>/schema/', schema_inventory, name='page-schema-inventory'),
+    # Internal Linking Context (Reverse Silo)
+    path('<int:site_id>/pages/<int:page_id>/related-pages/', get_related_pages, name='page-related-pages'),
+    path('<int:site_id>/pages/<int:page_id>/suggest-widget-edit/', suggest_widget_edit, name='page-suggest-widget-edit'),
 ]
