@@ -387,6 +387,12 @@ def _build_analysis_prompt(absolute_url: str, gsc_data: dict, wp_meta: dict, sit
                         for r in top_reviews if r.get("text")
                     ])
                 brands_used = getattr(profile, 'brands_used', None) or []
+                                # For homepage analysis: only use primary city — never a random service area city
+                _service_cities_line = (
+                    f"Primary Market: {profile.city}, {profile.state} (use this city ONLY in homepage recommendations)"
+                    if _is_homepage
+                    else f"Service Area Cities: {', '.join(profile.service_cities[:8]) if profile.service_cities else 'Not specified'}"
+                )
                 entity_context = f"""
 === BUSINESS ENTITY PROFILE ===
 Business: {profile.business_name}
@@ -394,11 +400,12 @@ Location: {profile.city}, {profile.state}
 Phone: {profile.phone}
 Services: {', '.join(profile.categories[:5]) if profile.categories else 'Not specified'}
 Brands/Products Used or Sold: {', '.join(brands_used[:8]) if brands_used else 'Not specified'}
-Service Area Cities: {', '.join(profile.service_cities[:8]) if profile.service_cities else 'Not specified'}
+{_service_cities_line}
 Google Rating: {profile.gbp_star_rating}★ ({profile.gbp_review_count} reviews)
 {f'Real Customer Reviews (USE THESE for CRO testimonial recommendations):{chr(10)}{reviews_text}' if reviews_text else 'No GBP reviews synced yet — for CRO testimonial recommendations, tell the user to connect their Google Business Profile in Settings.'}
 
 CONTENT SPECIFICITY REQUIREMENT: Any supporting content or blog topic recommendations MUST use the actual business name, services, brands, and cities listed above. Do NOT suggest generic topics like "5 Electrical Safety Tips". Instead use the formula: [Brand they use] + [service] + [city], or [problem] + [city], or [service] + cost + [city]. Every topic must be ownable by THIS specific business.
+{"HOMEPAGE LOCATION RULE: This is a homepage. Use ONLY the primary business city above in any location examples — NEVER use individual service area suburbs." if _is_homepage else ""}
 """
         except Exception:
             pass
@@ -410,9 +417,11 @@ CONTENT SPECIFICITY REQUIREMENT: Any supporting content or blog topic recommenda
 
     _homepage_context = ""
     if _is_homepage:
-        _homepage_context = """
+        _primary_city = profile.city if profile else ''
+        _homepage_context = f"""
 ⚠️  HOMEPAGE DOCTRINE — CRITICAL RULES FOR THIS PAGE:
 This is the site's HOMEPAGE. It is a BRAND PAGE, not a keyword-targeting page.
+PRIMARY BUSINESS CITY: {_primary_city} — use ONLY this city in all suggestions.
 
 HOMEPAGE SEO RULES (follow these exactly):
 1. Title tag: Must be brand-first format: "[Business Name] | [Short Brand Tagline or City]". Do NOT optimize for a primary service keyword — that causes cannibalization with service pages.
@@ -422,6 +431,8 @@ HOMEPAGE SEO RULES (follow these exactly):
 5. Internal linking: ALWAYS recommend adding internal links to key service/money pages. This is the homepage's primary SEO job — pass authority to the pages that DO rank for keywords.
 6. Schema: LocalBusiness/Organization — confirm it's present and complete.
 7. Content body: Focus on brand clarity, trust signals, and calls to action — not keyword density.
+
+CRITICAL CITY REPLACEMENT RULE: If the existing page content (BEFORE) mentions any city OTHER than {_primary_city}, your AFTER suggestion MUST replace that city with "{_primary_city}". The homepage must represent the primary market, not a service suburb. For example: if BEFORE says "Excelsior Springs home" → AFTER must say "{_primary_city} home". This applies to every AFTER suggestion you generate.
 
 What you SHOULD recommend:
 - Internal links to top service pages (HIGH priority)
@@ -434,6 +445,7 @@ What you MUST NOT recommend:
 - Adding primary service keywords to the title
 - Keyword-optimizing the H1 or meta description
 - Content that targets specific service keywords
+- Any content referencing a service area suburb as the primary location
 """
 
     faq_questions = wp_meta.get("faq_questions", [])
