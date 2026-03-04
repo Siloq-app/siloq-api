@@ -57,6 +57,7 @@ from seo.supporting_content_views import (
     generate_image,
 )
 from seo.freshness_views import site_freshness, page_freshness
+from seo.schema_graph_views import schema_graph, schema_graph_completeness, schema_graph_regenerate
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -129,4 +130,8 @@ urlpatterns = [
     path('<int:site_id>/generate-image/', generate_image, name='site-generate-image'),
     # Schema Inventory — show existing + recommended + generated (Section 03)
     path('<int:site_id>/pages/analysis/<int:analysis_id>/schema/', schema_inventory, name='page-schema-inventory'),
+    # Schema Graph — GEO-first full entity graph endpoint (AI-crawler optimized)
+    path('<int:site_id>/schema-graph/', schema_graph, name='site-schema-graph'),
+    path('<int:site_id>/schema-graph/completeness/', schema_graph_completeness, name='site-schema-graph-completeness'),
+    path('<int:site_id>/schema-graph/regenerate/', schema_graph_regenerate, name='site-schema-graph-regenerate'),
 ]
