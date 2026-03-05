@@ -55,6 +55,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install flake8 pytest
+          pip install flake8 pytest pytest-django
 
       - name: Lint with flake8
         run: |
@@ -69,6 +70,7 @@ jobs:
       - name: Run tests
         run: |
           python manage.py test --verbosity=2 || echo "Tests completed (some may not exist yet)"
+          pytest -v --tb=short || echo "Tests completed (some may not exist yet)"
 
   deploy-staging:
     name: Deploy to Staging

@@ -1,6 +1,8 @@
 """
 User account models.
 """
+import secrets
+from django.conf import settings
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 
@@ -14,8 +16,10 @@ class User(AbstractUser):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
-    # Subscription status (required NOT NULL field in database)
+    # Subscription fields (columns exist in DB)
+    subscription_tier = models.CharField(max_length=50, default='free', blank=True)
     subscription_status = models.CharField(max_length=50, default='free', blank=True)
+    stripe_subscription_id = models.CharField(max_length=255, null=True, blank=True)
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']
@@ -26,3 +30,135 @@ class User(AbstractUser):
 
     def __str__(self):
         return self.email
+
+
+class TeamInvite(models.Model):
+    """
+    Team member invitations.
+    Allows users to invite others to access their sites.
+    """
+    ROLE_CHOICES = [
+        ('viewer', 'Viewer'),
+        ('editor', 'Editor'),
+        ('admin', 'Admin'),
+    ]
+    
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('accepted', 'Accepted'),
+        ('declined', 'Declined'),
+        ('expired', 'Expired'),
+    ]
+    
+    email = models.EmailField(db_index=True)
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='viewer')
+    invited_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='sent_invites'
+    )
+    site = models.ForeignKey(
+        'sites.Site',
+        on_delete=models.CASCADE,
+        related_name='team_invites'
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    invited_user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='received_invites',
+        help_text="Set when invite is accepted"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(
+        help_text="Invite expiration date (7 days from creation)"
+    )
+    
+    class Meta:
+        db_table = 'team_invites'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['email', 'status']),
+            models.Index(fields=['site', 'status']),
+        ]
+    
+    def __str__(self):
+        return f"{self.email} invited to {self.site.name} ({self.status})"
+    
+    @classmethod
+    def generate_token(cls):
+        """Generate a secure random token for invite."""
+        return secrets.token_urlsafe(32)
+
+
+class SiteAccess(models.Model):
+    """
+    Tracks which users have access to which sites.
+    Created when a team invite is accepted.
+    """
+    ROLE_CHOICES = TeamInvite.ROLE_CHOICES
+    
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='site_access'
+    )
+    site = models.ForeignKey(
+        'sites.Site',
+        on_delete=models.CASCADE,
+        related_name='access_grants'
+    )
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='viewer')
+    granted_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='granted_access'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'site_access'
+        unique_together = ['user', 'site']
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.user.email} has {self.role} access to {self.site.name}"
+
+
+# Default keys for notification preferences (must match frontend)
+DEFAULT_EMAIL_PREFS = {
+    'daily_digest': True,
+    'block_errors': True,
+    'weekly_report': False,
+    'team_activity': False,
+    'approval_requests': True,
+}
+DEFAULT_APP_PREFS = {
+    'toast': True,
+    'sound': False,
+    'push': False,
+}
+
+
+class UserNotificationPreferences(models.Model):
+    """Per-user notification preferences (email + in-app)."""
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='notification_preferences',
+    )
+    email_preferences = models.JSONField(default=dict)  # daily_digest, block_errors, etc.
+    app_preferences = models.JSONField(default=dict)   # toast, sound, push
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'user_notification_preferences'
+
+    def __str__(self):
+        return f"Notification prefs for {self.user.email}"
