@@ -680,6 +680,25 @@ class PageAnalysis(models.Model):
         return f"Analysis {self.id} — {self.page_url} [{self.status}]"
 
 
+class SiteGSCPageData(models.Model):
+    """Per-page GSC performance data, synced from Google Search Console."""
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='gsc_pages')
+    page = models.ForeignKey('seo.Page', on_delete=models.CASCADE, null=True, blank=True, related_name='gsc_data')
+    url = models.URLField(max_length=2048)
+    impressions_28d = models.IntegerField(default=0)
+    clicks_28d = models.IntegerField(default=0)
+    avg_position = models.FloatField(null=True, blank=True)
+    top_queries = models.JSONField(default=list)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'seo_gsc_page_data'
+        unique_together = [('site', 'url')]
+
+    def __str__(self):
+        return f"GSC {self.url} ({self.clicks_28d}c / {self.impressions_28d}i)"
+
+
 class SlugChangeLog(models.Model):
     site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True, related_name='slug_changes')
     page_id = models.IntegerField(null=True, blank=True)
