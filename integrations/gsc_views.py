@@ -30,7 +30,7 @@ from rest_framework.response import Response
 
 from sites.models import Site
 from sites.analysis import analyze_gsc_data, get_query_intent
-from seo.models import Page, SiteEntityProfile, SiloDefinition
+from seo.models import Page, SiteEntityProfile, SiloDefinition, SiteGSCPageData
 
 logger = logging.getLogger(__name__)
 
@@ -885,3 +885,209 @@ def _fetch_search_analytics(
         results.append(result)
     
     return results
+
+
+# ── New GSC endpoints: status, sync, pages, disconnect ────────────────────────
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def gsc_status(request, site_id):
+    """
+    GET /api/v1/sites/{site_id}/gsc/status/
+    Returns GSC connection status for a site.
+    """
+    try:
+        site = Site.objects.get(id=site_id, user=request.user)
+    except Site.DoesNotExist:
+        return Response({'error': 'Site not found'}, status=404)
+
+    connected = bool(site.gsc_site_url and site.gsc_refresh_token)
+    last_sync = None
+    if connected:
+        latest = SiteGSCPageData.objects.filter(site=site).order_by('-synced_at').first()
+        if latest:
+            last_sync = latest.synced_at.isoformat()
+
+    return Response({
+        'connected': connected,
+        'property': site.gsc_site_url or '',
+        'last_sync': last_sync,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def gsc_sync(request, site_id):
+    """
+    POST /api/v1/sites/{site_id}/gsc/sync/
+    Fetches last 28 days of GSC page-level data and persists to SiteGSCPageData.
+    """
+    try:
+        site = Site.objects.get(id=site_id, user=request.user)
+    except Site.DoesNotExist:
+        return Response({'error': 'Site not found'}, status=404)
+
+    if not site.gsc_site_url or not site.gsc_refresh_token:
+        return Response({'error': 'GSC not connected for this site'}, status=400)
+
+    access_token = _get_valid_access_token(site)
+    if not access_token:
+        return Response({'error': 'Failed to get GSC access token. Re-connect GSC.'}, status=401)
+
+    start_date = (datetime.now() - timedelta(days=28)).strftime('%Y-%m-%d')
+    end_date = datetime.now().strftime('%Y-%m-%d')
+
+    # Fetch page-level data (aggregated across queries)
+    page_rows = _fetch_search_analytics(
+        access_token=access_token,
+        site_url=site.gsc_site_url,
+        start_date=start_date,
+        end_date=end_date,
+        dimensions=['page'],
+        row_limit=5000,
+    )
+
+    if not page_rows:
+        return Response({
+            'error': 'No data returned from GSC. The property may not be verified.',
+        }, status=404)
+
+    # Fetch query+page data for top_queries per page
+    query_page_rows = _fetch_search_analytics(
+        access_token=access_token,
+        site_url=site.gsc_site_url,
+        start_date=start_date,
+        end_date=end_date,
+        dimensions=['query', 'page'],
+        row_limit=5000,
+    )
+
+    # Build top queries per page URL
+    page_queries = defaultdict(list)
+    for row in query_page_rows:
+        page_url = (row.get('page') or '').rstrip('/')
+        if page_url:
+            page_queries[page_url].append({
+                'query': row.get('query', ''),
+                'clicks': row.get('clicks', 0),
+                'impressions': row.get('impressions', 0),
+                'position': round(row.get('position', 0), 1),
+            })
+
+    # Sort each page's queries by impressions desc, keep top 20
+    for url in page_queries:
+        page_queries[url].sort(key=lambda q: q['impressions'], reverse=True)
+        page_queries[url] = page_queries[url][:20]
+
+    # Build lookup for matching Page objects
+    page_url_map = {}
+    for p in Page.objects.filter(site=site).only('id', 'url'):
+        normalized = (p.url or '').rstrip('/')
+        if normalized:
+            page_url_map[normalized] = p
+
+    # Upsert SiteGSCPageData rows
+    total_impressions = 0
+    total_clicks = 0
+    synced_count = 0
+
+    for row in page_rows:
+        page_url = (row.get('page') or '').rstrip('/')
+        if not page_url:
+            continue
+
+        impressions = row.get('impressions', 0)
+        clicks = row.get('clicks', 0)
+        position = row.get('position')
+        top_q = page_queries.get(page_url, [])
+        matched_page = page_url_map.get(page_url)
+
+        SiteGSCPageData.objects.update_or_create(
+            site=site,
+            url=page_url,
+            defaults={
+                'page': matched_page,
+                'impressions_28d': impressions,
+                'clicks_28d': clicks,
+                'avg_position': round(position, 1) if position else None,
+                'top_queries': top_q,
+            },
+        )
+        total_impressions += impressions
+        total_clicks += clicks
+        synced_count += 1
+
+    return Response({
+        'synced_pages': synced_count,
+        'impressions': total_impressions,
+        'clicks': total_clicks,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def gsc_pages(request, site_id):
+    """
+    GET /api/v1/sites/{site_id}/gsc/pages/
+    Returns persisted per-page GSC data.
+    """
+    try:
+        site = Site.objects.get(id=site_id, user=request.user)
+    except Site.DoesNotExist:
+        return Response({'error': 'Site not found'}, status=404)
+
+    rows = SiteGSCPageData.objects.filter(site=site).order_by('-impressions_28d')
+
+    data = [
+        {
+            'url': row.url,
+            'impressions': row.impressions_28d,
+            'clicks': row.clicks_28d,
+            'position': row.avg_position,
+            'top_queries': row.top_queries,
+        }
+        for row in rows
+    ]
+
+    return Response(data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def gsc_disconnect(request, site_id):
+    """
+    POST /api/v1/sites/{site_id}/gsc/disconnect/
+    Disconnects GSC: clears tokens and deletes all SiteGSCPageData.
+    """
+    try:
+        site = Site.objects.get(id=site_id, user=request.user)
+    except Site.DoesNotExist:
+        return Response({'error': 'Site not found'}, status=404)
+
+    # Attempt to revoke the token with Google
+    if site.gsc_access_token:
+        try:
+            requests.post(
+                'https://oauth2.googleapis.com/revoke',
+                params={'token': site.gsc_access_token},
+                timeout=5,
+            )
+        except Exception:
+            pass  # Best-effort revocation
+
+    # Clear GSC fields on Site
+    site.gsc_site_url = None
+    site.gsc_access_token = None
+    site.gsc_refresh_token = None
+    site.gsc_token_expires_at = None
+    site.gsc_connected_at = None
+    site.save()
+
+    # Delete all persisted page data
+    deleted_count, _ = SiteGSCPageData.objects.filter(site=site).delete()
+
+    return Response({
+        'message': 'GSC disconnected',
+        'pages_deleted': deleted_count,
+    })

@@ -747,6 +747,40 @@ class LifecycleQueue(models.Model):
         db_table = 'lifecycle_queue'
 
 
+class SiteGSCPageData(models.Model):
+    """Per-page GSC performance data, synced from Google Search Console."""
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='gsc_pages')
+    page = models.ForeignKey('seo.Page', on_delete=models.CASCADE, null=True, blank=True, related_name='gsc_data')
+    url = models.URLField(max_length=2048)
+    impressions_28d = models.IntegerField(default=0)
+    clicks_28d = models.IntegerField(default=0)
+    avg_position = models.FloatField(null=True, blank=True)
+    top_queries = models.JSONField(default=list)
+    synced_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'seo_gsc_page_data'
+        unique_together = [('site', 'url')]
+
+    def __str__(self):
+        return f"GSC {self.url} ({self.clicks_28d}c / {self.impressions_28d}i)"
+
+
+class SlugChangeLog(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True, related_name='slug_changes')
+    page_id = models.IntegerField(null=True, blank=True)
+    old_url = models.CharField(max_length=2048)
+    old_slug = models.CharField(max_length=500, blank=True)
+    new_url = models.CharField(max_length=2048)
+    new_slug = models.CharField(max_length=500, blank=True)
+    redirect = models.ForeignKey(RedirectRegistry, on_delete=models.SET_NULL, null=True, blank=True)
+    redirect_status = models.CharField(max_length=50, blank=True)
+    slug_change_status = models.CharField(max_length=50, default='pending')
+    reason = models.CharField(max_length=100, blank=True)
+    error_message = models.TextField(blank=True, null=True)
+    changed_by = models.CharField(max_length=255, blank=True)
+    changed_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 class ValidationLog(models.Model):
     site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='validation_logs')
     page = models.ForeignKey(Page, on_delete=models.CASCADE, null=True, blank=True, related_name='validation_logs')

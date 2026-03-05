@@ -28,7 +28,10 @@ from seo.differentiate_views import (
 )
 from seo.redirect_views import create_redirect, list_redirects
 from seo.slug_change_views import change_slug, bulk_change_slugs, list_slug_changes
-from integrations.gsc_views import connect_gsc_site, get_gsc_data, analyze_gsc_cannibalization, content_gaps
+from integrations.gsc_views import (
+    connect_gsc_site, get_gsc_data, analyze_gsc_cannibalization, content_gaps,
+    gsc_status, gsc_sync, gsc_pages, gsc_disconnect,
+)
 from sites.sites import dashboard_fix_now
 from seo.cannibalization_v2 import get_cannibalization_conflicts
 from seo.silo_health_views import silo_health_scores, silo_health_recalculate
@@ -91,9 +94,13 @@ urlpatterns = [
     path('<int:site_id>/conflicts/differentiate/', differentiate_conflict, name='conflict-differentiate'),
     path('<int:site_id>/conflicts/apply-differentiation/', apply_differentiation, name='conflict-apply-differentiation'),
     # Google Search Console
+    path('<int:site_id>/gsc/status/', gsc_status, name='site-gsc-status'),
     path('<int:site_id>/gsc/connect/', connect_gsc_site, name='site-gsc-connect'),
     path('<int:site_id>/gsc/data/', get_gsc_data, name='site-gsc-data'),
     path('<int:site_id>/gsc/analyze/', analyze_gsc_cannibalization, name='site-gsc-analyze'),
+    path('<int:site_id>/gsc/sync/', gsc_sync, name='site-gsc-sync'),
+    path('<int:site_id>/gsc/pages/', gsc_pages, name='site-gsc-pages'),
+    path('<int:site_id>/gsc/disconnect/', gsc_disconnect, name='site-gsc-disconnect'),
     path('<int:site_id>/content-gaps/', content_gaps, name='site-content-gaps'),
     path('<int:site_id>/cannibalization/', get_cannibalization_conflicts, name='site-cannibalization-v2'),
     path('<int:site_id>/dashboard/fix-now/', dashboard_fix_now, name='dashboard-fix-now'),
