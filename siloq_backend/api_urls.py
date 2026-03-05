@@ -38,6 +38,8 @@ urlpatterns = [
     # WordPress integration endpoints (scans, page sync) - MUST be before seo.urls
     # to prevent the seo PageViewSet router from swallowing single-segment paths like /scans/
     path('', include('integrations.urls')),
+    # SEO endpoints nested under sites (conflicts, content-plan, etc.)
+    path('', include('seo.urls')),
     # Google Search Console integration
     path('gsc/', include('integrations.gsc_urls')),
     # SEO endpoints nested under sites (conflicts, content-plan, etc.)

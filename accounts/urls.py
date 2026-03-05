@@ -40,6 +40,51 @@ def verify_view(request):
     from .auth import verify
     return verify(request)
 
+@csrf_exempt
+def team_list_view(request):
+    from .team_views import team_list
+    return team_list(request)
+
+@csrf_exempt
+def team_invite_view(request):
+    from .team_views import team_invite
+    return team_invite(request)
+
+@csrf_exempt
+def team_remove_view(request, access_id):
+    from .team_views import team_remove
+    return team_remove(request, access_id)
+
+@csrf_exempt
+def team_cancel_invite_view(request, invite_id):
+    from .team_views import team_cancel_invite
+    return team_cancel_invite(request, invite_id)
+
+@csrf_exempt
+def accept_invite_view(request):
+    from .team_views import accept_invite
+    return accept_invite(request)
+
+@csrf_exempt
+def update_member_role_view(request, access_id):
+    from .team_views import update_member_role
+    return update_member_role(request, access_id)
+
+@csrf_exempt
+def request_password_reset_view(request):
+    from .auth import request_password_reset
+    return request_password_reset(request)
+
+@csrf_exempt
+def confirm_password_reset_view(request):
+    from .auth import confirm_password_reset
+    return confirm_password_reset(request)
+
+@csrf_exempt
+def notification_preferences_view(request):
+    from .notification_views import notification_preferences
+    return notification_preferences(request)
+
 urlpatterns = [
     # Core authentication
     path('login/', login_view, name='login'),
@@ -53,4 +98,16 @@ urlpatterns = [
     # Support both with and without trailing slash for WP plugin compatibility
     path('verify/', verify_view, name='verify'),
     path('verify', verify_view, name='verify_no_slash'),
+    # Team management
+    path('team/', team_list_view, name='team_list'),
+    path('team/invite/', team_invite_view, name='team_invite'),
+    path('team/<int:access_id>/', team_remove_view, name='team_remove'),
+    path('team/invite/<int:invite_id>/', team_cancel_invite_view, name='team_cancel_invite'),
+    path('team/invite/accept/', accept_invite_view, name='team_accept_invite'),
+    path('team/<int:access_id>/role/', update_member_role_view, name='team_update_role'),
+    # Password reset
+    path('reset-password/', request_password_reset_view, name='request_password_reset'),
+    path('reset-password/confirm/', confirm_password_reset_view, name='confirm_password_reset'),
+    # Notification preferences
+    path('notifications/', notification_preferences_view, name='notification_preferences'),
 ]

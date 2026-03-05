@@ -3,6 +3,8 @@ Billing and subscription models.
 Handles Stripe subscriptions, payments, and user billing information.
 """
 from django.db import models
+from django.db.models.signals import post_save
+from django.dispatch import receiver
 from django.conf import settings
 from django.utils import timezone
 
@@ -56,6 +58,9 @@ class Subscription(models.Model):
     current_period_start = models.DateTimeField(null=True, blank=True)
     current_period_end = models.DateTimeField(null=True, blank=True)
     
+    # Staff/internal: when True, trial and billing limits are bypassed (e.g. user_id=19)
+    is_staff_exempt = models.BooleanField(default=False)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -72,6 +77,11 @@ class Subscription(models.Model):
         if not self.trial_ends_at:
             return False
         return timezone.now() < self.trial_ends_at
+
+    @property
+    def billing_bypass(self):
+        """True if this subscription should skip trial/billing limits (staff exempt)."""
+        return getattr(self, 'is_staff_exempt', False)
     
     @property
     def trial_days_remaining(self):
@@ -151,3 +161,17 @@ class Usage(models.Model):
     
     def __str__(self):
         return f"{self.user.username} - {self.feature}: {self.count}"
+
+
+@receiver(post_save, sender=Subscription)
+def sync_user_subscription_fields(sender, instance, **kwargs):
+    user = instance.user
+    changed = False
+    if user.subscription_tier != instance.tier:
+        user.subscription_tier = instance.tier
+        changed = True
+    if user.subscription_status != instance.status:
+        user.subscription_status = instance.status
+        changed = True
+    if changed:
+        user.save(update_fields=['subscription_tier', 'subscription_status'])

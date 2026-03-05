@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import List, Dict, Any, Optional, Tuple, Set
 from urllib.parse import urlparse
 from django.utils import timezone
+from seo.modifier_classifier import filter_conflicts_by_modifiers, bootstrap_site_locations
 
 
 # =============================================================================
@@ -98,6 +99,20 @@ def is_listicle_url(url: str) -> bool:
     return any(re.search(p, path) for p in LISTICLE_PATTERNS)
 
 
+STOP_WORDS = {
+    'page', 'pages', 'post', 'posts', 'product', 'products',
+    'category', 'categories', 'tag', 'tags', 'shop', 'store',
+    'blog', 'news', 'article', 'articles', 'index', 'home',
+    'www', 'http', 'https', 'html', 'php', 'aspx', 'htm',
+    'the', 'and', 'for', 'with', 'our', 'your', 'all', 'you',
+    'how', 'what', 'why', 'when', 'where', 'which', 'who',
+    'this', 'that', 'from', 'into', 'about', 'more', 'most',
+    'one', 'stop', 'need', 'needs', 'right', 'best', 'top',
+    'choose', 'choosing', 'find', 'finding', 'get', 'getting',
+}
+STOP_WORDS.update(str(y) for y in range(2015, 2030))
+
+
 def extract_url_keywords(url: str) -> Set[str]:
     """Extract meaningful keywords from URL slug."""
     if not url:
@@ -111,18 +126,18 @@ def extract_url_keywords(url: str) -> Set[str]:
     # Split by / - _
     parts = re.split(r'[/\-_]', path.lower())
     
-    # Filter out noise
-    stop_slugs = {
-        'page', 'pages', 'post', 'posts', 'product', 'products',
-        'category', 'categories', 'tag', 'tags', 'shop', 'store',
-        'blog', 'news', 'article', 'articles', 'index', 'home',
-        'www', 'http', 'https', 'html', 'php', 'aspx', 'htm',
-        'the', 'and', 'for', 'with', 'our', 'your',
-    }
-    # Also filter years
-    stop_slugs.update(str(y) for y in range(2015, 2030))
+    return {p for p in parts if p and len(p) > 2 and p not in STOP_WORDS and not p.isdigit()}
+
+
+def extract_title_keywords(title: str) -> Set[str]:
+    """Extract meaningful keywords from page title."""
+    if not title:
+        return set()
     
-    return {p for p in parts if p and len(p) > 2 and p not in stop_slugs and not p.isdigit()}
+    # Split by spaces and common separators
+    parts = re.split(r'[\s\-–—|:,./]+', title.lower())
+    
+    return {p for p in parts if p and len(p) > 2 and p not in STOP_WORDS and not p.isdigit()}
 
 
 def get_query_intent(query: str) -> str:
@@ -180,7 +195,7 @@ def find_synonym_overlap(keywords1: Set[str], keywords2: Set[str]) -> List[Tuple
 # STATIC ANALYSIS (Without GSC Data)
 # =============================================================================
 
-def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[Dict[str, Any]]:
+def detect_static_cannibalization(pages, include_noindex: bool = False, impressions_map: Optional[Dict[str, int]] = None) -> List[Dict[str, Any]]:
     """
     Detect potential cannibalization from URL/content analysis.
     This is a PREDICTION - GSC data validates it.
@@ -188,6 +203,9 @@ def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[
     issues = []
     page_list = list(pages)
     
+    if impressions_map is None:
+        impressions_map = {}
+
     if len(page_list) < 2:
         return issues
     
@@ -198,12 +216,19 @@ def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[
             continue
         
         url = page.url or ''
+        title = page.title or ''
+        url_kw = extract_url_keywords(url)
+        title_kw = extract_title_keywords(title)
+        # Combined keywords = union of URL + title keywords for broader matching
+        combined_kw = url_kw | title_kw
         page_data[page.id] = {
             'page': page,
             'url': url,
-            'title': page.title or '',
+            'title': title,
             'type': classify_page_type(url, getattr(page, 'post_type', None)),
-            'keywords': extract_url_keywords(url),
+            'keywords': url_kw,
+            'title_keywords': title_kw,
+            'combined_keywords': combined_kw,
             'is_money_page': getattr(page, 'is_money_page', False),
             'is_listicle': is_listicle_url(url),
         }
@@ -240,23 +265,85 @@ def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[
         # If same slug exists in 2+ different parent folders = duplicate folder structure
         if len(folder_groups) >= 2:
             all_dup_pages = []
-            for folder_pages in folder_groups.values():
+            page_types_in_conflict = set()
+            folder_names_in_conflict = set()
+            
+            for parent_folder, folder_pages in folder_groups.items():
+                # Extract folder name (e.g., 'teams', 'product', 'blog')
+                folder_name = parent_folder.strip('/').split('/')[-1] if parent_folder.strip('/') else 'root'
+                folder_names_in_conflict.add(folder_name)
+                
                 for pd in folder_pages:
+                    url = pd['url']
+                    imp = impressions_map.get(url, 0) or impressions_map.get(url.rstrip('/'), 0)
+                    clk = pd.get('clicks', 0) or 0
+                    pos = pd.get('position', 999) or 999
                     all_dup_pages.append({
-                        'id': pd['page'].id, 'url': pd['url'],
+                        'id': pd['page'].id, 'url': url,
                         'title': pd['title'], 'page_type': pd['type'],
+                        'impressions': imp, 'clicks': clk, 'position': pos,
                     })
+                    page_types_in_conflict.add(pd['type'])
                     folder_dup_ids.add(pd['page'].id)
+            
+            # ═══════════════════════════════════════════════════════════════
+            # BUG FIX: Skip conflict if pages have DIFFERENT page types
+            # (different page types = different purposes, not cannibalization)
+            # ═══════════════════════════════════════════════════════════════
+            should_skip = False
+            if len(page_types_in_conflict) > 1:
+                # Check if folders are in the "different intent" list
+                different_intent_pairs = {
+                    frozenset(['teams', 'product']),
+                    frozenset(['teams', 'product-category']),
+                    frozenset(['teams', 'category']),
+                    frozenset(['product-category', 'product']),
+                    frozenset(['product', 'category']),
+                    frozenset(['blog', 'product']),
+                    frozenset(['blog', 'service']),
+                    frozenset(['blog', 'category']),
+                }
+                
+                # Check if current folders match any different-intent pair
+                for pair in different_intent_pairs:
+                    if folder_names_in_conflict.issubset(pair) or pair.issubset(folder_names_in_conflict):
+                        # Different page types in intentionally different folders = SAFE, skip
+                        should_skip = True
+                        break
+            
+            if should_skip:
+                # Don't flag as conflict - these serve different purposes
+                continue
+            
+            # ═══════════════════════════════════════════════════════════════
+            # BUG FIX: If ALL pages have 0 impressions AND 0 clicks, severity = LOW
+            # (cosmetic similarity only, no actual search competition)
+            # ═══════════════════════════════════════════════════════════════
+            total_impressions = sum(
+                impressions_map.get(pd['url'], 0) or impressions_map.get(pd['url'].rstrip('/'), 0)
+                for pd in all_dup_pages
+            )
+            severity = 'LOW' if total_impressions == 0 else 'HIGH'
             
             raw_issues.append({
                 'type': 'duplicate_folder',
-                'severity': 'HIGH',
+                'severity': severity,
                 '_shared_slug': slug,
                 'keyword': slug.replace('-', ' '),
                 'explanation': f"'{slug}' exists under {len(folder_groups)} different URL folders. Each duplicate splits authority for the same keywords.",
                 'recommendation': "Pick ONE canonical folder structure, 301 redirect the others to it.",
                 'competing_pages': all_dup_pages,
-                'suggested_king': all_dup_pages[0] if all_dup_pages else None,
+                # Pick winner by GSC data: most impressions wins; break ties by clicks,
+                # then by best (lowest) position. Never pick a 0-impression page over
+                # one that is actually ranking.
+                'suggested_king': max(
+                    all_dup_pages,
+                    key=lambda p: (
+                        p.get('impressions', 0),
+                        p.get('clicks', 0),
+                        -p.get('position', 999),  # lower position = better ranking
+                    )
+                ) if all_dup_pages else None,
             })
     
     # =========================================================================
@@ -292,7 +379,7 @@ def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[
     for pid, data in page_data.items():
         if pid in folder_dup_ids:
             continue  # Already handled
-        for kw in data['keywords']:
+        for kw in data['combined_keywords']:
             keyword_to_pages[kw].add(pid)
     
     pair_shared_count = defaultdict(int)
@@ -308,8 +395,10 @@ def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[
         data_a = page_data[id_a]
         data_b = page_data[id_b]
         
-        issue = _check_pair_conflict(data_a, data_b)
+        issue = _check_pair_conflict(data_a, data_b, impressions=impressions_map)
         if issue:
+            # Apply impression-weighted severity capping
+            issue = _apply_impression_severity(issue, impressions_map)
             raw_issues.append(issue)
     
     # =========================================================================
@@ -319,6 +408,15 @@ def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[
     # =========================================================================
     issues = _cluster_issues(raw_issues)
     
+    # =========================================================================
+    # STAGE 4.5: Modifier-Aware Conflict Filter
+    # Classify modifiers (location, service_type, audience, etc.) and dismiss
+    # cross-category false positives. See Kyle's spec:
+    # "Modifier-Aware Conflict Filtering & Service × Location Architecture"
+    # =========================================================================
+    site_locations = bootstrap_site_locations(page_list)
+    issues = filter_conflicts_by_modifiers(issues, site_locations)
+    
     # Tag all static issues as "potential" - not GSC validated
     for issue in issues:
         issue['validation_status'] = 'potential'
@@ -326,8 +424,8 @@ def detect_static_cannibalization(pages, include_noindex: bool = False) -> List[
         issue['gsc_data'] = None
     
     # Sort by severity
-    severity_order = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
-    issues.sort(key=lambda x: severity_order.get(x['severity'], 3))
+    severity_order = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2, 'INFO': 3}
+    issues.sort(key=lambda x: severity_order.get(x['severity'], 4))
     
     return issues[:30]
 
@@ -490,11 +588,58 @@ def _is_parent_child(url_a: str, url_b: str) -> bool:
     return path_b.startswith(path_a + '/') or path_a.startswith(path_b + '/')
 
 
-def _check_pair_conflict(data_a: Dict, data_b: Dict) -> Optional[Dict]:
+def _apply_impression_severity(issue: Dict, impressions_map: Dict[str, int]) -> Dict:
+    """Apply impression-weighted severity capping to a cannibalization issue.
+    
+    Rules:
+    - Both pages have 0 impressions AND score < 20 → 'INFO'
+    - Both pages have 0 impressions → cap at 'LOW'
+    - Max impressions < 10 → cap at 'MEDIUM'
+    - Adds impression data to competing_pages and total_impressions to issue
+    """
+    if not impressions_map:
+        return issue
+
+    severity_rank = {'INFO': 0, 'LOW': 1, 'MEDIUM': 2, 'HIGH': 3}
+    competing = issue.get('competing_pages', [])
+    page_impressions = []
+
+    for page in competing:
+        url = page.get('url', '')
+        # Try both with and without trailing slash for URL normalization
+        imp = impressions_map.get(url, 0) or impressions_map.get(url.rstrip('/'), 0)
+        page['impressions'] = imp
+        page_impressions.append(imp)
+
+    max_imp = max(page_impressions) if page_impressions else 0
+    all_zero = all(i == 0 for i in page_impressions)
+    issue['total_impressions'] = sum(page_impressions)
+
+    current = issue.get('severity', 'LOW')
+
+    if all_zero:
+        # Cosmetic similarity only — compute a rough score from overlap ratio in keyword field
+        kw_count = len(issue.get('keyword', '').split(', '))
+        if kw_count < 3:
+            cap = 'INFO'
+        else:
+            cap = 'LOW'
+        if severity_rank.get(current, 1) > severity_rank.get(cap, 0):
+            issue['severity'] = cap
+    elif max_imp < 10:
+        if severity_rank.get(current, 2) > severity_rank['MEDIUM']:
+            issue['severity'] = 'MEDIUM'
+
+    return issue
+
+
+def _check_pair_conflict(data_a: Dict, data_b: Dict, impressions: Optional[Dict[str, int]] = None) -> Optional[Dict]:
     """Check if two pages have a cannibalization conflict."""
     type_a, type_b = data_a['type'], data_b['type']
     url_a, url_b = data_a['url'], data_b['url']
-    kw_a, kw_b = data_a['keywords'], data_b['keywords']
+    # Use combined keywords (URL + title) for overlap detection
+    kw_a = data_a.get('combined_keywords') or data_a['keywords']
+    kw_b = data_b.get('combined_keywords') or data_b['keywords']
     
     # Calculate keyword overlap
     overlap = kw_a & kw_b
@@ -691,6 +836,46 @@ def _check_pair_conflict(data_a: Dict, data_b: Dict) -> Optional[Dict]:
         }
     
     # =========================================================================
+    # RULE 8: Title Keyword Overlap (Service Business — catches blog vs service via titles)
+    # Two pages with 50%+ title keyword overlap targeting the same topic
+    # =========================================================================
+    title_kw_a = data_a.get('title_keywords', set())
+    title_kw_b = data_b.get('title_keywords', set())
+    title_overlap = title_kw_a & title_kw_b
+    title_overlap_ratio = len(title_overlap) / max(len(title_kw_a | title_kw_b), 1) if (title_kw_a or title_kw_b) else 0
+    
+    if title_overlap_ratio >= 0.4 and len(title_overlap) >= 2:
+        # Blog/general page competing with service page via title keywords
+        if type_a != type_b and 'blog' in (type_a, type_b) or 'general' in (type_a, type_b):
+            sev = 'HIGH' if title_overlap_ratio >= 0.6 else 'MEDIUM'
+            return {
+                'type': 'title_keyword_overlap',
+                'severity': sev,
+                'keyword': ', '.join(sorted(title_overlap)[:5]),
+                'explanation': f"Pages have {int(title_overlap_ratio*100)}% title keyword overlap: '{data_a['title']}' vs '{data_b['title']}'",
+                'recommendation': "The blog/informational page should link to the service page and avoid targeting the same primary keyword.",
+                'competing_pages': [
+                    {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                    {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+                ],
+                'suggested_king': None,
+            }
+        # Same type pages with high title overlap
+        if type_a == type_b and title_overlap_ratio >= 0.5:
+            return {
+                'type': 'title_keyword_overlap',
+                'severity': 'MEDIUM',
+                'keyword': ', '.join(sorted(title_overlap)[:5]),
+                'explanation': f"Two {type_a} pages with {int(title_overlap_ratio*100)}% title keyword overlap may compete for the same queries.",
+                'recommendation': "Differentiate titles and target keywords, or consolidate into one stronger page.",
+                'competing_pages': [
+                    {'id': data_a['page'].id, 'url': url_a, 'title': data_a['title'], 'page_type': type_a},
+                    {'id': data_b['page'].id, 'url': url_b, 'title': data_b['title'], 'page_type': type_b},
+                ],
+                'suggested_king': None,
+            }
+    
+    # =========================================================================
     # SAFE PATTERNS - DO NOT FLAG
     # =========================================================================
     
@@ -736,10 +921,10 @@ def _check_pair_conflict(data_a: Dict, data_b: Dict) -> Optional[Dict]:
             return None
     
     # =========================================================================
-    # FALLBACK: Very high overlap, same page type, unclassified
-    # Must be >80% overlap AND same type to be flagged
+    # FALLBACK: High overlap, same page type, unclassified
+    # Now uses combined (URL+title) keywords, so lower threshold is appropriate
     # =========================================================================
-    if overlap_ratio > 0.8 and type_a == type_b:
+    if overlap_ratio > 0.5 and type_a == type_b and len(overlap) >= 3:
         return {
             'type': 'url_overlap',
             'severity': 'LOW',
@@ -1215,17 +1400,21 @@ def analyze_geo_readiness(page, business_name: str = None, city: str = None) -> 
 # MAIN ANALYSIS FUNCTION
 # =============================================================================
 
-def detect_cannibalization(pages, include_noindex: bool = False) -> List[Dict[str, Any]]:
+def detect_cannibalization(pages, include_noindex: bool = False, impressions_map: Optional[Dict[str, int]] = None) -> List[Dict[str, Any]]:
     """
     Main entry point for cannibalization detection (static analysis).
     For GSC-validated analysis, use analyze_gsc_data() separately.
+    
+    Args:
+        impressions_map: Optional dict mapping page URL -> total impressions from GSC.
+                         Used to weight severity scoring.
     """
-    return detect_static_cannibalization(pages, include_noindex)
+    return detect_static_cannibalization(pages, include_noindex, impressions_map=impressions_map)
 
 
 def analyze_site(site) -> Dict[str, Any]:
     """Run full analysis on a site including GEO readiness."""
-    pages = site.pages.all().prefetch_related('seo_data')
+    pages = site.pages.filter(status='publish', is_noindex=False).prefetch_related('seo_data')
     
     health = calculate_health_score(site)
     issues = detect_static_cannibalization(pages)
