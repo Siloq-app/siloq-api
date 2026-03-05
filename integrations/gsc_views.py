@@ -66,13 +66,12 @@ def get_auth_url(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE
         )
     
-    # State contains user ID and site ID for the callback
-    # popup=1 means the OAuth was opened from a popup window — callback returns close page
-    is_popup = request.query_params.get('popup') == '1'
+    # State contains user ID, site ID, and the WP admin URL to return to after OAuth
+    wp_return_url = request.query_params.get('wp_return_url', '')
     state = json.dumps({
         'user_id': request.user.id,
         'site_id': site_id,
-        'popup': is_popup,
+        'wp_return_url': wp_return_url,
     })
     
     params = {
@@ -111,13 +110,10 @@ def oauth_callback(request):
             state_for_error = json.loads(request.query_params.get('state', '{}'))
         except:
             state_for_error = {}
-        if state_for_error.get('popup'):
-            return HttpResponse(
-                f'<!DOCTYPE html><html><body><p style="font-family:sans-serif;text-align:center;padding:40px;color:#dc2626;">'
-                f'❌ GSC connection failed: {error}</p>'
-                '<script>try{window.opener&&window.opener.postMessage("siloq_gsc_error","*");}catch(e){}'
-                'setTimeout(function(){window.close();},3000);</script></body></html>'
-            )
+        wp_return_url = state_for_error.get('wp_return_url', '').strip()
+        if wp_return_url:
+            separator = '&' if '?' in wp_return_url else '?'
+            return redirect(f"{wp_return_url}{separator}siloq_gsc=error&gsc_error={error}")
         return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_error={error}")
     
     if not code:
@@ -203,17 +199,11 @@ def oauth_callback(request):
             site.save()
             print(f"[GSC] SUCCESS: saved tokens for site {site_id}. gsc_site_url={site.gsc_site_url}", flush=True)
             logger.info(f"GSC OAuth: saved tokens for site {site_id}. gsc_site_url={site.gsc_site_url}")
-            if state.get('popup'):
-                # Popup mode: close the window and notify the opener (WP plugin)
-                return HttpResponse(
-                    '<!DOCTYPE html><html><head><title>GSC Connected</title></head><body>'
-                    '<p style="font-family:sans-serif;text-align:center;padding:40px;color:#16a34a;">'
-                    '✅ Google Search Console connected! Closing...</p>'
-                    '<script>'
-                    'try { window.opener && window.opener.postMessage("siloq_gsc_connected", "*"); } catch(e){}'
-                    'setTimeout(function(){ window.close(); }, 1200);'
-                    '</script></body></html>'
-                )
+            # If the plugin provided a return URL, bounce back to WP admin
+            wp_return_url = state.get('wp_return_url', '').strip()
+            if wp_return_url:
+                separator = '&' if '?' in wp_return_url else '?'
+                return redirect(f"{wp_return_url}{separator}siloq_gsc=connected")
             return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_connected=true&site_id={site_id}")
         except Site.DoesNotExist:
             print(f"[GSC] ERROR: Site {site_id} not found for user {user_id}", flush=True)
