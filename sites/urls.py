@@ -60,6 +60,7 @@ from seo.supporting_content_views import (
     generate_image,
 )
 from seo.freshness_views import site_freshness, page_freshness
+from seo.schema_graph_views import schema_graph, schema_graph_completeness, schema_graph_regenerate
 from seo.internal_links_views import get_related_pages, suggest_widget_edit
 
 router = DefaultRouter()
@@ -137,6 +138,10 @@ urlpatterns = [
     path('<int:site_id>/generate-image/', generate_image, name='site-generate-image'),
     # Schema Inventory — show existing + recommended + generated (Section 03)
     path('<int:site_id>/pages/analysis/<int:analysis_id>/schema/', schema_inventory, name='page-schema-inventory'),
+    # Schema Graph — GEO-first full entity graph endpoint (AI-crawler optimized)
+    path('<int:site_id>/schema-graph/', schema_graph, name='site-schema-graph'),
+    path('<int:site_id>/schema-graph/completeness/', schema_graph_completeness, name='site-schema-graph-completeness'),
+    path('<int:site_id>/schema-graph/regenerate/', schema_graph_regenerate, name='site-schema-graph-regenerate'),
     # Internal Linking Context (Reverse Silo)
     path('<int:site_id>/pages/<int:page_id>/related-pages/', get_related_pages, name='page-related-pages'),
     path('<int:site_id>/pages/<int:page_id>/suggest-widget-edit/', suggest_widget_edit, name='page-suggest-widget-edit'),

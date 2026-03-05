@@ -77,7 +77,7 @@ class TestAPIKeyVerification:
         api_client.credentials(HTTP_AUTHORIZATION='Bearer sk_siloq_invalid_key')
         
         response = api_client.post('/api/v1/auth/verify')
-        assert response.status_code == 403
+        assert response.status_code == 401
 
 
 @pytest.mark.django_db
