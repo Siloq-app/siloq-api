@@ -58,6 +58,7 @@ from seo.supporting_content_views import (
 )
 from seo.freshness_views import site_freshness, page_freshness
 from seo.schema_graph_views import schema_graph, schema_graph_completeness, schema_graph_regenerate
+from seo.internal_links_views import get_related_pages, suggest_widget_edit
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -134,4 +135,7 @@ urlpatterns = [
     path('<int:site_id>/schema-graph/', schema_graph, name='site-schema-graph'),
     path('<int:site_id>/schema-graph/completeness/', schema_graph_completeness, name='site-schema-graph-completeness'),
     path('<int:site_id>/schema-graph/regenerate/', schema_graph_regenerate, name='site-schema-graph-regenerate'),
+    # Internal Linking Context (Reverse Silo)
+    path('<int:site_id>/pages/<int:page_id>/related-pages/', get_related_pages, name='page-related-pages'),
+    path('<int:site_id>/pages/<int:page_id>/suggest-widget-edit/', suggest_widget_edit, name='page-suggest-widget-edit'),
 ]
