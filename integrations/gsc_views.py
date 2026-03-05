@@ -19,6 +19,7 @@ from urllib.parse import urlencode, quote, urlparse
 
 import requests
 from django.conf import settings
+from django.core.cache import cache
 from django.http import JsonResponse
 from django.shortcuts import redirect
 from django.utils import timezone
@@ -28,7 +29,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from sites.models import Site
-from sites.analysis import analyze_gsc_data
+from sites.analysis import analyze_gsc_data, get_query_intent
+from seo.models import Page, SiteEntityProfile, SiloDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -405,6 +407,169 @@ def analyze_gsc_cannibalization(request, site_id):
         'issues_found': len(issues),
         'issues': issues,
     })
+
+
+def _priority_from_impressions(impressions: int) -> str:
+    if impressions >= 500:
+        return 'high'
+    if impressions >= 100:
+        return 'medium'
+    return 'low'
+
+
+def _suggest_silo_id(query: str, silos: list) -> int:
+    query_tokens = set(re.findall(r'[a-z0-9]+', (query or '').lower()))
+    best = None
+    best_score = 0
+    for silo in silos:
+        name_tokens = set(re.findall(r'[a-z0-9]+', (silo.name or '').lower()))
+        score = len(query_tokens & name_tokens)
+        if score > best_score:
+            best_score = score
+            best = silo
+    return best.id if best else None
+
+
+def _build_fallback_gaps(site, silos: list):
+    try:
+        profile = SiteEntityProfile.objects.get(site=site)
+    except SiteEntityProfile.DoesNotExist:
+        profile = None
+
+    categories = []
+    if profile and isinstance(profile.categories, list):
+        categories = [str(c).strip() for c in profile.categories if str(c).strip()]
+
+    city = (getattr(profile, 'city', '') or '').strip() if profile else ''
+    gaps = []
+    seen_keywords = set()
+
+    for idx, category in enumerate(categories, start=1):
+        topic = f"{category} {city}".strip() if city else category
+        keyword = topic.lower()
+        if keyword in seen_keywords:
+            continue
+        seen_keywords.add(keyword)
+
+        gaps.append({
+            'id': f'gap_{idx:03d}',
+            'topic': topic,
+            'keyword': keyword,
+            'intent': 'transactional',
+            'suggested_page_type': 'service_subpage',
+            'suggested_silo_id': _suggest_silo_id(keyword, silos),
+            'priority': 'low',
+            'reason': 'GSC not connected; generated from entity profile service categories',
+        })
+
+    return gaps
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def content_gaps(request, site_id):
+    """
+    GET /api/v1/sites/{site_id}/content-gaps/
+
+    Missing topics based on GSC queries with impressions but no ranking page.
+    Fallback: if GSC is not connected, infer topics from entity profile categories.
+    """
+    try:
+        site = Site.objects.get(id=site_id, user=request.user)
+    except Site.DoesNotExist:
+        return Response({'error': 'Site not found'}, status=404)
+
+    cache_key = f"content-gaps:v1:user:{request.user.id}:site:{site.id}"
+    cached = cache.get(cache_key)
+    if cached:
+        return Response(cached)
+
+    silos = list(SiloDefinition.objects.filter(site=site, status='active').order_by('name'))
+
+    # Fallback mode if GSC is not connected
+    if not site.gsc_site_url or not site.gsc_refresh_token:
+        gaps = _build_fallback_gaps(site, silos)
+        payload = {
+            'gaps': gaps,
+            'total_gaps': len(gaps),
+        }
+        cache.set(cache_key, payload, timeout=300)
+        return Response(payload)
+
+    access_token = _get_valid_access_token(site)
+    if not access_token:
+        return Response({'error': 'Failed to get GSC access token'}, status=401)
+
+    days = int(request.query_params.get('days', 90))
+    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    end_date = datetime.now().strftime('%Y-%m-%d')
+
+    gsc_rows = _fetch_search_analytics(
+        access_token=access_token,
+        site_url=site.gsc_site_url,
+        start_date=start_date,
+        end_date=end_date,
+        dimensions=['query', 'page'],
+        row_limit=5000,
+    )
+
+    site_pages = Page.objects.filter(site=site).values('url')
+    page_url_set = {((p.get('url') or '').rstrip('/').lower()) for p in site_pages if p.get('url')}
+
+    query_rollup = defaultdict(lambda: {'impressions': 0, 'has_ranking_page': False})
+    for row in gsc_rows:
+        query = (row.get('query') or '').strip().lower()
+        if not query:
+            continue
+        impressions = int(row.get('impressions', 0) or 0)
+        page_url = (row.get('page') or row.get('page_url') or '').strip().rstrip('/').lower()
+
+        query_rollup[query]['impressions'] += impressions
+        if page_url and page_url in page_url_set:
+            query_rollup[query]['has_ranking_page'] = True
+
+    ranked_gaps = []
+    for query, data in query_rollup.items():
+        impressions = data['impressions']
+        if impressions <= 0:
+            continue
+        if data['has_ranking_page']:
+            continue
+
+        intent = get_query_intent(query)
+        suggested_page_type = 'blog_post' if intent == 'informational' else 'service_subpage'
+        ranked_gaps.append({
+            'keyword': query,
+            'topic': query.title(),
+            'intent': intent,
+            'suggested_page_type': suggested_page_type,
+            'suggested_silo_id': _suggest_silo_id(query, silos),
+            'priority': _priority_from_impressions(impressions),
+            'reason': 'GSC shows impressions but no dedicated page',
+            'impressions': impressions,
+        })
+
+    ranked_gaps.sort(key=lambda g: g['impressions'], reverse=True)
+
+    gaps = []
+    for idx, gap in enumerate(ranked_gaps, start=1):
+        gaps.append({
+            'id': f'gap_{idx:03d}',
+            'topic': gap['topic'],
+            'keyword': gap['keyword'],
+            'intent': gap['intent'],
+            'suggested_page_type': gap['suggested_page_type'],
+            'suggested_silo_id': gap['suggested_silo_id'],
+            'priority': gap['priority'],
+            'reason': gap['reason'],
+        })
+
+    payload = {
+        'gaps': gaps,
+        'total_gaps': len(gaps),
+    }
+    cache.set(cache_key, payload, timeout=300)
+    return Response(payload)
 
 
 # ── Cannibalization Detection (GSC-only, query-level) ─────────────────────────

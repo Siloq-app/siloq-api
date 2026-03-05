@@ -246,6 +246,7 @@ def _verify_site_key(api_key):
     return Response({
         'valid': True,
         'key_type': 'site',
+        'site_id': site.id,
         'site': {
             'id': site.id,
             'name': site.name,

@@ -28,10 +28,11 @@ from seo.differentiate_views import (
 )
 from seo.redirect_views import create_redirect, list_redirects
 from seo.slug_change_views import change_slug, bulk_change_slugs, list_slug_changes
-from integrations.gsc_views import connect_gsc_site, get_gsc_data, analyze_gsc_cannibalization
+from integrations.gsc_views import connect_gsc_site, get_gsc_data, analyze_gsc_cannibalization, content_gaps
 from sites.sites import dashboard_fix_now
 from seo.cannibalization_v2 import get_cannibalization_conflicts
 from seo.silo_health_views import silo_health_scores, silo_health_recalculate
+from seo.silo_views import silo_map
 from seo.page_analysis_views import (
     list_approvals,
     analyze_page,
@@ -43,8 +44,21 @@ from seo.page_analysis_views import (
 )
 from seo.entity_extraction_views import extract_entities
 from seo.entity_profile_views import entity_profile, sync_gbp
-from seo.supporting_content_views import supporting_content_gap, about_us_analysis, schema_inventory, generate_supporting_article, junk_page_feed, image_suggestion, generate_image
+from seo.supporting_content_views import (
+    supporting_content_gap,
+    about_us_analysis,
+    schema_inventory,
+    generate_supporting_article,
+    generate_snippet,
+    content_pipeline,
+    junk_page_feed,
+    create_draft,
+    image_suggestion,
+    generate_image,
+)
 from seo.freshness_views import site_freshness, page_freshness
+from seo.schema_graph_views import schema_graph, schema_graph_completeness, schema_graph_regenerate
+from seo.internal_links_views import get_related_pages, suggest_widget_edit
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -80,11 +94,13 @@ urlpatterns = [
     path('<int:site_id>/gsc/connect/', connect_gsc_site, name='site-gsc-connect'),
     path('<int:site_id>/gsc/data/', get_gsc_data, name='site-gsc-data'),
     path('<int:site_id>/gsc/analyze/', analyze_gsc_cannibalization, name='site-gsc-analyze'),
+    path('<int:site_id>/content-gaps/', content_gaps, name='site-content-gaps'),
     path('<int:site_id>/cannibalization/', get_cannibalization_conflicts, name='site-cannibalization-v2'),
     path('<int:site_id>/dashboard/fix-now/', dashboard_fix_now, name='dashboard-fix-now'),
     # Silo Health
     path('<int:site_id>/silo-health/', silo_health_scores, name='site-silo-health'),
     path('<int:site_id>/silo-health/recalculate/', silo_health_recalculate, name='site-silo-health-recalculate'),
+    path('<int:site_id>/silo-map/', silo_map, name='site-silo-map'),
     # Phase 0.5: Entity Extraction
     path('<int:site_id>/pages/extract-entities/', extract_entities, name='page-extract-entities'),
     # Pages Content Optimization — Three-Layer Model (GEO + SEO + CRO)
@@ -104,6 +120,9 @@ urlpatterns = [
     # Supporting Content Gap Detection (Section 02)
     path('<int:site_id>/pages/<int:page_id>/supporting-content/', supporting_content_gap, name='page-supporting-content'),
     path('<int:site_id>/pages/<int:page_id>/supporting-content/generate/', generate_supporting_article, name='page-supporting-content-generate'),
+    path('<int:site_id>/pages/<int:page_id>/generate-snippet/', generate_snippet, name='page-generate-snippet'),
+    path('<int:site_id>/pages/create-draft/', create_draft, name='page-create-draft'),
+    path('<int:site_id>/content-pipeline/', content_pipeline, name='site-content-pipeline'),
     path('<int:site_id>/junk-pages/', junk_page_feed, name='site-junk-pages'),
     # About Us Intelligence (Section 05)
     path('<int:site_id>/pages/<int:page_id>/about-analysis/', about_us_analysis, name='page-about-analysis'),
@@ -112,4 +131,11 @@ urlpatterns = [
     path('<int:site_id>/generate-image/', generate_image, name='site-generate-image'),
     # Schema Inventory — show existing + recommended + generated (Section 03)
     path('<int:site_id>/pages/analysis/<int:analysis_id>/schema/', schema_inventory, name='page-schema-inventory'),
+    # Schema Graph — GEO-first full entity graph endpoint (AI-crawler optimized)
+    path('<int:site_id>/schema-graph/', schema_graph, name='site-schema-graph'),
+    path('<int:site_id>/schema-graph/completeness/', schema_graph_completeness, name='site-schema-graph-completeness'),
+    path('<int:site_id>/schema-graph/regenerate/', schema_graph_regenerate, name='site-schema-graph-regenerate'),
+    # Internal Linking Context (Reverse Silo)
+    path('<int:site_id>/pages/<int:page_id>/related-pages/', get_related_pages, name='page-related-pages'),
+    path('<int:site_id>/pages/<int:page_id>/suggest-widget-edit/', suggest_widget_edit, name='page-suggest-widget-edit'),
 ]

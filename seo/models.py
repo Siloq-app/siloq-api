@@ -12,7 +12,10 @@ v2 tables are organised into five domains:
 import json
 import uuid
 from django.db import models
+from django.contrib.auth import get_user_model
 from sites.models import Site
+
+User = get_user_model()
 
 
 class SafeJSONField(models.JSONField):
@@ -100,18 +103,16 @@ class Page(models.Model):
         blank=True,
         help_text="Page builder detected during sync (elementor, cornerstone, divi, wpbakery, beaver_builder, gutenberg, standard)",
     )
-
-    # Junk page detection (Section 04)
-    JUNK_ACTION_CHOICES = [
-        ('delete',  'Delete'),
-        ('noindex', 'Noindex'),
-        ('review',  'Needs Review'),
-    ]
-    junk_action = models.CharField(max_length=10, choices=JUNK_ACTION_CHOICES, blank=True, null=True,
-        help_text="Recommended action from junk detector (delete/noindex/review)")
-    junk_reason = models.CharField(max_length=200, blank=True, null=True,
-        help_text="Why this page was flagged as junk")
-
+    
+    # Related pages for supporting content calculation
+    related_pages = models.ManyToManyField(
+        'self',
+        blank=True,
+        symmetrical=False,
+        related_name='related_to_pages',
+        help_text="Pages that support or are supported by this page"
+    )
+    
     last_synced_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -269,57 +270,274 @@ class SEOData(models.Model):
         return f"SEO Data for {self.page.title}"
 
 
+class GSCData(models.Model):
+    """
+    Google Search Console performance data for pages.
+    Stores impressions, clicks, position, and CTR for specific queries.
+    """
+    page = models.ForeignKey(
+        Page,
+        on_delete=models.CASCADE,
+        related_name='gsc_data'
+    )
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.CASCADE,
+        related_name='gsc_data'
+    )
+    
+    # Query and metrics
+    query = models.CharField(
+        max_length=500,
+        help_text="The search query"
+    )
+    impressions = models.IntegerField(default=0)
+    clicks = models.IntegerField(default=0)
+    position = models.FloatField(default=0)
+    ctr = models.FloatField(default=0)
+    
+    # Date range
+    date_start = models.DateField()
+    date_end = models.DateField()
+    
+    # Device and location breakdowns (optional)
+    device = models.CharField(
+        max_length=20,
+        blank=True,
+        help_text="Device type: desktop, mobile, tablet"
+    )
+    country = models.CharField(
+        max_length=2,
+        blank=True,
+        help_text="Country code"
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'gsc_data'
+        ordering = ['-impressions', '-clicks']
+        unique_together = [
+            ['page', 'site', 'query', 'date_start', 'date_end', 'device', 'country']
+        ]
+        indexes = [
+            models.Index(fields=['page', 'query']),
+            models.Index(fields=['site', 'query']),
+            models.Index(fields=['impressions']),
+            models.Index(fields=['position']),
+        ]
+
+    def __str__(self):
+        return f"GSC: {self.query} → {self.page.title} ({self.impressions} impressions)"
+
+
+class Conflict(models.Model):
+    """
+    Keyword cannibalization conflicts between pages.
+    Tracks when multiple pages compete for the same search query.
+    """
+    site = models.ForeignKey(
+        Site,
+        on_delete=models.CASCADE,
+        related_name='conflicts'
+    )
+    
+    # The conflicting pages
+    page1 = models.ForeignKey(
+        Page,
+        on_delete=models.CASCADE,
+        related_name='conflicts_as_page1'
+    )
+    page2 = models.ForeignKey(
+        Page,
+        on_delete=models.CASCADE,
+        related_name='conflicts_as_page2'
+    )
+    
+    # The query string they're competing for
+    query_string = models.CharField(
+        max_length=500,
+        help_text="The GSC query string these pages compete for"
+    )
+    
+    # Winner determination
+    winner_page = models.ForeignKey(
+        Page,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='won_conflicts',
+        help_text="The page that should rank for this query"
+    )
+    
+    # Location differentiation
+    location_differentiation = models.JSONField(
+        default=list,
+        help_text="Location-based differentiation data"
+    )
+    
+    # Recommendation
+    recommendation = models.TextField(
+        blank=True,
+        help_text="AI-generated recommendation for resolving this conflict"
+    )
+    
+    # Status tracking
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ('active', 'Active'),
+            ('in_approval_queue', 'In Approval Queue'),
+            ('resolved', 'Resolved'),
+        ],
+        default='active'
+    )
+    
+    is_dismissed = models.BooleanField(default=False)
+    severity_score = models.IntegerField(
+        default=50,
+        help_text="Severity score (0-100)"
+    )
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'conflicts'
+        ordering = ['-severity_score', '-created_at']
+        unique_together = [['site', 'page1', 'page2', 'query_string']]
+        indexes = [
+            models.Index(fields=['site', 'status']),
+            models.Index(fields=['query_string']),
+            models.Index(fields=['severity_score']),
+        ]
+
+    def __str__(self):
+        return f"Conflict: {self.query_string} between {self.page1.title} and {self.page2.title}"
+
+
 class ContentJob(models.Model):
     """
-    Persistent content generation job — replaces the in-memory _jobs dict.
-    Survives server restarts and supports async processing.
+    Content generation and management jobs.
+    Tracks content creation from suggestion to completion.
     """
-    STATUS_CHOICES = [
+    JOB_TYPES = [
+        ('conflict_resolution', 'Conflict Resolution'),
+        ('supporting_content', 'Supporting Content'),
+        ('money_page_optimization', 'Money Page Optimization'),
+        ('homepage_optimization', 'Homepage Optimization'),
+    ]
+    
+    STATUSES = [
         ('pending', 'Pending'),
-        ('processing', 'Processing'),
+        ('pending_approval', 'Pending Approval'),
+        ('approved', 'Approved'),
+        ('in_progress', 'In Progress'),
         ('completed', 'Completed'),
         ('failed', 'Failed'),
     ]
-
-    job_id = models.CharField(max_length=36, unique=True, db_index=True)
+    
     site = models.ForeignKey(
-        'sites.Site', on_delete=models.CASCADE, related_name='content_jobs'
+        Site,
+        on_delete=models.CASCADE,
+        related_name='content_jobs'
     )
-    page_id = models.CharField(max_length=255, blank=True, null=True)
-    wp_post_id = models.IntegerField(blank=True, null=True)
-    job_type = models.CharField(max_length=50, default='content_generation')
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    result = models.JSONField(blank=True, null=True)
-    error = models.TextField(blank=True, null=True)
+    
+    # Job details
+    job_type = models.CharField(max_length=50, choices=JOB_TYPES)
+    topic = models.CharField(max_length=500, blank=True)
+    recommendation = models.TextField(blank=True)
+    
+    # Associated objects
+    page = models.ForeignKey(
+        Page,
+        on_delete=models.CASCADE,
+        related_name='content_jobs',
+        null=True,
+        blank=True
+    )
+    conflict = models.ForeignKey(
+        Conflict,
+        on_delete=models.CASCADE,
+        related_name='content_jobs',
+        null=True,
+        blank=True
+    )
+    target_page = models.ForeignKey(
+        Page,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='targeted_content_jobs'
+    )
+    
+    # Status tracking
+    status = models.CharField(max_length=20, choices=STATUSES, default='pending')
+    priority = models.CharField(
+        max_length=10,
+        choices=[
+            ('low', 'Low'),
+            ('medium', 'Medium'),
+            ('high', 'High'),
+        ],
+        default='medium'
+    )
+    
+    # Content details
+    estimated_word_count = models.IntegerField(null=True, blank=True)
+    actual_word_count = models.IntegerField(null=True, blank=True)
+    generated_content = models.TextField(blank=True)
+    
+    # WordPress integration
+    wp_post_id = models.IntegerField(null=True, blank=True)
+    wp_status = models.CharField(max_length=20, blank=True)
+    
+    # Metadata
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    approved_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_content_jobs'
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'content_jobs'
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['site', 'status']),
+            models.Index(fields=['job_type']),
+            models.Index(fields=['priority']),
+            models.Index(fields=['created_at']),
+        ]
 
     def __str__(self):
-        return f"ContentJob {self.job_id} [{self.status}]"
+        return f"{self.get_job_type_display()}: {self.topic or self.recommendation[:50]}"
 
 
-
-
-# ---------------------------------------------------------------------------
-# V2 / V2.2 Models — class stubs matching existing migrations
-# Tables were created by migrations 0006, 0007, 0013, 0014, 0015, 0018.
-# managed=False prevents makemigrations from generating conflicting diffs.
-# ---------------------------------------------------------------------------
+# ── Model stubs for imports that reference planned models ──────────────────────
+# These are managed=False so Django won't try to create/migrate tables.
+# They exist solely to prevent ImportError in views that reference them.
+# Replace with real models when building the corresponding features.
 
 class SiloDefinition(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='silo_definitions')
     name = models.CharField(max_length=255)
-    slug = models.SlugField(max_length=255, blank=True)
-    hub_page_url = models.URLField(max_length=2048, blank=True)
-    hub_page_id = models.IntegerField(null=True, blank=True)
-    description = models.TextField(blank=True)
-    status = models.CharField(max_length=50, default='active')
+    target_page = models.ForeignKey(Page, on_delete=models.SET_NULL, null=True, blank=True, related_name='silo_target')
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True)
 
     class Meta:
         managed = False
@@ -330,375 +548,212 @@ class SiloDefinition(models.Model):
 
 
 class SiloKeyword(models.Model):
-    silo = models.ForeignKey(SiloDefinition, on_delete=models.CASCADE, related_name='keywords', null=True, blank=True)
+    silo = models.ForeignKey(SiloDefinition, on_delete=models.CASCADE, related_name='keywords')
     keyword = models.CharField(max_length=500)
-    keyword_type = models.CharField(max_length=50, default='supporting')
     search_volume = models.IntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         managed = False
         db_table = 'silo_keywords'
 
-    def __str__(self):
-        return self.keyword
-
 
 class KeywordAssignment(models.Model):
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True)
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='keyword_assignments')
+    keyword = models.CharField(max_length=500)
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, null=True, blank=True, related_name='keyword_assignments')
     silo = models.ForeignKey(SiloDefinition, on_delete=models.SET_NULL, null=True, blank=True, related_name='assignments')
-    keyword = models.CharField(max_length=255, db_index=True)
-    page_url = models.URLField(max_length=2048, blank=True)
-    page_id = models.IntegerField(null=True, blank=True)
-    page_title = models.CharField(max_length=1024, blank=True)
-    page_type = models.CharField(max_length=50, default='general')
-    assignment_source = models.CharField(max_length=50, default='manual')
     status = models.CharField(max_length=20, default='active')
-    gsc_impressions = models.IntegerField(default=0)
-    gsc_clicks = models.IntegerField(default=0)
     assigned_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         managed = False
         db_table = 'keyword_assignments'
 
-    def __str__(self):
-        return f"{self.keyword} → {self.page_url}"
-
 
 class KeywordAssignmentHistory(models.Model):
-    assignment = models.ForeignKey(KeywordAssignment, on_delete=models.CASCADE, related_name='history', null=True, blank=True)
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True)
+    assignment = models.ForeignKey(KeywordAssignment, on_delete=models.CASCADE, null=True, blank=True, related_name='history')
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='keyword_history')
     keyword = models.CharField(max_length=500)
-    previous_url = models.URLField(max_length=2048, blank=True)
-    new_url = models.URLField(max_length=2048, blank=True)
-    previous_page_type = models.CharField(max_length=100, blank=True)
-    new_page_type = models.CharField(max_length=100, blank=True)
-    action = models.CharField(max_length=50, default='assign')
+    action = models.CharField(max_length=50)
+    old_page = models.ForeignKey(Page, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    new_page = models.ForeignKey(Page, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     reason = models.TextField(blank=True)
-    performed_by = models.CharField(max_length=255, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True, blank=True)
 
     class Meta:
         managed = False
         db_table = 'keyword_assignment_history'
 
-    def __str__(self):
-        return f"{self.action}: {self.keyword}"
-
 
 class PageMetadata(models.Model):
-    page = models.OneToOneField(Page, on_delete=models.CASCADE, related_name='metadata', null=True, blank=True)
-    page_url = models.URLField(max_length=2048, blank=True)
-    title_tag = models.CharField(max_length=1024, blank=True)
-    h1_tag = models.CharField(max_length=1024, blank=True)
-    meta_description = models.TextField(blank=True)
-    is_indexable = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    page = models.OneToOneField(Page, on_delete=models.CASCADE, related_name='metadata')
+    word_count = models.IntegerField(default=0)
+    readability_score = models.FloatField(default=0)
+    last_crawled = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         managed = False
         db_table = 'page_metadata'
 
-    def __str__(self):
-        return f"Metadata: {self.page_url}"
-
 
 class CannibalizationConflict(models.Model):
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True, related_name='cannibalization_conflicts')
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='cannibalization_conflicts')
     keyword = models.CharField(max_length=500)
-    conflict_type = models.CharField(max_length=100, blank=True)
-    severity = models.CharField(max_length=50, blank=True)
-    status = models.CharField(max_length=50, default='open')
-    detected_at = models.DateTimeField(auto_now_add=True)
+    severity = models.CharField(max_length=20, default='medium')
+    status = models.CharField(max_length=20, default='active')
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         managed = False
         db_table = 'cannibalization_conflicts'
 
-    def __str__(self):
-        return f"Conflict: {self.keyword}"
-
 
 class ConflictPage(models.Model):
-    conflict = models.ForeignKey(CannibalizationConflict, on_delete=models.CASCADE, related_name='pages', null=True, blank=True)
-    page_url = models.URLField(max_length=2048, blank=True)
-    page_id = models.IntegerField(null=True, blank=True)
-    page_type = models.CharField(max_length=100, blank=True)
-    is_recommended_winner = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
+    conflict = models.ForeignKey(CannibalizationConflict, on_delete=models.CASCADE, related_name='conflict_pages')
+    page = models.ForeignKey(Page, on_delete=models.CASCADE)
+    impressions = models.IntegerField(default=0)
+    clicks = models.IntegerField(default=0)
+    position = models.FloatField(default=0)
 
     class Meta:
         managed = False
         db_table = 'conflict_pages'
 
-    def __str__(self):
-        return self.page_url
-
 
 class ConflictResolution(models.Model):
-    # UUIDField primary key — matches migration 0007
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    conflict = models.ForeignKey(CannibalizationConflict, on_delete=models.CASCADE, related_name='resolutions', null=True, blank=True)
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='conflict_resolutions', null=True, blank=True)
-    redirect = models.ForeignKey('RedirectRegistry', on_delete=models.SET_NULL, null=True, blank=True, related_name='conflict_resolutions')
-    action_type = models.CharField(max_length=30)
-    winner_url = models.CharField(max_length=2048, blank=True, null=True)
-    loser_url = models.CharField(max_length=2048, blank=True, null=True)
-    redirect_type = models.IntegerField(blank=True, null=True)
-    merge_brief = models.TextField(blank=True, null=True)
-    content_merged = models.BooleanField(default=False)
-    internal_links_updated = models.IntegerField(default=0)
-    keyword_reassigned = models.BooleanField(default=False)
-    previous_keyword_owner = models.CharField(max_length=2048, blank=True, null=True)
-    new_keyword_owner = models.CharField(max_length=2048, blank=True, null=True)
-    recommended_by = models.CharField(max_length=30, default='siloq')
-    approved_by = models.CharField(max_length=255, blank=True, null=True)
-    approval_rating = models.CharField(max_length=10, blank=True, null=True)
-    verified = models.BooleanField(default=False)
-    verified_at = models.DateTimeField(blank=True, null=True)
-    verification_status = models.CharField(max_length=30, blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    conflict = models.ForeignKey(CannibalizationConflict, on_delete=models.CASCADE, related_name='resolutions')
+    resolution_type = models.CharField(max_length=50)
+    notes = models.TextField(blank=True)
+    resolved_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         managed = False
         db_table = 'conflict_resolutions'
 
-    def __str__(self):
-        return f"{self.action_type} resolution"
-
 
 class RedirectRegistry(models.Model):
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True, related_name='redirects')
-    conflict = models.ForeignKey(CannibalizationConflict, on_delete=models.SET_NULL, null=True, blank=True)
-    source_url = models.URLField(max_length=2048)
-    target_url = models.URLField(max_length=2048)
-    redirect_type = models.IntegerField(default=301)
-    reason = models.TextField(blank=True)
-    status = models.CharField(max_length=50, default='active')
-    is_verified = models.BooleanField(default=False)
-    chain_depth = models.IntegerField(default=0)
-    final_destination = models.URLField(max_length=2048, blank=True)
-    created_by = models.CharField(max_length=255, blank=True)
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='redirects')
+    source_url = models.URLField()
+    target_url = models.URLField()
+    redirect_type = models.CharField(max_length=10, default='301')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         managed = False
         db_table = 'redirect_registry'
 
-    def __str__(self):
-        return f"{self.source_url} → {self.target_url}"
 
-
-class ContentHealthScore(models.Model):
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True, related_name='content_health_scores')
-    page_url = models.URLField(max_length=2048, blank=True)
-    page_id = models.IntegerField(null=True, blank=True)
-    health_score = models.FloatField(default=0.0)
-    health_status = models.CharField(max_length=50, blank=True)
+class PageAnalysis(models.Model):
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name='analyses')
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='page_analyses', null=True)
+    analysis_data = models.JSONField(default=dict)
+    score = models.FloatField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         managed = False
-        db_table = 'content_health_scores'
+        db_table = 'page_analyses'
 
-    def __str__(self):
-        return f"ContentHealth {self.page_url}"
+
+class SiteEntityProfile(models.Model):
+    site = models.OneToOneField('sites.Site', on_delete=models.CASCADE, related_name='entity_profile')
+    business_name = models.CharField(max_length=255, blank=True)
+    business_type = models.CharField(max_length=50, blank=True)
+    main_services = models.JSONField(default=list)
+    service_areas = models.JSONField(default=list)
+    logo_url = models.URLField(blank=True)
+    brands_used = models.JSONField(default=list)
+    url_yelp = models.URLField(blank=True)
+    team_members = models.JSONField(default=list)
+    is_service_area_business = models.BooleanField(default=False)
+
+    class Meta:
+        managed = False
+        db_table = 'site_entity_profiles'
+
+
+class SlugChangeLog(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='slug_changes')
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name='slug_changes')
+    old_slug = models.CharField(max_length=500)
+    new_slug = models.CharField(max_length=500)
+    redirect_created = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'slug_change_log'
+
+
+class SiloHealthScore(models.Model):
+    silo = models.ForeignKey(SiloDefinition, on_delete=models.CASCADE, related_name='health_scores')
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='silo_health_scores')
+    score = models.FloatField(default=0)
+    details = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'silo_health_scores'
 
 
 class FreshnessAlert(models.Model):
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True, related_name='freshness_alerts')
-    page = models.ForeignKey(Page, on_delete=models.CASCADE, null=True, blank=True)
-    page_url = models.URLField(max_length=2048, blank=True)
-    alert_level = models.CharField(max_length=50, blank=True)
-    status = models.CharField(max_length=50, default='active')
-    snoozed_until = models.DateTimeField(null=True, blank=True)
-    resolved_at = models.DateTimeField(null=True, blank=True)
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='freshness_alerts')
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name='freshness_alerts')
+    alert_type = models.CharField(max_length=50)
+    message = models.TextField(blank=True)
+    is_resolved = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         managed = False
         db_table = 'freshness_alerts'
 
-    def __str__(self):
-        return f"FreshnessAlert {self.page_url}"
+
+class ContentHealthScore(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='content_health_scores')
+    score = models.FloatField(default=0)
+    details = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'content_health_scores'
 
 
 class ContentAuditLog(models.Model):
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True, related_name='content_audits')
-    audit_type = models.CharField(max_length=100, blank=True)
-    status = models.CharField(max_length=50, default='pending')
-    total_pages_audited = models.IntegerField(default=0)
-    started_at = models.DateTimeField(auto_now_add=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-    error_message = models.TextField(blank=True)
-    created_at = models.DateTimeField(null=True, blank=True)
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='content_audit_logs')
+    action = models.CharField(max_length=100)
+    details = models.JSONField(default=dict)
+    created_by = models.ForeignKey('accounts.User', on_delete=models.SET_NULL, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         managed = False
-        db_table = 'content_audit_log'
+        db_table = 'content_audit_logs'
 
-    def __str__(self):
-        return f"ContentAudit [{self.status}]"
+
+class LifecycleQueue(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='lifecycle_queue')
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name='lifecycle_entries')
+    action = models.CharField(max_length=50)
+    status = models.CharField(max_length=20, default='pending')
+    priority = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        managed = False
+        db_table = 'lifecycle_queue'
 
 
 class ValidationLog(models.Model):
-    # UUIDField primary key — matches migration 0007
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True)
-    proposed_title = models.CharField(max_length=500, blank=True, null=True)
-    proposed_slug = models.CharField(max_length=500, blank=True, null=True)
-    proposed_h1 = models.CharField(max_length=500, blank=True, null=True)
-    proposed_keyword = models.CharField(max_length=500, blank=True, null=True)
-    proposed_page_type = models.CharField(max_length=30, blank=True, null=True)
-    overall_status = models.CharField(max_length=10)
-    blocking_check = models.CharField(max_length=50, blank=True, null=True)
-    check_results = models.JSONField(default=dict)
-    user_action = models.CharField(max_length=30, blank=True, null=True)
-    user_acknowledged_warnings = models.BooleanField(default=False)
-    validation_source = models.CharField(max_length=30, default='generation')
-    triggered_by = models.CharField(max_length=255, blank=True, null=True)
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='validation_logs')
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, null=True, blank=True, related_name='validation_logs')
+    validation_type = models.CharField(max_length=50)
+    result = models.JSONField(default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         managed = False
-        db_table = 'validation_log'
-
-    def __str__(self):
-        return f"ValidationLog {self.overall_status}"
-
-
-class SiloHealthScore(models.Model):
-    silo = models.ForeignKey(SiloDefinition, on_delete=models.CASCADE, related_name='health_scores', null=True, blank=True)
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True)
-    score = models.FloatField(default=0.0)
-    component_scores = models.JSONField(default=dict)
-    page_count = models.IntegerField(default=0)
-    details = models.JSONField(default=dict)
-    trigger = models.CharField(max_length=100, blank=True)
-    calculated_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        managed = False
-        db_table = 'silo_health_scores'
-
-    def __str__(self):
-        return f"SiloHealth silo={self.silo_id} score={self.score}"
-
-
-class SiteEntityProfile(models.Model):
-    site = models.OneToOneField('sites.Site', on_delete=models.CASCADE, related_name='entity_profile', null=True, blank=True)
-    business_name = models.CharField(max_length=255, blank=True)
-    founder_name = models.CharField(max_length=255, blank=True)
-    description = models.TextField(blank=True)
-    phone = models.CharField(max_length=50, blank=True)
-    email = models.EmailField(blank=True)
-    founding_year = models.IntegerField(null=True, blank=True)
-    num_employees = models.CharField(max_length=50, blank=True)
-    price_range = models.CharField(max_length=20, blank=True)
-    languages = models.JSONField(default=list)
-    payment_methods = models.JSONField(default=list)
-    street_address = models.CharField(max_length=255, blank=True)
-    city = models.CharField(max_length=100, blank=True)
-    state = models.CharField(max_length=100, blank=True)
-    zip_code = models.CharField(max_length=20, blank=True)
-    country = models.CharField(max_length=100, blank=True, default='US')
-    latitude = models.FloatField(null=True, blank=True)
-    longitude = models.FloatField(null=True, blank=True)
-    service_cities = models.JSONField(default=list)
-    service_zips = models.JSONField(default=list)
-    service_radius_miles = models.IntegerField(null=True, blank=True)
-    hours = models.JSONField(default=dict)
-    categories = models.JSONField(default=list)
-    certifications = models.JSONField(default=list)
-    license_numbers = models.JSONField(default=list)
-    url_facebook = models.URLField(blank=True, max_length=2048)
-    url_instagram = models.URLField(blank=True, max_length=2048)
-    url_linkedin = models.URLField(blank=True, max_length=2048)
-    url_twitter = models.URLField(blank=True, max_length=2048)
-    url_youtube = models.URLField(blank=True, max_length=2048)
-    url_tiktok = models.URLField(blank=True, max_length=2048)
-    gbp_url = models.URLField(blank=True, max_length=2048)
-    google_place_id = models.CharField(max_length=255, blank=True)
-    gbp_star_rating = models.FloatField(null=True, blank=True)
-    gbp_review_count = models.IntegerField(null=True, blank=True)
-    gbp_reviews = models.JSONField(default=list)
-    gbp_last_synced = models.DateTimeField(null=True, blank=True)
-
-    # V1 additions — brands, logo, Yelp, team, SAB flag
-    logo_url = models.URLField(blank=True, max_length=500,
-        help_text="Publicly accessible URL for the business logo (required for schema)")
-    brands_used = SafeJSONField(default=list, blank=True,
-        help_text="Brands/products the business installs, sells, or uses (e.g. Generac, Trane)")
-    url_yelp = models.URLField(blank=True, max_length=500,
-        help_text="Yelp business profile URL (high-authority sameAs entity signal)")
-    team_members = SafeJSONField(default=list, blank=True,
-        help_text="List of {name, title, linkedin_url, bio} — used for E-E-A-T and About Us analysis")
-    is_service_area_business = models.BooleanField(default=False,
-        help_text="True if business hides physical address and serves a geographic area (SAB)")
-
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        managed = False
-        db_table = 'seo_siteentityprofile'
-
-    def __str__(self):
-        return f"EntityProfile: {self.business_name or self.site_id}"
-
-
-class PageAnalysis(models.Model):
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True, related_name='page_analyses')
-    page_url = models.URLField(max_length=2048)
-    page_title = models.CharField(max_length=500, blank=True)
-    # gsc_data and wp_meta are NOT NULL in DB (created with default=dict in migration 0014)
-    # generated_schema is NOT NULL in DB (added with default=dict in migration 0017)
-    # Use default=dict so Django inserts {} instead of NULL when not provided
-    gsc_data = models.JSONField(default=dict)
-    wp_meta = models.JSONField(default=dict)
-    geo_recommendations = models.JSONField(default=list)
-    seo_recommendations = models.JSONField(default=list)
-    cro_recommendations = models.JSONField(default=list)
-    geo_score = models.IntegerField(null=True, blank=True)
-    seo_score = models.IntegerField(null=True, blank=True)
-    cro_score = models.IntegerField(null=True, blank=True)
-    overall_score = models.IntegerField(null=True, blank=True)
-    status = models.CharField(max_length=20, default='pending')
-    error_message = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-    generated_schema = models.JSONField(default=dict)
-
-    class Meta:
-        managed = False
-        db_table = 'page_analyses'
-
-    def __str__(self):
-        return f"Analysis {self.id} — {self.page_url} [{self.status}]"
-
-
-class SlugChangeLog(models.Model):
-    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, null=True, blank=True, related_name='slug_changes')
-    page_id = models.IntegerField(null=True, blank=True)
-    old_url = models.CharField(max_length=2048)
-    old_slug = models.CharField(max_length=500, blank=True)
-    new_url = models.CharField(max_length=2048)
-    new_slug = models.CharField(max_length=500, blank=True)
-    redirect = models.ForeignKey(RedirectRegistry, on_delete=models.SET_NULL, null=True, blank=True)
-    redirect_status = models.CharField(max_length=50, blank=True)
-    slug_change_status = models.CharField(max_length=50, default='pending')
-    reason = models.CharField(max_length=100, blank=True)
-    error_message = models.TextField(blank=True, null=True)
-    changed_by = models.CharField(max_length=255, blank=True)
-    changed_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        managed = False
-        db_table = 'slug_change_log'
-
-    def __str__(self):
-        return f"{self.old_url} → {self.new_url} [{self.slug_change_status}]"
+        db_table = 'validation_logs'

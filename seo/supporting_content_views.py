@@ -21,10 +21,12 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
+from django.utils.text import slugify
 
 from sites.models import Site
 from seo.models import Page, InternalLink, SiteEntityProfile
 from seo.profile_validators import get_profile_completeness
+from integrations.wordpress_webhook import send_webhook_to_wordpress
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,243 @@ MIN_SUPPORTING_PAGES = 2
 
 # Money page types that benefit from supporting content
 MONEY_PAGE_TYPES = {'money', 'service', 'service_hub', 'location', 'product'}
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_draft(request, site_id: int):
+    """
+    POST /api/v1/sites/{site_id}/pages/create-draft/
+
+    Body:
+    {
+      "topic_title": "...",
+      "page_type": "sub_page" | "blog_post",
+      "target_keyword": "...",
+      "hub_page_id": 123
+    }
+
+    Action:
+    - Fire content.create_draft webhook to WP plugin
+
+    Returns:
+    - wp_post_id
+    - edit_url
+    - status
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+
+    topic_title = (request.data.get('topic_title') or '').strip()
+    page_type = (request.data.get('page_type') or '').strip()
+    target_keyword = (request.data.get('target_keyword') or '').strip()
+    hub_page_id = request.data.get('hub_page_id')
+    gap_id = request.data.get('gap_id')
+    suggested_silo_id = request.data.get('suggested_silo_id')
+
+    if not topic_title:
+        return Response({'error': 'topic_title is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if page_type not in {'sub_page', 'blog_post'}:
+        return Response({'error': 'page_type must be either sub_page or blog_post'}, status=status.HTTP_400_BAD_REQUEST)
+    if not target_keyword:
+        return Response({'error': 'target_keyword is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if page_type == 'sub_page' and not hub_page_id:
+        return Response({'error': 'hub_page_id is required for sub_page'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if hub_page_id:
+        try:
+            hub_page_id = int(hub_page_id)
+        except (TypeError, ValueError):
+            return Response({'error': 'hub_page_id must be an integer'}, status=status.HTTP_400_BAD_REQUEST)
+
+        hub_exists = Page.objects.filter(id=hub_page_id, site=site).exists()
+        if not hub_exists:
+            return Response({'error': f'Hub page with ID {hub_page_id} not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    webhook_payload = {
+        'topic_title': topic_title,
+        'title': topic_title,
+        'page_type': page_type,
+        'target_keyword': target_keyword,
+        'hub_page_id': hub_page_id,
+        'slug': slugify(topic_title),
+        'status': 'draft',
+    }
+
+    wp_result = send_webhook_to_wordpress(site, 'content.create_draft', webhook_payload)
+    if not wp_result.get('success'):
+        return Response(
+            {'error': f"WordPress webhook failed: {wp_result.get('error', 'unknown error')}"},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    wp_response = wp_result.get('response') or {}
+    wp_post_id = wp_response.get('wp_post_id') or wp_response.get('post_id')
+    edit_url = wp_response.get('edit_url')
+    if not edit_url and wp_post_id:
+        edit_url = f"{site.url.rstrip('/')}/wp-admin/post.php?post={wp_post_id}&action=edit"
+
+    # Track create-draft entries for content pipeline view.
+    # This is a local mirror and does not replace the WP source of truth.
+    try:
+        if wp_post_id:
+            wp_post_id = int(wp_post_id)
+            post_status = str(wp_response.get('status', 'draft')).strip().lower()
+            local_status = 'publish' if post_status in {'publish', 'published'} else 'draft' if post_status == 'draft' else 'private'
+
+            marker_parts = ['draft_pipeline']
+            if gap_id:
+                marker_parts.append(f"gap:{str(gap_id).strip()}")
+            if suggested_silo_id is not None and str(suggested_silo_id).strip() != '':
+                marker_parts.append(f"silo:{str(suggested_silo_id).strip()}")
+
+            Page.objects.update_or_create(
+                site=site,
+                wp_post_id=wp_post_id,
+                defaults={
+                    'title': topic_title,
+                    'slug': slugify(topic_title),
+                    'url': f"{site.url.rstrip('/')}/{slugify(topic_title)}/",
+                    'status': local_status,
+                    'post_type': 'page' if page_type == 'sub_page' else 'post',
+                    'parent_id': hub_page_id if page_type == 'sub_page' else None,
+                    'siloq_page_id': '|'.join(marker_parts),
+                    'excerpt': target_keyword,
+                },
+            )
+    except Exception as exc:
+        logger.warning('Failed to mirror create-draft in local pipeline for site %s: %s', site.id, exc)
+
+    return Response(
+        {
+            'wp_post_id': wp_post_id,
+            'edit_url': edit_url,
+            'status': wp_response.get('status', 'draft'),
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def content_pipeline(request, site_id: int):
+    """
+    GET /api/v1/sites/{site_id}/content-pipeline/
+
+    Returns pages created through create-draft flow.
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+
+    pipeline_qs = (
+        Page.objects
+        .filter(site=site, siloq_page_id__startswith='draft_pipeline')
+        .order_by('-created_at')
+    )
+
+    pipeline = []
+    by_status = {'draft': 0, 'queued': 0, 'published': 0}
+
+    for page in pipeline_qs:
+        status_raw = (page.status or '').lower()
+        if status_raw == 'publish':
+            status_value = 'published'
+        elif status_raw == 'draft':
+            status_value = 'draft'
+        else:
+            status_value = 'queued'
+
+        marker = page.siloq_page_id or ''
+        gap_value = None
+        silo_value = None
+        for token in marker.split('|'):
+            if token.startswith('gap:'):
+                parsed_gap = token[4:].strip()
+                gap_value = parsed_gap or None
+            elif token.startswith('silo:'):
+                raw_silo = token[5:].strip()
+                if raw_silo:
+                    try:
+                        silo_value = int(raw_silo)
+                    except ValueError:
+                        silo_value = None
+
+        if silo_value is None and page.parent_id:
+            silo_value = page.parent_id
+
+        by_status[status_value] += 1
+        pipeline.append({
+            'id': page.id,
+            'title': page.title,
+            'status': status_value,
+            'suggested_silo_id': silo_value,
+            'wp_post_id': page.wp_post_id,
+            'gap_id': gap_value,
+            'created_at': page.created_at.isoformat() if page.created_at else None,
+        })
+
+    return Response({
+        'pipeline': pipeline,
+        'total': len(pipeline),
+        'by_status': by_status,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def generate_snippet(request, site_id: int, page_id: int):
+    """
+    POST /api/v1/sites/{site_id}/pages/{page_id}/generate-snippet/
+
+    Body:
+    {
+      "content_type": "faq" | "services" | "about"
+    }
+
+    Returns:
+    {
+      "content": "generated text..."
+    }
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+    page = get_object_or_404(Page, id=page_id, site=site)
+
+    content_type = (request.data.get('content_type') or '').strip().lower()
+    allowed_types = {'faq', 'services', 'about'}
+    if content_type not in allowed_types:
+        return Response(
+            {'error': "content_type must be one of: faq, services, about"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        profile = SiteEntityProfile.objects.get(site=site)
+    except SiteEntityProfile.DoesNotExist:
+        profile = None
+
+    business_name = (getattr(profile, 'business_name', '') or site.name).strip()
+    city = (getattr(profile, 'city', '') or '').strip()
+    state = (getattr(profile, 'state', '') or '').strip()
+    location = ', '.join([v for v in [city, state] if v])
+    location_phrase = f" in {location}" if location else ''
+    service = page.title or 'this service'
+
+    snippet_by_type = {
+        'faq': (
+            f"What should customers know about {service}{location_phrase}? "
+            f"{business_name} recommends starting with a site-specific assessment, "
+            "reviewing timeline and budget expectations, and confirming the exact scope before work begins."
+        ),
+        'services': (
+            f"{business_name} provides {service}{location_phrase} with a focus on clear recommendations, "
+            "transparent pricing, and dependable execution from planning through completion."
+        ),
+        'about': (
+            f"{business_name} is a trusted team specializing in {service}{location_phrase}, "
+            "known for practical expertise, responsive communication, and quality-first results."
+        ),
+    }
+
+    return Response({'content': snippet_by_type[content_type]}, status=status.HTTP_200_OK)
 
 
 # =============================================================================
@@ -52,7 +291,8 @@ def supporting_content_gap(request, site_id: int, page_id: int):
     - supporting_pages: list of pages that link TO this page
     - gap_count: how many more supporting pages are needed
     - missing_supporting_content: bool
-    - topic_plan: list of 3-5 business-specific article topics
+    - needed_supporting_pages: suggested pages to create (title + keyword)
+    - topic_plan: full generated topic list (backward compatible)
     - profile_completeness: partial check for topic generation blocking
     """
     site = get_object_or_404(Site, id=site_id, user=request.user)
@@ -101,9 +341,21 @@ def supporting_content_gap(request, site_id: int, page_id: int):
         'blocked_features': ['content_topic_generation'],
     }
 
+    gap_count = max(0, MIN_SUPPORTING_PAGES - current_count)
+
     topic_plan = []
     if not completeness.get('content_blocked') and missing_supporting_content:
         topic_plan = _generate_topic_plan(page, profile, site)
+
+    needed_supporting_pages = [
+        {
+            'title': t.get('title', ''),
+            'target_keyword': t.get('target_keyword', ''),
+            'content_type': t.get('content_type', 'supporting_article'),
+            'word_count': t.get('word_count', 1000),
+        }
+        for t in topic_plan[:gap_count]
+    ]
 
     return Response({
         'page_id':    page.id,
@@ -114,7 +366,8 @@ def supporting_content_gap(request, site_id: int, page_id: int):
         'supporting_page_count':     current_count,
         'min_recommended':           MIN_SUPPORTING_PAGES,
         'missing_supporting_content': missing_supporting_content,
-        'gap_count': max(0, MIN_SUPPORTING_PAGES - current_count),
+        'gap_count': gap_count,
+        'needed_supporting_pages': needed_supporting_pages,
         'topic_plan': topic_plan,
         'profile_completeness': {
             'content_blocked':   completeness.get('content_blocked', False),
