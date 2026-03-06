@@ -63,6 +63,7 @@ from seo.supporting_content_views import (
 from seo.freshness_views import site_freshness, page_freshness
 from seo.schema_graph_views import schema_graph, schema_graph_completeness, schema_graph_regenerate
 from seo.internal_links_views import get_related_pages, suggest_widget_edit
+from seo.site_audit_views import site_audit
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -148,4 +149,6 @@ urlpatterns = [
     # Internal Linking Context (Reverse Silo)
     path('<int:site_id>/pages/<int:page_id>/related-pages/', get_related_pages, name='page-related-pages'),
     path('<int:site_id>/pages/<int:page_id>/suggest-widget-edit/', suggest_widget_edit, name='page-suggest-widget-edit'),
+    # Site Audit — Track 2 scoring engine + AI recommendations
+    path('<int:site_id>/audit/', site_audit, name='site-audit'),
 ]
