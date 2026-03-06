@@ -66,6 +66,7 @@ def get_auth_url(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE
         )
     
+    # State contains user ID, site ID, and the WP admin URL to return to after OAuth
     # State contains user ID and site ID for the callback
     wp_return_url = request.query_params.get('wp_return_url', '')
     state = json.dumps({
@@ -107,6 +108,13 @@ def oauth_callback(request):
     if error:
         logger.error(f"GSC OAuth error: {error}")
         try:
+            state_for_error = json.loads(request.query_params.get('state', '{}'))
+        except:
+            state_for_error = {}
+        wp_return_url = state_for_error.get('wp_return_url', '').strip()
+        if wp_return_url:
+            separator = '&' if '?' in wp_return_url else '?'
+            return redirect(f"{wp_return_url}{separator}siloq_gsc=error&gsc_error={error}")
             state_err = json.loads(request.query_params.get('state', '{}'))
         except:
             state_err = {}
@@ -177,20 +185,19 @@ def oauth_callback(request):
                         gsc_sites = gsc_resp.json().get('siteEntry', [])
                         print(f"[GSC] Found {len(gsc_sites)} properties: {[gs.get('siteUrl') for gs in gsc_sites]}", flush=True)
                         
+                        # Store all available properties for the plugin's property selector
+                        site.gsc_available_properties = json.dumps([gs['siteUrl'] for gs in gsc_sites])
+
                         if site.url:
                             site_domain = site.url.lower().replace('https://', '').replace('http://', '').replace('www.', '').rstrip('/')
                             for gs in gsc_sites:
-                                gs_url = gs.get('siteUrl', '').lower().replace('www.', '')
-                                gs_domain = gs_url.replace('https://', '').replace('http://', '').replace('sc-domain:', '').rstrip('/')
-                                if site_domain == gs_domain or site_domain in gs_url or gs_url.rstrip('/').endswith(site_domain):
+                                gs_url = gs.get('siteUrl', '').lower()
+                                gs_domain = gs_url.replace('https://', '').replace('http://', '').replace('www.', '').replace('sc-domain:', '').rstrip('/')
+                                if site_domain == gs_domain:
                                     site.gsc_site_url = gs['siteUrl']
+                                    site.gsc_auto_matched = True
                                     print(f"[GSC] Auto-matched: {gs['siteUrl']}", flush=True)
                                     break
-                        
-                        if not site.gsc_site_url and gsc_sites:
-                            # Fallback: use first available GSC property
-                            site.gsc_site_url = gsc_sites[0]['siteUrl']
-                            print(f"[GSC] No exact match, using first property: {site.gsc_site_url}", flush=True)
                     else:
                         print(f"[GSC] Properties API FAILED ({gsc_resp.status_code})", flush=True)
                 except Exception as e:
@@ -199,6 +206,21 @@ def oauth_callback(request):
             site.save()
             print(f"[GSC] SUCCESS: saved tokens for site {site_id}. gsc_site_url={site.gsc_site_url}", flush=True)
             logger.info(f"GSC OAuth: saved tokens for site {site_id}. gsc_site_url={site.gsc_site_url}")
+            # If the plugin provided a return URL, bounce back to WP admin
+            wp_return_url = state.get('wp_return_url', '').strip()
+            if site.gsc_site_url:
+                # Exact match found — redirect as connected
+                if wp_return_url:
+                    separator = '&' if '?' in wp_return_url else '?'
+                    return redirect(f"{wp_return_url}{separator}siloq_gsc=connected")
+                return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_connected=true&site_id={site_id}")
+            else:
+                # No exact match — let the plugin show a property selector
+                properties_json = quote(site.gsc_available_properties or '[]')
+                if wp_return_url:
+                    separator = '&' if '?' in wp_return_url else '?'
+                    return redirect(f"{wp_return_url}{separator}siloq_gsc=choose_property&properties={properties_json}")
+                return redirect(f"{settings.FRONTEND_URL}/dashboard?siloq_gsc=choose_property&properties={properties_json}&site_id={site_id}")
             wp_return_url = state.get('wp_return_url', '').strip()
             if wp_return_url:
                 separator = '&' if '?' in wp_return_url else '?'
@@ -1104,4 +1126,30 @@ def gsc_disconnect(request, site_id):
     return Response({
         'message': 'GSC disconnected',
         'pages_deleted': deleted_count,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def gsc_properties(request, site_id):
+    """
+    GET /api/v1/sites/{site_id}/gsc/properties/
+    Returns the list of available GSC properties for a connected site.
+    """
+    try:
+        site = Site.objects.get(id=site_id, user=request.user)
+    except Site.DoesNotExist:
+        return Response({'error': 'Site not found'}, status=404)
+
+    properties = []
+    if site.gsc_available_properties:
+        try:
+            properties = json.loads(site.gsc_available_properties)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    return Response({
+        'properties': properties,
+        'current_property': site.gsc_site_url or '',
+        'auto_matched': site.gsc_auto_matched,
     })

@@ -1189,6 +1189,17 @@ def analyze_page(request, site_id: int):
         except Exception as gg_exc:
             logger.warning("Geographic grounding/IG computation failed: %s", gg_exc)
 
+        # ── Deterministic SEO checks ─────────────────────────────────────
+        try:
+            from sites.analysis import analyze_page_deep
+            page_obj_for_deep = page_obj or Page.objects.filter(site=site, url=absolute_url).first()
+            if page_obj_for_deep:
+                deep_checks = analyze_page_deep(page_obj_for_deep, site=site)
+                analysis.analysis_data = deep_checks
+                analysis.score = deep_checks.get('overall_score', 0)
+        except Exception as deep_exc:
+            logger.warning("Deep analysis checks failed: %s", deep_exc)
+
         analysis.status = 'complete'
         analysis.completed_at = timezone.now()
         analysis.save()
@@ -1470,6 +1481,8 @@ def _serialize_analysis(analysis: PageAnalysis) -> dict:
             'score': None, 'label': 'unknown', 'emoji': '○', 'warning': False,
             'components': {}, 'outdated_flags': [], 'recommendations': [],
         },
+        'deep_checks': analysis.analysis_data or {},
+        'deep_score': analysis.score if analysis.score else None,
         'created_at': analysis.created_at.isoformat() if analysis.created_at else None,
         'completed_at': analysis.completed_at.isoformat() if analysis.completed_at else None,
     }

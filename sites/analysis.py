@@ -1503,6 +1503,201 @@ def _generate_geo_recommendations(geo_results: List[Dict]) -> List[Dict]:
     ]
 
 
+# =============================================================================
+# DEEP PAGE ANALYSIS — Deterministic SEO Checks (BUG 8)
+# =============================================================================
+
+def _strip_html_tags(html: str) -> str:
+    """Remove HTML tags and return plain text."""
+    return re.sub(r'<[^>]+>', ' ', html or '').strip()
+
+
+def _extract_primary_keyword(title: str, h1: str, url: str) -> str:
+    """Best-guess primary keyword from title, H1, and URL slug word frequency."""
+    combined = f"{title} {h1}"
+    slug = urlparse(url).path.strip('/').split('/')[-1] if url else ''
+    slug_words = slug.replace('-', ' ').replace('_', ' ')
+    combined += ' ' + slug_words
+
+    stop_words = {
+        'the', 'and', 'for', 'with', 'our', 'your', 'all', 'how', 'what', 'why',
+        'page', 'home', 'about', 'contact', 'www', 'com', 'net', 'org', 'this',
+        'that', 'from', 'are', 'was', 'has', 'have', 'will', 'can', 'you', 'we',
+        'its', 'not', 'but', 'they', 'them', 'been', 'more', 'also', 'than',
+    }
+
+    words = re.findall(r'[a-z]{3,}', combined.lower())
+    words = [w for w in words if w not in stop_words]
+
+    if not words:
+        return ''
+
+    # Count frequency
+    freq: Dict[str, int] = defaultdict(int)
+    for w in words:
+        freq[w] += 1
+
+    # Return the most frequent word (or 2-gram if possible)
+    sorted_words = sorted(freq.items(), key=lambda x: -x[1])
+    if len(sorted_words) >= 2:
+        return f"{sorted_words[0][0]} {sorted_words[1][0]}"
+    return sorted_words[0][0]
+
+
+def analyze_page_deep(page, site=None) -> Dict[str, Any]:
+    """
+    Run deterministic SEO checks on a page and compute a 0-100 score.
+
+    Returns a dict with all check results and overall_score.
+    """
+    from seo.models import Page, InternalLink, SiteEntityProfile
+
+    content_html = getattr(page, 'content', '') or ''
+    content_text = _strip_html_tags(content_html)
+    title = getattr(page, 'title', '') or ''
+    url = getattr(page, 'url', '') or ''
+    yoast_desc = getattr(page, 'yoast_description', '') or ''
+
+    # ── H1 checks ─────────────────────────────────────────────
+    h1_matches = re.findall(r'<h1[^>]*>(.*?)</h1>', content_html, re.IGNORECASE | re.DOTALL)
+    h1_texts = [_strip_html_tags(h) for h in h1_matches]
+    h1_present = len(h1_texts) > 0
+    h1_count = len(h1_texts)
+    h1_text = h1_texts[0] if h1_texts else ''
+
+    # ── Primary keyword ───────────────────────────────────────
+    primary_keyword = _extract_primary_keyword(title, h1_text, url)
+    h1_contains_keyword = bool(primary_keyword and primary_keyword.lower() in h1_text.lower())
+
+    # ── Meta title ────────────────────────────────────────────
+    # The page title is effectively the meta title from WP
+    meta_title_length = len(title)
+    meta_title_has_keyword = bool(primary_keyword and primary_keyword.lower() in title.lower())
+
+    # ── Location checks ───────────────────────────────────────
+    city = ''
+    state = ''
+    if site:
+        try:
+            profile = SiteEntityProfile.objects.get(site=site)
+            city = getattr(profile, 'city', '') or ''
+            state = getattr(profile, 'state', '') or ''
+        except SiteEntityProfile.DoesNotExist:
+            pass
+
+    location_str = city.lower() if city else ''
+    meta_title_has_location = bool(location_str and location_str in title.lower())
+    has_location_modifier = bool(location_str and primary_keyword and location_str in primary_keyword.lower())
+
+    # ── Meta description ──────────────────────────────────────
+    meta_description_length = len(yoast_desc)
+
+    # ── Word count ────────────────────────────────────────────
+    word_count = len(content_text.split()) if content_text else 0
+
+    # ── Internal links ────────────────────────────────────────
+    internal_links_in = InternalLink.objects.filter(target_page=page, site=page.site).count()
+    internal_links_out = InternalLink.objects.filter(source_page=page, site=page.site).count()
+
+    # ── Images missing alt ────────────────────────────────────
+    img_tags = re.findall(r'<img[^>]*>', content_html, re.IGNORECASE)
+    images_missing_alt = 0
+    for img in img_tags:
+        alt_match = re.search(r'alt=["\']([^"\']*)["\']', img, re.IGNORECASE)
+        if not alt_match or not alt_match.group(1).strip():
+            images_missing_alt += 1
+
+    # ── Schema checks ─────────────────────────────────────────
+    schema_applied = bool(re.search(r'_siloq_schema_applied|application/ld\+json', content_html, re.IGNORECASE))
+    schema_type_match = re.search(r'"@type"\s*:\s*"([^"]+)"', content_html)
+    schema_type = schema_type_match.group(1) if schema_type_match else ''
+
+    # ── Keyword conflicts ─────────────────────────────────────
+    keyword_conflict_pages = []
+    if primary_keyword:
+        conflicting = (
+            Page.objects.filter(site=page.site, status='publish')
+            .exclude(id=page.id)
+        )
+        for cp in conflicting.only('id', 'url', 'title').iterator():
+            cp_kw = _extract_primary_keyword(cp.title or '', '', cp.url or '')
+            if cp_kw and cp_kw.lower() == primary_keyword.lower():
+                keyword_conflict_pages.append({'page_id': cp.id, 'url': cp.url})
+
+    # ── Local SEO checks (hub/spoke pages) ────────────────────
+    page_classification = getattr(page, 'page_type_classification', 'supporting')
+    path = urlparse(url).path.lower() if url else ''
+    is_local_page = any(p in path for p in ['/service-area', '/location', '/areas-we-serve'])
+
+    city_in_title = bool(location_str and location_str in title.lower())
+    city_in_h1 = bool(location_str and location_str in h1_text.lower())
+
+    # City in first paragraph
+    first_para = ''
+    para_match = re.search(r'<p[^>]*>(.*?)</p>', content_html, re.IGNORECASE | re.DOTALL)
+    if para_match:
+        first_para = _strip_html_tags(para_match.group(1)).lower()
+    city_in_first_paragraph = bool(location_str and location_str in first_para)
+
+    local_schema_applied = bool(
+        re.search(r'"@type"\s*:\s*"(?:LocalBusiness|Service)"', content_html, re.IGNORECASE)
+    )
+
+    # ── Scoring ───────────────────────────────────────────────
+    score = 100
+
+    if not h1_present:
+        score -= 15
+    if h1_count > 1:
+        score -= 10
+    if meta_title_length == 0:
+        score -= 15
+    elif meta_title_length < 30 or meta_title_length > 60:
+        score -= 5
+    if meta_description_length == 0:
+        score -= 10
+    if word_count < 300:
+        score -= 15
+    if internal_links_in == 0:
+        score -= 10
+    alt_penalty = min(images_missing_alt * 5, 20)
+    score -= alt_penalty
+    if not schema_applied:
+        score -= 10
+    if keyword_conflict_pages:
+        score -= 10
+
+    overall_score = max(0, score)
+
+    return {
+        # On-page SEO
+        'h1_present': h1_present,
+        'h1_count': h1_count,
+        'h1_contains_keyword': h1_contains_keyword,
+        'meta_title_length': meta_title_length,
+        'meta_title_has_keyword': meta_title_has_keyword,
+        'meta_title_has_location': meta_title_has_location,
+        'meta_description_length': meta_description_length,
+        'word_count': word_count,
+        'internal_links_in': internal_links_in,
+        'internal_links_out': internal_links_out,
+        'images_missing_alt': images_missing_alt,
+        'schema_applied': schema_applied,
+        'schema_type': schema_type,
+        # Keyword intelligence
+        'primary_keyword': primary_keyword,
+        'keyword_conflict_pages': keyword_conflict_pages[:10],
+        'has_location_modifier': has_location_modifier,
+        # Local SEO
+        'city_in_title': city_in_title,
+        'city_in_h1': city_in_h1,
+        'city_in_first_paragraph': city_in_first_paragraph,
+        'local_schema_applied': local_schema_applied,
+        # Score
+        'overall_score': overall_score,
+    }
+
+
 def _generate_recommendations(issues: List[Dict]) -> List[Dict]:
     """Generate actionable recommendations from issues."""
     recs = []

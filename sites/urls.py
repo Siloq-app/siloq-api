@@ -21,6 +21,7 @@ from seo.classification_views import (
     classify_single_page,
     classify_all,
     manual_page_type_override,
+    classify_pages_roles,
 )
 from seo.differentiate_views import (
     differentiate_conflict,
@@ -30,7 +31,7 @@ from seo.redirect_views import create_redirect, list_redirects
 from seo.slug_change_views import change_slug, bulk_change_slugs, list_slug_changes
 from integrations.gsc_views import (
     connect_gsc_site, get_gsc_data, analyze_gsc_cannibalization, content_gaps,
-    gsc_status, gsc_sync, gsc_pages, gsc_disconnect,
+    gsc_status, gsc_sync, gsc_pages, gsc_disconnect, gsc_properties,
 )
 from sites.sites import dashboard_fix_now
 from seo.cannibalization_v2 import get_cannibalization_conflicts
@@ -83,6 +84,7 @@ urlpatterns = [
     path('<int:site_id>/pages/<int:page_id>/classify/', classify_single_page, name='page-classify'),
     path('<int:site_id>/classify-all/', classify_all, name='site-classify-all'),
     path('<int:site_id>/pages/<int:page_id>/page-type/', manual_page_type_override, name='page-type-override'),
+    path('<int:site_id>/classify-pages/', classify_pages_roles, name='site-classify-pages'),
     # Redirects
     path('<int:site_id>/redirects/', list_redirects, name='site-redirects'),
     path('<int:site_id>/redirects/create/', create_redirect, name='site-redirect-create'),
@@ -101,6 +103,7 @@ urlpatterns = [
     path('<int:site_id>/gsc/sync/', gsc_sync, name='site-gsc-sync'),
     path('<int:site_id>/gsc/pages/', gsc_pages, name='site-gsc-pages'),
     path('<int:site_id>/gsc/disconnect/', gsc_disconnect, name='site-gsc-disconnect'),
+    path('<int:site_id>/gsc/properties/', gsc_properties, name='site-gsc-properties'),
     path('<int:site_id>/content-gaps/', content_gaps, name='site-content-gaps'),
     path('<int:site_id>/cannibalization/', get_cannibalization_conflicts, name='site-cannibalization-v2'),
     path('<int:site_id>/dashboard/fix-now/', dashboard_fix_now, name='dashboard-fix-now'),
