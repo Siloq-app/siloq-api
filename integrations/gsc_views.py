@@ -67,9 +67,11 @@ def get_auth_url(request):
         )
     
     # State contains user ID and site ID for the callback
+    wp_return_url = request.query_params.get('wp_return_url', '')
     state = json.dumps({
         'user_id': request.user.id,
         'site_id': site_id,
+        'wp_return_url': wp_return_url,
     })
     
     params = {
@@ -104,6 +106,14 @@ def oauth_callback(request):
     
     if error:
         logger.error(f"GSC OAuth error: {error}")
+        try:
+            state_err = json.loads(request.query_params.get('state', '{}'))
+        except:
+            state_err = {}
+        wp_return_url_err = state_err.get('wp_return_url', '').strip()
+        if wp_return_url_err:
+            sep = '&' if '?' in wp_return_url_err else '?'
+            return redirect(f"{wp_return_url_err}{sep}siloq_gsc=error&gsc_error={error}")
         return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_error={error}")
     
     if not code:
@@ -189,6 +199,10 @@ def oauth_callback(request):
             site.save()
             print(f"[GSC] SUCCESS: saved tokens for site {site_id}. gsc_site_url={site.gsc_site_url}", flush=True)
             logger.info(f"GSC OAuth: saved tokens for site {site_id}. gsc_site_url={site.gsc_site_url}")
+            wp_return_url = state.get('wp_return_url', '').strip()
+            if wp_return_url:
+                separator = '&' if '?' in wp_return_url else '?'
+                return redirect(f"{wp_return_url}{separator}siloq_gsc=connected")
             return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_connected=true&site_id={site_id}")
         except Site.DoesNotExist:
             print(f"[GSC] ERROR: Site {site_id} not found for user {user_id}", flush=True)
