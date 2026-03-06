@@ -750,7 +750,7 @@ class LifecycleQueue(models.Model):
 class SiteGSCPageData(models.Model):
     """Per-page GSC performance data, synced from Google Search Console."""
     site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='gsc_pages')
-    page = models.ForeignKey('seo.Page', on_delete=models.CASCADE, null=True, blank=True, related_name='gsc_data')
+    page = models.ForeignKey('seo.Page', on_delete=models.CASCADE, null=True, blank=True, related_name='gsc_page_data')
     url = models.URLField(max_length=2048)
     impressions_28d = models.IntegerField(default=0)
     clicks_28d = models.IntegerField(default=0)

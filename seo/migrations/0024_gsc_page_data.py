@@ -23,7 +23,7 @@ class Migration(migrations.Migration):
                 ('avg_position', models.FloatField(blank=True, null=True)),
                 ('top_queries', models.JSONField(default=list)),
                 ('synced_at', models.DateTimeField(auto_now=True)),
-                ('page', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='gsc_data', to='seo.page')),
+                ('page', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='gsc_page_data', to='seo.page')),
                 ('site', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='gsc_pages', to='sites.site')),
             ],
             options={
