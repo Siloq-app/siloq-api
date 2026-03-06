@@ -67,6 +67,7 @@ def get_auth_url(request):
         )
     
     # State contains user ID, site ID, and the WP admin URL to return to after OAuth
+    # State contains user ID and site ID for the callback
     wp_return_url = request.query_params.get('wp_return_url', '')
     state = json.dumps({
         'user_id': request.user.id,
@@ -114,6 +115,13 @@ def oauth_callback(request):
         if wp_return_url:
             separator = '&' if '?' in wp_return_url else '?'
             return redirect(f"{wp_return_url}{separator}siloq_gsc=error&gsc_error={error}")
+            state_err = json.loads(request.query_params.get('state', '{}'))
+        except:
+            state_err = {}
+        wp_return_url_err = state_err.get('wp_return_url', '').strip()
+        if wp_return_url_err:
+            sep = '&' if '?' in wp_return_url_err else '?'
+            return redirect(f"{wp_return_url_err}{sep}siloq_gsc=error&gsc_error={error}")
         return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_error={error}")
     
     if not code:
@@ -213,6 +221,11 @@ def oauth_callback(request):
                     separator = '&' if '?' in wp_return_url else '?'
                     return redirect(f"{wp_return_url}{separator}siloq_gsc=choose_property&properties={properties_json}")
                 return redirect(f"{settings.FRONTEND_URL}/dashboard?siloq_gsc=choose_property&properties={properties_json}&site_id={site_id}")
+            wp_return_url = state.get('wp_return_url', '').strip()
+            if wp_return_url:
+                separator = '&' if '?' in wp_return_url else '?'
+                return redirect(f"{wp_return_url}{separator}siloq_gsc=connected")
+            return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_connected=true&site_id={site_id}")
         except Site.DoesNotExist:
             print(f"[GSC] ERROR: Site {site_id} not found for user {user_id}", flush=True)
             logger.error(f"GSC OAuth: Site {site_id} not found for user {user_id}")
