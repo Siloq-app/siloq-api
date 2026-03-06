@@ -10,6 +10,7 @@ class Migration(migrations.Migration):
     dependencies = [
         ('sites', '0006_site_gbp_fields'),
         ('seo', '0023_page_junk_fields'),
+        ('seo', '0006_conflicts_tab_models'),
     ]
 
     operations = [
