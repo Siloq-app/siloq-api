@@ -155,6 +155,22 @@ def sync_page(request):
             import logging
             logging.getLogger(__name__).warning(f"Failed to classify page {page.id}", exc_info=True)
 
+        # Also classify page role (hub/spoke/supporting/orphan)
+        try:
+            from integrations.page_classifier import classify_page_role
+            role = classify_page_role(page)
+            # Store role in analysis_data on the latest PageAnalysis if available
+            from seo.models import PageAnalysis
+            analysis = PageAnalysis.objects.filter(page=page).order_by('-created_at').first()
+            if analysis:
+                ad = analysis.analysis_data or {}
+                ad['page_role'] = role
+                analysis.analysis_data = ad
+                analysis.save(update_fields=['analysis_data'])
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to classify page role {page.id}", exc_info=True)
+
     # Store faq_questions from plugin into PageAnalysis.wp_meta so analysis can use them
     if _faq_questions:
         try:

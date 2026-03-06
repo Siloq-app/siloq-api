@@ -10,6 +10,7 @@ from django.shortcuts import get_object_or_404
 from sites.models import Site
 from seo.models import Page
 from seo.page_classifier import classify_and_save, classify_all_pages, _get_business_profile
+from integrations.page_classifier import classify_page_role, classify_all_pages_roles
 
 
 def _get_site_for_user(request, site_id):
@@ -80,4 +81,20 @@ def manual_page_type_override(request, site_id, page_id):
         'page_id': page.id,
         'page_type': page.page_type_classification,
         'page_type_override': True,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def classify_pages_roles(request, site_id):
+    """
+    POST /api/v1/sites/{site_id}/classify-pages/
+    Classify all pages into hub/spoke/supporting/orphan roles.
+    """
+    site = _get_site_for_user(request, site_id)
+    results = classify_all_pages_roles(site)
+    return Response({
+        'site_id': site.id,
+        'classified': len(results),
+        'results': results,
     })
