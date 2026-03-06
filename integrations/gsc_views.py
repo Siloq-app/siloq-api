@@ -146,6 +146,10 @@ def oauth_callback(request):
         print(f"[GSC] Token exchange FAILED (HTTP {token_response.status_code}): {token_response.text}", flush=True)
         logger.error(f"GSC token exchange failed (HTTP {token_response.status_code}): {token_response.text}")
         error_detail = token_response.json().get('error_description', 'token_exchange_failed') if token_response.text else 'token_exchange_failed'
+        _wp = state.get('wp_return_url', '').strip() if state else ''
+        if _wp:
+            sep = '&' if '?' in _wp else '?'
+            return redirect(f"{_wp}{sep}siloq_gsc=error&gsc_error=token_exchange_failed")
         return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_error=token_exchange_failed&detail={quote(error_detail)}")
     
     tokens = token_response.json()
@@ -223,9 +227,17 @@ def oauth_callback(request):
         except Site.DoesNotExist:
             print(f"[GSC] ERROR: Site {site_id} not found for user {user_id}", flush=True)
             logger.error(f"GSC OAuth: Site {site_id} not found for user {user_id}")
+            _wp = state.get('wp_return_url', '').strip()
+            if _wp:
+                sep = '&' if '?' in _wp else '?'
+                return redirect(f"{_wp}{sep}siloq_gsc=error&gsc_error=site_not_found")
             return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_error=site_not_found")
         except Exception as e:
             print(f"[GSC] ERROR saving tokens: {e}", flush=True)
+            _wp = state.get('wp_return_url', '').strip()
+            if _wp:
+                sep = '&' if '?' in _wp else '?'
+                return redirect(f"{_wp}{sep}siloq_gsc=error&gsc_error=save_failed")
             return redirect(f"{settings.FRONTEND_URL}/dashboard?gsc_error=save_failed")
     
     # No site_id — redirect to site picker with temporary token
