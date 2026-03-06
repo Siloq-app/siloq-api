@@ -53,6 +53,7 @@ GSC_SCOPES = [
 def get_auth_url(request):
     """
     Get the Google OAuth URL for GSC authorization.
+    Includes wp_return_url in state for post-OAuth redirect back to WP admin.
     
     GET /api/v1/gsc/auth-url/?site_id=5
     
