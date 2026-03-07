@@ -99,3 +99,120 @@ class SiteViewSet(viewsets.ModelViewSet):
             'total_issues': total_issues,
             'last_synced_at': site.last_synced_at,
         })
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Related Pages endpoint
+    # GET /api/v1/sites/{site_id}/pages/{page_id}/related-pages/
+    # ─────────────────────────────────────────────────────────────────────────
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path=r'pages/(?P<page_id>[0-9]+)/related-pages',
+    )
+    def page_related_pages(self, request, pk=None, page_id=None):
+        """
+        Returns internal linking recommendations for a page.
+
+        Response:
+        {
+          "should_link_to":   [ {id, wp_post_id, title, url, page_type, anchor_text, already_linked}, ... ],
+          "should_link_from": [ ... ],
+          "page": { id, wp_post_id, title, page_type },
+          "source": "api"
+        }
+
+        page_id resolves by Django Page.id first, then wp_post_id (WP post ID).
+        """
+        from seo.models import Page, InternalLink
+        from django.db.models import Q
+
+        try:
+            site = self.get_queryset().get(pk=pk)
+        except Exception:
+            return Response({'detail': 'Site not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        page = (
+            Page.objects.filter(Q(id=page_id) | Q(wp_post_id=page_id), site=site)
+            .select_related('parent_silo')
+            .first()
+        )
+        if not page:
+            return Response(
+                {'detail': f'Page {page_id} not found for this site.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        is_hub      = page.is_money_page
+        is_homepage = page.is_homepage
+        parent_silo = page.parent_silo
+
+        all_pages = (
+            Page.objects.filter(site=site, status='publish')
+            .exclude(pk=page.pk)
+            .select_related('parent_silo')
+        )
+
+        outbound_ids = set(
+            InternalLink.objects.filter(source_page=page, target_page__site=site)
+            .values_list('target_page_id', flat=True)
+        )
+
+        def _entry(p, already_linked):
+            anchor = p.title
+            return {
+                'id':             p.id,
+                'wp_post_id':     p.wp_post_id,
+                'title':          p.title,
+                'url':            p.url,
+                'page_type':      p.page_type,
+                'anchor_text':    anchor,
+                'already_linked': already_linked,
+            }
+
+        should_link_to   = []
+        should_link_from = []
+
+        if is_homepage:
+            for p in all_pages.filter(is_money_page=True):
+                should_link_to.append(_entry(p, p.pk in outbound_ids))
+
+        elif is_hub:
+            for p in all_pages.filter(parent_silo=page):
+                should_link_to.append(_entry(p, p.pk in outbound_ids))
+            hp = all_pages.filter(is_homepage=True).first()
+            if hp:
+                hp_links = set(InternalLink.objects.filter(source_page=hp, target_page=page).values_list('target_page_id', flat=True))
+                should_link_from.append(_entry(hp, bool(hp_links)))
+            for p in all_pages.filter(is_money_page=True):
+                p_links = set(InternalLink.objects.filter(source_page=p, target_page=page).values_list('target_page_id', flat=True))
+                should_link_from.append(_entry(p, bool(p_links)))
+
+        elif parent_silo:
+            should_link_to.append(_entry(parent_silo, parent_silo.pk in outbound_ids))
+            siblings = all_pages.filter(parent_silo=parent_silo)
+            for p in siblings:
+                should_link_to.append(_entry(p, p.pk in outbound_ids))
+            hub_links = set(InternalLink.objects.filter(source_page=parent_silo, target_page=page).values_list('target_page_id', flat=True))
+            should_link_from.append(_entry(parent_silo, bool(hub_links)))
+            for p in siblings:
+                p_links = set(InternalLink.objects.filter(source_page=p, target_page=page).values_list('target_page_id', flat=True))
+                should_link_from.append(_entry(p, bool(p_links)))
+
+        else:
+            for p in all_pages.filter(is_money_page=True):
+                should_link_to.append(_entry(p, p.pk in outbound_ids))
+
+        should_link_to.sort(   key=lambda x: (x['already_linked'], x['title']))
+        should_link_from.sort( key=lambda x: (x['already_linked'], x['title']))
+
+        return Response({
+            'should_link_to':   should_link_to[:20],
+            'should_link_from': should_link_from[:20],
+            'page': {
+                'id':         page.id,
+                'wp_post_id': page.wp_post_id,
+                'title':      page.title,
+                'page_type':  page.page_type,
+            },
+            'source': 'api',
+        })
