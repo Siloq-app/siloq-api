@@ -1388,3 +1388,176 @@ class SiteViewSet(viewsets.ModelViewSet):
             'total_suggested_topics': total_topics,
             'suggestions': suggestions,
         })
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Related Pages endpoint
+    # GET /api/v1/sites/{site_id}/pages/{page_id}/related-pages/
+    #
+    # Returns internal linking recommendations for the given page:
+    #   should_link_to   — pages this page should link TO (hub→spoke, spoke→hub)
+    #   should_link_from — pages that should link TO this page
+    #
+    # page_id can be either:
+    #   - the Django Page.id (preferred)
+    #   - the WordPress wp_post_id (fallback — plugin sends this before sync completes)
+    # ─────────────────────────────────────────────────────────────────────────
+    @action(
+        detail=True,
+        methods=['get'],
+        url_path=r'pages/(?P<page_id>[0-9]+)/related-pages',
+    )
+    def page_related_pages(self, request, pk=None, page_id=None):
+        """
+        GET /api/v1/sites/{site_id}/pages/{page_id}/related-pages/
+
+        Returns:
+        {
+            "should_link_to":   [ { id, title, url, page_type, anchor_text, already_linked }, ... ],
+            "should_link_from": [ { id, title, url, page_type, anchor_text, already_linked }, ... ],
+            "source": "api"
+        }
+        """
+        from seo.models import Page, InternalLink
+        from django.db.models import Q
+
+        # ── Resolve site ────────────────────────────────────────────────────
+        try:
+            site = self.get_queryset().get(pk=pk)
+        except Exception:
+            return Response({'detail': 'Site not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # ── Resolve page (by Django id first, then wp_post_id) ─────────────
+        page = (
+            Page.objects.filter(Q(id=page_id) | Q(wp_post_id=page_id), site=site)
+            .select_related('parent_silo')
+            .first()
+        )
+        if not page:
+            return Response(
+                {'detail': f'Page {page_id} not found for this site.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # ── Determine page role ─────────────────────────────────────────────
+        is_hub        = page.is_money_page
+        is_homepage   = page.is_homepage
+        parent_silo   = page.parent_silo       # set when page is a spoke/supporting
+
+        # ── Get all site pages (excluding current) ──────────────────────────
+        all_pages = (
+            Page.objects.filter(site=site, status='publish')
+            .exclude(pk=page.pk)
+            .select_related('parent_silo')
+        )
+
+        # ── Detect which pages this page already links to ───────────────────
+        outbound_ids = set(
+            InternalLink.objects.filter(source_page=page, target_page__site=site)
+            .values_list('target_page_id', flat=True)
+        )
+
+        # ── Build helper ────────────────────────────────────────────────────
+        def _page_entry(p, already_linked):
+            anchor = (
+                getattr(getattr(p, 'seo_data', None), 'target_keyword', None)
+                or p.title
+            )
+            return {
+                'id':             p.id,
+                'wp_post_id':     p.wp_post_id,
+                'title':          p.title,
+                'url':            p.url,
+                'page_type':      p.page_type,   # 'homepage'|'target'|'supporting'|'unassigned'
+                'anchor_text':    anchor,
+                'already_linked': already_linked,
+            }
+
+        should_link_to   = []
+        should_link_from = []
+
+        # ── Rules ──────────────────────────────────────────────────────────
+        #
+        # Hub page (is_money_page=True):
+        #   → should_link_to:   its own spoke/supporting pages
+        #   → should_link_from: homepage + other hub pages (peer interlinking)
+        #
+        # Supporting/spoke page (parent_silo set):
+        #   → should_link_to:   parent hub + sibling supporting pages
+        #   → should_link_from: parent hub + sibling supporting pages not yet linking here
+        #
+        # Unassigned page:
+        #   → should_link_to:   hub pages (helps get it into a silo)
+        #   → should_link_from: no strong recommendation
+        # ──────────────────────────────────────────────────────────────────
+
+        if is_homepage:
+            # Homepage should link to all hub/target pages
+            for p in all_pages.filter(is_money_page=True):
+                should_link_to.append(_page_entry(p, p.pk in outbound_ids))
+
+        elif is_hub:
+            # Hub → link to its supporting pages
+            for p in all_pages.filter(parent_silo=page):
+                should_link_to.append(_page_entry(p, p.pk in outbound_ids))
+
+            # Hub ← homepage should link here
+            hp = all_pages.filter(is_homepage=True).first()
+            if hp:
+                hp_outbound = set(
+                    InternalLink.objects.filter(source_page=hp, target_page=page)
+                    .values_list('target_page_id', flat=True)
+                )
+                should_link_from.append(_page_entry(hp, bool(hp_outbound)))
+
+            # Hub ← peer hub pages (cross-silo authority)
+            for p in all_pages.filter(is_money_page=True):
+                p_outbound = set(
+                    InternalLink.objects.filter(source_page=p, target_page=page)
+                    .values_list('target_page_id', flat=True)
+                )
+                should_link_from.append(_page_entry(p, bool(p_outbound)))
+
+        elif parent_silo:
+            # Spoke → link UP to hub
+            should_link_to.append(_page_entry(parent_silo, parent_silo.pk in outbound_ids))
+
+            # Spoke → link to sibling spokes
+            siblings = all_pages.filter(parent_silo=parent_silo)
+            for p in siblings:
+                should_link_to.append(_page_entry(p, p.pk in outbound_ids))
+
+            # Spoke ← hub should link down here
+            hub_outbound = set(
+                InternalLink.objects.filter(source_page=parent_silo, target_page=page)
+                .values_list('target_page_id', flat=True)
+            )
+            should_link_from.append(_page_entry(parent_silo, bool(hub_outbound)))
+
+            # Spoke ← sibling spokes should link here
+            for p in siblings:
+                p_outbound = set(
+                    InternalLink.objects.filter(source_page=p, target_page=page)
+                    .values_list('target_page_id', flat=True)
+                )
+                should_link_from.append(_page_entry(p, bool(p_outbound)))
+
+        else:
+            # Unassigned — suggest linking to hub pages to get it into the silo
+            for p in all_pages.filter(is_money_page=True):
+                should_link_to.append(_page_entry(p, p.pk in outbound_ids))
+
+        # ── Sort: unlinked first, then by title ────────────────────────────
+        should_link_to.sort(   key=lambda x: (x['already_linked'], x['title']))
+        should_link_from.sort( key=lambda x: (x['already_linked'], x['title']))
+
+        return Response({
+            'should_link_to':   should_link_to[:20],
+            'should_link_from': should_link_from[:20],
+            'page': {
+                'id':        page.id,
+                'wp_post_id': page.wp_post_id,
+                'title':     page.title,
+                'page_type': page.page_type,
+            },
+            'source': 'api',
+        })
