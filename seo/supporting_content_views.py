@@ -221,6 +221,84 @@ def content_pipeline(request, site_id: int):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+def suggest_content(request, site_id: int):
+    """
+    POST /api/v1/sites/{site_id}/suggest-content/
+
+    Body:
+    {
+      "content": "...",
+      "instruction": "...",
+      "page_title": "..."
+    }
+
+    Returns:
+    {
+      "suggestion": "..."
+    }
+    """
+    site = get_object_or_404(Site, id=site_id, user=request.user)
+
+    content = (request.data.get('content') or '').strip()
+    instruction = (request.data.get('instruction') or '').strip()
+    page_title = (request.data.get('page_title') or '').strip()
+
+    if not content:
+        return Response({'error': 'content is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if not instruction:
+        return Response({'error': 'instruction is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if not page_title:
+        return Response({'error': 'page_title is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not ANTHROPIC_API_KEY:
+        logger.error('ANTHROPIC_API_KEY not configured for suggest-content endpoint')
+        return Response(
+            {'error': 'AI generation failed. Check API key configuration.'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    system_prompt = (
+        'You are an expert local SEO copywriter. Return valid HTML preserving the input structure. '
+        'Never strip tags. Content must be meaningfully different. First sentence must contain the '
+        'primary keyword. No generic filler.'
+    )
+    user_prompt = (
+        f'Page title: {page_title}\n'
+        f'Instruction: {instruction}\n\n'
+        f'Content to edit:\n{content}'
+    )
+
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        message = client.messages.create(
+            model='claude-sonnet-4-20250514',
+            max_tokens=4096,
+            system=system_prompt,
+            messages=[{'role': 'user', 'content': user_prompt}],
+        )
+        suggestion = ''.join(
+            block.text for block in message.content if getattr(block, 'type', '') == 'text'
+        ).strip()
+    except Exception:
+        logger.exception('Claude API call failed for suggest-content on site %s', site.id)
+        return Response(
+            {'error': 'AI generation failed. Check API key configuration.'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    if not suggestion:
+        return Response(
+            {'error': 'AI generation returned empty output.'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    return Response({'suggestion': suggestion}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
 def generate_snippet(request, site_id: int, page_id: int):
     """
     POST /api/v1/sites/{site_id}/pages/{page_id}/generate-snippet/

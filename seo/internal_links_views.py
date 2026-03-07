@@ -446,21 +446,7 @@ def suggest_widget_edit(request, site_id: int, page_id: int):
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
-    # Determine which links were actually inserted
-    link_opportunities = []
-    for lnk in validated_links:
-        inserted = lnk['url'] in suggestion
-        link_opportunities.append({
-            'url': lnk['url'],
-            'anchor_text': lnk['suggested_anchor_text'],
-            'title': lnk['title'],
-            'inserted': inserted,
-        })
-
-    return Response({
-        'suggestion': suggestion,
-        'link_opportunities': link_opportunities,
-    })
+    return Response({'suggestion': suggestion})
 
 
 def _call_claude(system_prompt: str, user_prompt: str) -> str | None:
