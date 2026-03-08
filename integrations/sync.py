@@ -95,6 +95,33 @@ def sync_page(request):
     if data.get('type') and (not data.get('post_type') or data.get('post_type') == 'page'):
         data['post_type'] = data['type']
     data.pop('type', None)  # remove alias field before saving
+
+    # Reject non-content post types — page-builder templates, JetEngine listings,
+    # Elementor library items, ACF field configs, etc. are never real pages.
+    EXCLUDED_POST_TYPES = {
+        'jet-engine',            # JetEngine listing/loop templates
+        'jet-engine-taxonomy',   # JetEngine taxonomy term templates
+        'e-loop-item',           # Elementor Loop items
+        'elementor_library',     # Elementor saved templates/sections
+        'acf-field-group',       # ACF field group config
+        'acf-field',             # ACF individual field config
+        'revision',              # WP post revisions
+        'nav_menu_item',         # WP navigation items
+        'custom_css',            # WP custom CSS
+        'wp_block',              # Gutenberg reusable blocks
+        'wp_template',           # Block theme templates
+        'wp_template_part',      # Block theme template parts
+        'wp_navigation',         # Block theme navigation
+        'oembed_cache',          # WP oEmbed cache entries
+        'wpcode',               # WP Code Snippets plugin (WPCode) — code configs, not pages
+    }
+    post_type = data.get('post_type', 'page')
+    if post_type in EXCLUDED_POST_TYPES:
+        logger.info(f"sync_page: skipping post_type='{post_type}' (excluded non-content type)")
+        return Response({
+            'message': f"Post type '{post_type}' is not supported for sync.",
+            'skipped': True,
+        }, status=status.HTTP_200_OK)
     data['slug'] = _sanitize_slug(data.get('slug') or '')
     
     # Handle wp_post_id - can be integer or string like "term_123" for taxonomy terms
