@@ -809,3 +809,24 @@ class SiteIntelligence(models.Model):
 
     class Meta:
         app_label = 'seo'
+
+
+class SiteAudit(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='audits')
+    user = models.ForeignKey('accounts.User', on_delete=models.CASCADE, related_name='audits')
+    status = models.CharField(max_length=20, default='complete')
+    site_score = models.IntegerField(default=0)
+    site_context = models.JSONField(default=dict)
+    results = models.JSONField(default=list)
+    ai_provider = models.CharField(max_length=30, blank=True)
+    ai_model = models.CharField(max_length=60, blank=True)
+    pages_audited = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'site_audits'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Audit {self.id} — {self.site} — score {self.site_score}"
