@@ -793,6 +793,24 @@ class ValidationLog(models.Model):
         db_table = 'validation_logs'
 
 
+class SiteIntelligence(models.Model):
+    site = models.OneToOneField('sites.Site', on_delete=models.CASCADE, related_name='intelligence')
+    business_type = models.CharField(max_length=50, default='general')
+    primary_goal = models.TextField(blank=True)
+    raw_analysis = models.JSONField(default=dict)
+    hub_pages = models.JSONField(default=list)
+    spoke_pages = models.JSONField(default=list)
+    orphan_pages = models.JSONField(default=list)
+    architecture_problems = models.JSONField(default=list)
+    content_gaps = models.JSONField(default=list)
+    cannibalization_risks = models.JSONField(default=list)
+    generated_at = models.DateTimeField(auto_now=True)
+    generation_error = models.TextField(blank=True)
+
+    class Meta:
+        app_label = 'seo'
+
+
 class SiteAudit(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='audits')
