@@ -8,6 +8,7 @@ from . import conflict_views
 from . import content_plan_views
 from . import dashboard_views
 from .content_recommendations import get_content_recommendations, generate_from_recommendation, approve_content
+from .views_intelligence import generate_site_intelligence, get_site_intelligence
 
 router = DefaultRouter()
 router.register(r'', PageViewSet, basename='page')
@@ -26,6 +27,9 @@ urlpatterns = [
     path('sites/<int:site_id>/content-pipeline/', content_plan_views.content_pipeline, name='content-pipeline'),
     # Dashboard Home endpoints (11.2 - 3-column layout)
     path('sites/<int:site_id>/dashboard/', dashboard_views.dashboard_home, name='dashboard-home'),
+    # Intelligence endpoints
+    path('sites/<int:site_id>/intelligence/generate', generate_site_intelligence, name='intelligence-generate'),
+    path('sites/<int:site_id>/intelligence/', get_site_intelligence, name='intelligence-get'),
 ]
 
 # Content Recommendations URLs (to be included from sites/ namespace)
