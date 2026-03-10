@@ -5,7 +5,7 @@ Handles CRUD operations for sites and site overview.
 import logging
 
 from rest_framework import viewsets, status
-from rest_framework.decorators import action, api_view
+from rest_framework.decorators import action, api_view, authentication_classes
 from rest_framework.decorators import permission_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -40,6 +40,8 @@ from .serializers import SiteSerializer
 from .permissions import IsSiteOwner
 from .analysis import detect_cannibalization, analyze_site, calculate_health_score
 from integrations.wordpress_webhook import send_webhook_to_wordpress, create_wordpress_redirect
+from integrations.authentication import APIKeyAuthentication
+from integrations.permissions import IsAPIKeyAuthenticated
 
 logger = logging.getLogger(__name__)
 
@@ -1989,4 +1991,49 @@ def dashboard_fix_now(request, site_id):
     return Response({
         'fix_now': items,
         'count':   len(items),
+    })
+
+
+@api_view(['POST'])
+@authentication_classes([APIKeyAuthentication])
+@permission_classes([IsAPIKeyAuthenticated])
+def geo_score_page(request, site_id, page_id):
+    """
+    POST /api/v1/sites/{site_id}/pages/{page_id}/geo-score/
+    Body: { "html": str, "meta": { title, url, word_count, page_type, post_type, has_schema, internal_link_count } }
+    Returns GeoScoreResult as JSON.
+    """
+    from seo.geo_scorer import GeoScorer, detect_content_type
+
+    site = request.auth['site']
+    if str(site.id) != str(site_id):
+        return Response({'error': 'Site not found'}, status=404)
+
+    html = request.data.get('html', '')
+    meta = request.data.get('meta', {})
+
+    if not html:
+        return Response({'error': 'html is required'}, status=400)
+
+    content_type = detect_content_type(meta)
+    result = GeoScorer.score(html=html, meta=meta, content_type=content_type)
+
+    return Response({
+        'score': result.score,
+        'grade': result.grade,
+        'content_type': result.content_type,
+        'breakdown': result.breakdown,
+        'recommendations': result.recommendations,
+        'signals': [
+            {
+                'name': s.name,
+                'score': s.score,
+                'max_points': s.max_points,
+                'passed': s.passed,
+                'detail': s.detail,
+                'recommendation': s.recommendation,
+            }
+            for s in result.signals if s.max_points > 0
+        ],
+        'page_url': result.page_url,
     })
