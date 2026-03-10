@@ -82,6 +82,7 @@ def _serialize_profile(profile):
         'url_yelp': getattr(profile, 'url_yelp', '') or '',
         'team_members': getattr(profile, 'team_members', None) if getattr(profile, 'team_members', None) is not None else [],
         'is_service_area_business': getattr(profile, 'is_service_area_business', False),
+        'brand_voice': profile.brand_voice if profile.brand_voice else {},
     }
 
 
@@ -125,6 +126,26 @@ def entity_profile(request, site_id):
     for key, model_field in SOCIAL_FIELD_MAP.items():
         if key in social:
             setattr(profile, model_field, social[key])
+
+    # brand_voice — validated separately
+    if 'brand_voice' in data:
+        brand_voice = data['brand_voice']
+        if not isinstance(brand_voice, dict):
+            return Response({'error': 'brand_voice must be a JSON object'}, status=status.HTTP_400_BAD_REQUEST)
+        VALID_TONES = {'confident_expert', 'warm_advisor', 'no_bs_truth_teller', 'sage_strategist', 'tech_translator', 'rebellious_challenger'}
+        errors = []
+        if 'primary_tone' in brand_voice and brand_voice['primary_tone'] not in VALID_TONES:
+            errors.append(f"primary_tone must be one of: {', '.join(sorted(VALID_TONES))}")
+        if 'secondary_tone' in brand_voice and brand_voice['secondary_tone'] != '' and brand_voice['secondary_tone'] not in VALID_TONES:
+            errors.append(f"secondary_tone must be one of: {', '.join(sorted(VALID_TONES))} or empty string")
+        for str_field in ('industry', 'admired_brands', 'tagline'):
+            if str_field in brand_voice and isinstance(brand_voice[str_field], str) and len(brand_voice[str_field]) > 500:
+                errors.append(f"{str_field} must be 500 characters or fewer")
+        if 'using_smart_default' in brand_voice and not isinstance(brand_voice['using_smart_default'], bool):
+            errors.append("using_smart_default must be a boolean")
+        if errors:
+            return Response({'error': 'brand_voice validation failed', 'details': errors}, status=status.HTTP_400_BAD_REQUEST)
+        profile.brand_voice = brand_voice
 
     profile.save()
     profile.refresh_from_db()

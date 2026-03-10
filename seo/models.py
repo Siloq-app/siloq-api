@@ -667,6 +667,7 @@ class SiteEntityProfile(models.Model):
     url_yelp = models.URLField(blank=True)
     team_members = models.JSONField(default=list)
     is_service_area_business = models.BooleanField(default=False)
+    brand_voice = models.JSONField(default=dict, blank=True)
 
     class Meta:
         managed = False
