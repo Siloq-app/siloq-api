@@ -147,7 +147,7 @@ class RedirectRegistryAdmin(admin.ModelAdmin):
 class PageAnalysisAdmin(admin.ModelAdmin):
     list_display = ('page', 'score', 'created_at')
     list_filter = ('created_at',)
-    search_fields = ('page__title')
+    search_fields = ['page__title']
     readonly_fields = ('created_at',)
 
 
@@ -160,10 +160,10 @@ class SiteEntityProfileAdmin(admin.ModelAdmin):
 
 @admin.register(SlugChangeLog)
 class SlugChangeLogAdmin(admin.ModelAdmin):
-    list_display = ('page', 'old_slug', 'new_slug', 'redirect_created', 'created_at')
-    list_filter = ('redirect_created', 'created_at')
-    search_fields = ('old_slug', 'new_slug', 'page__title')
-    readonly_fields = ('created_at',)
+    list_display = ('old_slug', 'new_slug', 'slug_change_status', 'changed_at')
+    list_filter = ('slug_change_status', 'changed_at')
+    search_fields = ('old_slug', 'new_slug')
+    readonly_fields = ('changed_at', 'updated_at')
 
 
 @admin.register(SiloHealthScore)
