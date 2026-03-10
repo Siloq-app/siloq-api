@@ -33,7 +33,7 @@ from integrations.gsc_views import (
     connect_gsc_site, get_gsc_data, analyze_gsc_cannibalization, content_gaps,
     gsc_status, gsc_sync, gsc_pages, gsc_disconnect, gsc_properties,
 )
-from sites.sites import dashboard_fix_now
+from sites.sites import dashboard_fix_now, geo_score_page
 from seo.cannibalization_v2 import get_cannibalization_conflicts
 from seo.silo_health_views import silo_health_scores, silo_health_recalculate
 from seo.silo_views import silo_map
@@ -157,4 +157,6 @@ urlpatterns = [
     # Site Intelligence — Claude analysis: hub/spoke/orphan classification + content gaps
     path('<int:site_id>/intelligence/', get_site_intelligence, name='site-intelligence-get'),
     path('<int:site_id>/intelligence/generate', generate_site_intelligence, name='site-intelligence-generate'),
+    # GEO Score — AI-crawler optimization scoring for a single page
+    path('<int:site_id>/pages/<int:page_id>/geo-score/', geo_score_page, name='page-geo-score'),
 ]
