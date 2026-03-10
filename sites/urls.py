@@ -66,6 +66,7 @@ from seo.schema_graph_views import schema_graph, schema_graph_completeness, sche
 from seo.internal_links_views import get_related_pages, suggest_widget_edit
 from seo.site_audit_views import site_audit
 from seo.views_intelligence import generate_site_intelligence, get_site_intelligence
+from seo import goals_views
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -159,4 +160,6 @@ urlpatterns = [
     path('<int:site_id>/intelligence/generate', generate_site_intelligence, name='site-intelligence-generate'),
     # GEO Score — AI-crawler optimization scoring for a single page
     path('<int:site_id>/pages/<int:page_id>/geo-score/', geo_score_page, name='page-geo-score'),
+    # Site Goals — owner goal configuration
+    path('<int:site_id>/goals/', goals_views.site_goals, name='site-goals'),
 ]

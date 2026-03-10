@@ -831,3 +831,28 @@ class SiteAudit(models.Model):
 
     def __str__(self):
         return f"Audit {self.id} — {self.site} — score {self.site_score}"
+
+
+class SiteGoals(models.Model):
+    site = models.OneToOneField(
+        'sites.Site', on_delete=models.CASCADE, related_name='goals'
+    )
+    primary_goal = models.CharField(max_length=50, choices=[
+        ('local_leads', 'Local Leads'),
+        ('ecommerce_sales', 'E-commerce Sales'),
+        ('topic_authority', 'Topic Authority'),
+        ('multi_location', 'Multi-Location Expansion'),
+        ('geo_citations', 'AI/GEO Citations'),
+        ('organic_growth', 'Overall Organic Growth'),
+    ], default='local_leads')
+    priority_services = models.JSONField(default=list)   # ["Roof replacement", "Storm damage"]
+    priority_locations = models.JSONField(default=list)  # [{"city": "Raytown", "state": "MO", "rank": 1}]
+    geo_priority_pages = models.JSONField(default=list)  # [page_id, page_id, ...]
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'site_goals'
+
+    def __str__(self):
+        return f"Goals for {self.site} — {self.primary_goal}"
