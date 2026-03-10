@@ -41,6 +41,32 @@ def generate_site_intelligence(request, site_id):
             'post_type': p['post_type'] or 'page',
         })
 
+    # Inject owner goals if set
+    goals_context = ""
+    try:
+        goals = site.goals
+        if goals.primary_goal:
+            goal_labels = {
+                'local_leads': 'Get more local leads / phone calls',
+                'ecommerce_sales': 'Drive more e-commerce sales',
+                'topic_authority': 'Build authority on a specific topic',
+                'multi_location': 'Rank in multiple cities / expand service areas',
+                'geo_citations': 'Be cited by AI assistants (ChatGPT, Perplexity, Google AI)',
+                'organic_growth': 'Grow overall organic traffic',
+            }
+            goals_context = f"""
+[OWNER GOALS — weight these heavily in your analysis]
+Primary goal: {goal_labels.get(goals.primary_goal, goals.primary_goal)}
+Priority services: {', '.join(goals.priority_services) if goals.priority_services else 'Not set'}
+Priority locations: {', '.join([f"{l.get('city','')}, {l.get('state','')}" for l in goals.priority_locations]) if goals.priority_locations else 'Not set'}
+
+When identifying architecture problems, prioritize issues affecting these services and locations.
+When suggesting content gaps, focus on supporting these priorities first.
+Label content gaps for non-priority areas as priority: low.
+"""
+    except Exception:
+        pass  # No goals set — proceed without
+
     system_prompt = (
         "You are an expert SEO architect analyzing website structure for a platform called Siloq. "
         "You understand Hub & Spoke architecture, keyword cannibalization, local vs national SEO strategy, "
@@ -53,6 +79,7 @@ def generate_site_intelligence(request, site_id):
 Site URL: {site.url}
 Business name: {site.name}
 Total pages provided: {len(page_inventory)}
+{goals_context}
 
 Page inventory:
 {json.dumps(page_inventory, indent=2)}
