@@ -65,6 +65,7 @@ from seo.freshness_views import site_freshness, page_freshness
 from seo.schema_graph_views import schema_graph, schema_graph_completeness, schema_graph_regenerate
 from seo.internal_links_views import get_related_pages, suggest_widget_edit
 from seo.site_audit_views import site_audit
+from seo.views_intelligence import generate_site_intelligence, get_site_intelligence
 
 router = DefaultRouter()
 router.register(r'', SiteViewSet, basename='site')
@@ -153,4 +154,7 @@ urlpatterns = [
     path('<int:site_id>/pages/<int:page_id>/suggest-widget-edit/', suggest_widget_edit, name='page-suggest-widget-edit'),
     # Site Audit — Track 2 scoring engine + AI recommendations
     path('<int:site_id>/audit/', site_audit, name='site-audit'),
+    # Site Intelligence — Claude analysis: hub/spoke/orphan classification + content gaps
+    path('<int:site_id>/intelligence/', get_site_intelligence, name='site-intelligence-get'),
+    path('<int:site_id>/intelligence/generate', generate_site_intelligence, name='site-intelligence-generate'),
 ]
