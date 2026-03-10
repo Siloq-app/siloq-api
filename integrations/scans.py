@@ -201,8 +201,12 @@ def _collect_types(obj, types_set):
 
 
 # ---------------------------------------------------------------------------
-# Scoring dimensions
+# Scoring helpers
 # ---------------------------------------------------------------------------
+
+AI_CRAWLERS = ["GPTBot", "ClaudeBot", "PerplexityBot", "anthropic-ai", "Google-Extended"]
+QUESTION_PREFIXES = re.compile(r'^(What|How|Why|When|Is|Can|Does|Are)\b', re.IGNORECASE)
+
 
 def _word_set(text):
     if not text:
@@ -217,12 +221,82 @@ def _word_overlap(a, b):
     return len(sa & sb) / max(len(sa), len(sb))
 
 
+def _slug_keywords(url):
+    """Extract meaningful keywords from a URL slug."""
+    path = urlparse(url).path.strip("/")
+    if not path:
+        return set()
+    # Split on / and - to get individual words, drop very short tokens
+    tokens = re.findall(r'[a-z]{3,}', path.lower())
+    return set(tokens)
+
+
+def _fetch_robots_txt(base_url):
+    """Fetch and return robots.txt content, or None."""
+    resp, _ = _fetch(urljoin(base_url, "/robots.txt"), timeout=PAGE_TIMEOUT)
+    return resp.text if resp else None
+
+
+def _check_ai_crawlers_blocked(robots_text):
+    """Return list of AI crawlers blocked in robots.txt."""
+    if not robots_text:
+        return []
+    blocked = []
+    current_agents = set()
+    for line in robots_text.splitlines():
+        line = line.strip()
+        if line.lower().startswith("user-agent:"):
+            agent = line.split(":", 1)[1].strip()
+            current_agents = {agent}
+        elif line.lower().startswith("disallow:") and line.split(":", 1)[1].strip():
+            for crawler in AI_CRAWLERS:
+                if crawler in current_agents:
+                    blocked.append(crawler)
+            current_agents = set()
+    return list(set(blocked))
+
+
+def _check_noindex(html):
+    """Check if page has a robots noindex meta tag."""
+    soup = BeautifulSoup(html, "lxml")
+    meta = soup.find("meta", attrs={"name": re.compile(r'^robots$', re.I)})
+    if meta and meta.get("content") and "noindex" in meta["content"].lower():
+        return True
+    return False
+
+
+def _appears_local(pages_data):
+    """Heuristic: does the site appear to be a local business?"""
+    homepage = pages_data[0] if pages_data else None
+    if not homepage:
+        return False
+    # Has LocalBusiness schema
+    if "LocalBusiness" in homepage.get("schema_types", set()):
+        return True
+    # City/state pattern in titles
+    state_abbrs = r'\b[A-Z]{2}\b'
+    for p in pages_data:
+        t = p.get("meta_title") or ""
+        if re.search(state_abbrs, t) and re.search(r'\b[A-Z][a-z]+\b', t):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Scoring dimensions (5 pillars, weighted)
+# ---------------------------------------------------------------------------
+
 def _score_cannibalization(pages_data):
-    """Dimension 1: Cannibalization Risk (25 pts)."""
+    """Pillar 1: Keyword Cannibalization (30 pts)."""
+    score = 30
     issues = []
-    num_issues = 0
+    auto_fixable = []
+    requires_content = []
+
     titles = [(p["url"], p["meta_title"] or (p["h1s"][0] if p["h1s"] else "")) for p in pages_data]
 
+    # High overlap (>80%) — title/H1 keyword clash
+    high_overlap_penalty = 0
     seen_pairs = set()
     for i, (url_a, title_a) in enumerate(titles):
         if not title_a:
@@ -234,147 +308,297 @@ def _score_cannibalization(pages_data):
             if pair_key in seen_pairs:
                 continue
             seen_pairs.add(pair_key)
-
+            overlap = _word_overlap(title_a, title_b)
             path_a = urlparse(url_a).path.rstrip("/") or "/"
             path_b = urlparse(url_b).path.rstrip("/") or "/"
 
-            if title_a.lower() == title_b.lower():
-                issues.append(f"Pages '{path_a}' and '{path_b}' have identical titles")
-                num_issues += 1
-            else:
-                overlap = _word_overlap(title_a, title_b)
-                if overlap > 0.7:
-                    pct = int(overlap * 100)
-                    issues.append(f"Pages '{path_a}' and '{path_b}' have {pct}% title overlap")
-                    num_issues += 1
+            if overlap > 0.8:
+                pct = int(overlap * 100)
+                issues.append(f"Pages '{path_a}' and '{path_b}' have {pct}% title overlap")
+                high_overlap_penalty += 8
+                requires_content.append(f"Keyword cannibalization between '{path_a}' and '{path_b}'")
+            elif overlap > 0.7:
+                pct = int(overlap * 100)
+                issues.append(f"Pages '{path_a}' and '{path_b}' have {pct}% title overlap (near-duplicate)")
+                score -= 4  # near-duplicate penalty, capped below
+                requires_content.append(f"Rewrite to differentiate '{path_a}' and '{path_b}'")
 
-    score = max(0, 25 - 5 * num_issues)
-    return score, issues
+    score -= min(24, high_overlap_penalty)
+
+    # URL slug overlap: same service keyword in 3+ slugs
+    slug_word_counts = {}
+    for url_a, _ in titles:
+        for kw in _slug_keywords(url_a):
+            slug_word_counts.setdefault(kw, []).append(url_a)
+    for kw, urls in slug_word_counts.items():
+        if len(urls) >= 3:
+            issues.append(f"Keyword '{kw}' appears in {len(urls)} URL slugs")
+            score -= 6
+            requires_content.append(f"Consolidate pages with overlapping slug keyword '{kw}'")
+            break  # one slug-overlap penalty max
+
+    # Cap near-duplicate penalty at -12 (already handled by min on high overlap)
+    score = max(0, score)
+    return {"score": score, "max": 30, "issues": issues,
+            "auto_fixable": auto_fixable, "requires_content": requires_content}
 
 
-def _score_schema(pages_data):
-    """Dimension 2: Schema Coverage (25 pts)."""
+def _score_ai_visibility(pages_data, base_url, robots_text, has_llms_txt):
+    """Pillar 2: AI Visibility (25 pts)."""
+    score = 25
     issues = []
-    score = 0
+    auto_fixable = []
+    requires_content = []
 
-    pages_with_schema = sum(1 for p in pages_data if p["schema_types"])
-    total = len(pages_data)
-
-    # Homepage = first page
+    # Homepage missing LocalBusiness/Organization schema
     homepage_types = pages_data[0]["schema_types"] if pages_data else set()
-    has_lb_org = bool(homepage_types & {"LocalBusiness", "Organization"})
+    if not (homepage_types & {"LocalBusiness", "Organization"}):
+        score -= 10
+        issues.append("Homepage missing LocalBusiness or Organization schema")
+        auto_fixable.append("Add LocalBusiness schema to homepage")
 
-    if has_lb_org:
-        score += 10
-    else:
-        issues.append("Homepage missing LocalBusiness/Organization schema")
+    # Inner pages missing schema (sample up to 5)
+    inner = pages_data[1:6]
+    if inner:
+        missing_schema = sum(1 for p in inner if not p["schema_types"])
+        if missing_schema > len(inner) / 2:
+            score -= 6
+            issues.append(f"{missing_schema} of {len(inner)} sampled inner pages have no schema")
+            auto_fixable.append("Add schema markup to inner pages")
 
-    if total > 0 and pages_with_schema / total > 0.5:
-        score += 10
-    else:
-        without = total - pages_with_schema
-        issues.append(f"{without} of {total} pages have no structured data")
+    # robots.txt AI crawler blocks
+    blocked = _check_ai_crawlers_blocked(robots_text)
+    if blocked:
+        penalty = min(6, len(blocked) * 3)
+        score -= penalty
+        for crawler in blocked:
+            issues.append(f"{crawler} blocked in robots.txt \u2014 may limit AI Overview visibility")
 
-    all_types = set()
+    # llms.txt check
+    if not has_llms_txt:
+        score -= 5
+        issues.append("No llms.txt \u2014 AI assistants cannot learn your authority structure")
+        auto_fixable.append("Generate llms.txt authority file")
+
+    # FAQ schema on question-format H2s
+    pages_with_question_h2s = 0
+    pages_missing_faq_schema = 0
     for p in pages_data:
-        all_types.update(p["schema_types"])
+        question_h2s = [h for h in p["h2s"] if QUESTION_PREFIXES.match(h)]
+        if question_h2s:
+            pages_with_question_h2s += 1
+            if "FAQPage" not in p["schema_types"]:
+                pages_missing_faq_schema += 1
+    if pages_with_question_h2s > 0 and pages_missing_faq_schema > 0:
+        score -= 4
+        issues.append(f"{pages_missing_faq_schema} page(s) have question-format H2s but no FAQ schema")
+        requires_content.append("Add FAQ schema to pages with question-format headings")
 
-    if all_types & {"FAQPage", "Service"}:
-        score += 5
-
-    if total > 0 and pages_with_schema == total:
-        score += 5
-
-    score = min(25, max(0, score))
-    return score, issues
+    score = max(0, score)
+    return {"score": score, "max": 25, "issues": issues,
+            "auto_fixable": auto_fixable, "requires_content": requires_content}
 
 
 def _score_meta_titles(pages_data):
-    """Dimension 3: Meta Title Health (25 pts)."""
+    """Pillar 3: Meta Title Health (20 pts)."""
+    score = 20
     issues = []
-    missing = 0
-    too_long = 0
-    too_short = 0
-    title_counts = {}
+    auto_fixable = []
+    requires_content = []
 
+    homepage = pages_data[0] if pages_data else None
+    inner = pages_data[1:]
+
+    # Homepage missing title
+    if homepage and not homepage["meta_title"]:
+        score -= 8
+        issues.append("Homepage missing meta title")
+        requires_content.append("Missing meta title on homepage (page may need content)")
+
+    # Inner pages missing titles
+    inner_missing = sum(1 for p in inner if not p["meta_title"])
+    if inner_missing:
+        penalty = min(9, inner_missing * 3)
+        score -= penalty
+        issues.append(f"{inner_missing} inner page{'s' if inner_missing != 1 else ''} missing meta title")
+
+    # Duplicate titles
+    title_counts = {}
     for p in pages_data:
         t = p["meta_title"]
-        if not t:
-            missing += 1
-            continue
-        if len(t) > 65:
-            too_long += 1
-        if len(t) < 20:
-            too_short += 1
-        tl = t.lower()
-        title_counts[tl] = title_counts.get(tl, 0) + 1
+        if t:
+            tl = t.lower()
+            title_counts[tl] = title_counts.get(tl, 0) + 1
+    has_duplicates = any(v > 1 for v in title_counts.values())
+    if has_duplicates:
+        score -= 6
+        dup_count = sum(v - 1 for v in title_counts.values() if v > 1)
+        issues.append(f"{dup_count} page{'s' if dup_count != 1 else ''} have duplicate titles")
+        auto_fixable.append("Fix duplicate meta titles")
 
-    duplicates = sum(v - 1 for v in title_counts.values() if v > 1)
+    # Title length >65 chars
+    long_count = sum(1 for p in pages_data if p["meta_title"] and len(p["meta_title"]) > 65)
+    if long_count:
+        penalty = min(6, long_count * 3)
+        score -= penalty
+        issues.append(f"{long_count} page{'s' if long_count != 1 else ''} with title > 65 chars")
+        auto_fixable.append("Trim over-length meta titles")
 
-    if missing:
-        issues.append(f"{missing} page{'s' if missing != 1 else ''} missing meta title")
-    if too_long:
-        issues.append(f"{too_long} page{'s' if too_long != 1 else ''} with title > 65 chars")
-    if too_short:
-        issues.append(f"{too_short} page{'s' if too_short != 1 else ''} with title < 20 chars")
-    if duplicates:
-        issues.append(f"{duplicates} duplicate meta title{'s' if duplicates != 1 else ''}")
+    # Title length <20 chars
+    short_count = sum(1 for p in pages_data if p["meta_title"] and len(p["meta_title"]) < 20)
+    if short_count:
+        penalty = min(6, short_count * 3)
+        score -= penalty
+        issues.append(f"{short_count} page{'s' if short_count != 1 else ''} with title < 20 chars")
+        auto_fixable.append("Expand short meta titles")
 
-    score = 25
-    score -= min(15, missing * 5)
-    score -= too_long * 3
-    score -= too_short * 3
-    score -= duplicates * 5
+    # Local keyword missing from homepage title (only if site appears local)
+    if homepage and homepage["meta_title"] and _appears_local(pages_data):
+        # Check if title contains any city/state-like tokens (rough heuristic)
+        title_words = _word_set(homepage["meta_title"])
+        # Look for location tokens across all titles
+        location_tokens = set()
+        for p in pages_data:
+            t = p.get("meta_title") or ""
+            # Find capitalized words that look like city names
+            for match in re.findall(r'\b([A-Z][a-z]{2,})\b', t):
+                location_tokens.add(match.lower())
+        # If we found location tokens elsewhere but not in homepage title
+        homepage_words = _word_set(homepage["meta_title"])
+        if location_tokens and not (homepage_words & location_tokens):
+            score -= 5
+            issues.append("Homepage meta title missing location keyword")
+            auto_fixable.append("Add location keyword to homepage title")
+
     score = max(0, score)
-    return score, issues
+    return {"score": score, "max": 20, "issues": issues,
+            "auto_fixable": auto_fixable, "requires_content": requires_content}
 
 
-def _score_h_structure(pages_data):
-    """Dimension 4: H-Tag Structure (25 pts)."""
+def _score_content_structure(pages_data, homepage_html):
+    """Pillar 4: Content Structure (15 pts)."""
+    score = 15
     issues = []
-    no_h1 = 0
-    multi_h1 = 0
-    h3_no_h2 = 0
-    h1_title_mismatch = 0
+    auto_fixable = []
+    requires_content = []
 
-    for p in pages_data:
-        if not p["h1s"]:
-            no_h1 += 1
-        elif len(p["h1s"]) > 1:
-            multi_h1 += 1
+    homepage = pages_data[0] if pages_data else None
 
-        if p["h3s"] and not p["h2s"]:
-            h3_no_h2 += 1
+    if homepage:
+        # Multiple H1 tags on homepage
+        if len(homepage["h1s"]) > 1:
+            score -= 6
+            issues.append(f"Homepage has {len(homepage['h1s'])} H1 tags")
+            auto_fixable.append("Fix multiple H1 tags")
 
-        if p["h1s"] and p["meta_title"]:
-            overlap = _word_overlap(p["h1s"][0], p["meta_title"])
-            if overlap < 0.3:
-                h1_title_mismatch += 1
+        # H1 missing on homepage
+        if not homepage["h1s"]:
+            score -= 8
+            issues.append("Homepage missing H1 tag")
+            auto_fixable.append("Add H1 tag to homepage")
 
-    if no_h1:
-        issues.append(f"{no_h1} page{'s' if no_h1 != 1 else ''} missing H1")
-    if multi_h1:
-        issues.append(f"{multi_h1} page{'s' if multi_h1 != 1 else ''} have multiple H1 tags")
-    if h3_no_h2:
-        issues.append(f"{h3_no_h2} page{'s' if h3_no_h2 != 1 else ''} have H3 but no H2")
-    if h1_title_mismatch:
-        issues.append(f"{h1_title_mismatch} page{'s' if h1_title_mismatch != 1 else ''} where H1 doesn't match meta title")
+        # H1/title mismatch
+        if homepage["h1s"] and homepage["meta_title"]:
+            overlap = _word_overlap(homepage["h1s"][0], homepage["meta_title"])
+            if overlap < 0.25:
+                score -= 5
+                issues.append("H1 and meta title are misaligned on homepage")
+                auto_fixable.append("Align H1 with target keyword")
 
-    score = 25
-    score -= min(15, no_h1 * 5)
-    score -= multi_h1 * 4
-    score -= h3_no_h2 * 2
-    score -= h1_title_mismatch * 2
+        # Internal links check
+        if homepage_html:
+            soup = BeautifulSoup(homepage_html, "lxml")
+            base_domain = urlparse(pages_data[0]["url"]).netloc
+            internal_links = 0
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                full = urljoin(pages_data[0]["url"], href)
+                if urlparse(full).netloc == base_domain:
+                    internal_links += 1
+                    if internal_links >= 3:
+                        break
+            if internal_links < 3:
+                score -= 4
+                issues.append(f"Homepage has only {internal_links} internal link{'s' if internal_links != 1 else ''}")
+
     score = max(0, score)
-    return score, issues
+    return {"score": score, "max": 15, "issues": issues,
+            "auto_fixable": auto_fixable, "requires_content": requires_content}
+
+
+def _score_technical(base_url, homepage_resp, homepage_load_time):
+    """Pillar 5: Technical Foundation (10 pts)."""
+    score = 10
+    issues = []
+    auto_fixable = []
+    requires_content = []
+
+    # SSL check
+    if not base_url.startswith("https"):
+        score -= 6
+        issues.append("Site does not use HTTPS")
+    elif homepage_resp is not None:
+        # Check if redirected to http
+        final_url = homepage_resp.url if hasattr(homepage_resp, 'url') else ""
+        if final_url.startswith("http://"):
+            score -= 6
+            issues.append("Site redirects HTTPS to HTTP")
+
+    # Response time
+    if homepage_load_time is not None and homepage_load_time > 4.0:
+        score -= 4
+        issues.append(f"Page load time: {homepage_load_time:.1f} seconds (above 4s threshold)")
+
+    # Noindex check
+    if homepage_resp is not None and _check_noindex(homepage_resp.text):
+        score -= 10
+        issues.append("Homepage has robots meta noindex tag — Critical")
+
+    score = max(0, score)
+    return {"score": score, "max": 10, "issues": issues,
+            "auto_fixable": auto_fixable, "requires_content": requires_content}
 
 
 # ---------------------------------------------------------------------------
 # Main scan orchestrator
 # ---------------------------------------------------------------------------
 
+def _empty_dimension(max_pts):
+    return {"score": 0, "max": max_pts, "issues": [], "auto_fixable": [], "requires_content": []}
+
+
+def _grade(total):
+    if total >= 80:
+        return "Healthy"
+    elif total >= 60:
+        return "Needs Attention"
+    return "Critical Issues Found"
+
+
+def _build_error_result(err_msg, url=""):
+    dims = {
+        "cannibalization": _empty_dimension(30),
+        "ai_visibility": _empty_dimension(25),
+        "meta_titles": _empty_dimension(20),
+        "content_structure": _empty_dimension(15),
+        "technical": _empty_dimension(10),
+    }
+    return {
+        "total_score": 0,
+        "grade": "Critical Issues Found",
+        "pages_crawled": 0,
+        "benchmark": "Sites with strong SEO governance average 82/100. You scored 0.",
+        "dimensions": dims,
+        "auto_fixable_count": 0,
+        "requires_content_count": 0,
+        "top_issues": [err_msg],
+        "cta": "Siloq can automatically fix 0 of your 1 issues. Start your free trial.",
+        "error": err_msg,
+    }
+
+
 def _run_scan(url):
-    """Crawl and score a URL. Returns (score, pages_crawled, results_dict)."""
+    """Crawl and score a URL. Returns (score, pages_crawled, results_dict, elapsed)."""
     start = time.time()
 
     # Normalize base URL
@@ -383,25 +607,22 @@ def _run_scan(url):
     parsed = urlparse(url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-    # 1. Fetch homepage
+    # 1. Fetch homepage (measure load time)
+    t0 = time.time()
     homepage_resp, err = _fetch(base_url + "/", timeout=HOMEPAGE_TIMEOUT)
-    if homepage_resp is None:
-        return 0, 0, {
-            "total_score": 0,
-            "grade": "Critical Issues Found",
-            "pages_crawled": 0,
-            "dimensions": {
-                "cannibalization": {"score": 0, "max": 25, "issues": []},
-                "schema": {"score": 0, "max": 25, "issues": []},
-                "meta_titles": {"score": 0, "max": 25, "issues": []},
-                "h_structure": {"score": 0, "max": 25, "issues": []},
-            },
-            "top_issues": [f"Could not fetch site: {err}"],
-            "cta": "Siloq can fix these issues automatically. Start your free trial.",
-            "error": f"Could not fetch {url}: {err}",
-        }
+    homepage_load_time = round(time.time() - t0, 2)
 
-    # 2. Discover pages via sitemap or link extraction
+    if homepage_resp is None:
+        elapsed = round(time.time() - start, 1)
+        return 0, 0, _build_error_result(f"Could not fetch {url}: {err}"), elapsed
+
+    # 2. Fetch robots.txt and llms.txt in parallel-ish
+    robots_text = _fetch_robots_txt(base_url)
+
+    llms_resp, _ = _fetch(urljoin(base_url, "/llms.txt"), timeout=PAGE_TIMEOUT)
+    has_llms_txt = llms_resp is not None
+
+    # 3. Discover pages via sitemap or link extraction
     page_urls = _find_sitemap_urls(base_url)
     limited = False
     if not page_urls:
@@ -415,50 +636,58 @@ def _run_scan(url):
     page_urls.insert(0, homepage_url)
     page_urls = page_urls[:MAX_PAGES]
 
-    # 3. Crawl pages (homepage already fetched)
+    # 4. Crawl pages (homepage already fetched)
     pages = [{"url": homepage_url, "html": homepage_resp.text, "error": None}]
     remaining = [u for u in page_urls[1:]]
     pages.extend(_crawl_pages(remaining))
 
-    # 4. Extract data from each page
+    # 5. Extract data from each page
     pages_data = [_extract_page_data(p["html"], p["url"]) for p in pages]
 
-    # 5. Score all dimensions
-    cann_score, cann_issues = _score_cannibalization(pages_data)
-    schema_score, schema_issues = _score_schema(pages_data)
-    meta_score, meta_issues = _score_meta_titles(pages_data)
-    htag_score, htag_issues = _score_h_structure(pages_data)
+    # 6. Score all 5 pillars
+    cann = _score_cannibalization(pages_data)
+    ai_vis = _score_ai_visibility(pages_data, base_url, robots_text, has_llms_txt)
+    meta = _score_meta_titles(pages_data)
+    structure = _score_content_structure(pages_data, homepage_resp.text)
+    tech = _score_technical(base_url, homepage_resp, homepage_load_time)
 
-    total_score = cann_score + schema_score + meta_score + htag_score
+    total_score = cann["score"] + ai_vis["score"] + meta["score"] + structure["score"] + tech["score"]
 
-    if total_score >= 80:
-        grade = "Healthy"
-    elif total_score >= 60:
-        grade = "Needs Attention"
-    else:
-        grade = "Critical Issues Found"
+    # Aggregate auto_fixable and requires_content counts
+    all_dims = [cann, ai_vis, meta, structure, tech]
+    auto_fixable_count = sum(len(d["auto_fixable"]) for d in all_dims)
+    requires_content_count = sum(len(d["requires_content"]) for d in all_dims)
+    total_issues = auto_fixable_count + requires_content_count
 
-    # Top issues: collect all, sorted roughly by severity (lower dimension scores first)
+    # Top issues: collect from pillars with worst scores first
+    dim_entries = [
+        ("cannibalization", cann),
+        ("ai_visibility", ai_vis),
+        ("meta_titles", meta),
+        ("content_structure", structure),
+        ("technical", tech),
+    ]
     all_issues = []
-    for dim_issues in sorted(
-        [cann_issues, schema_issues, meta_issues, htag_issues],
-        key=lambda x: len(x), reverse=True,
-    ):
-        all_issues.extend(dim_issues)
+    for _, dim in sorted(dim_entries, key=lambda x: x[1]["score"]):
+        all_issues.extend(dim["issues"])
     top_issues = all_issues[:5]
 
     results = {
         "total_score": total_score,
-        "grade": grade,
+        "grade": _grade(total_score),
         "pages_crawled": len(pages),
+        "benchmark": f"Sites with strong SEO governance average 82/100. You scored {total_score}.",
         "dimensions": {
-            "cannibalization": {"score": cann_score, "max": 25, "issues": cann_issues},
-            "schema": {"score": schema_score, "max": 25, "issues": schema_issues},
-            "meta_titles": {"score": meta_score, "max": 25, "issues": meta_issues},
-            "h_structure": {"score": htag_score, "max": 25, "issues": htag_issues},
+            "cannibalization": cann,
+            "ai_visibility": ai_vis,
+            "meta_titles": meta,
+            "content_structure": structure,
+            "technical": tech,
         },
+        "auto_fixable_count": auto_fixable_count,
+        "requires_content_count": requires_content_count,
         "top_issues": top_issues,
-        "cta": "Siloq can fix these issues automatically. Start your free trial.",
+        "cta": f"Siloq can automatically fix {auto_fixable_count} of your {total_issues} issues. Start your free trial.",
     }
 
     if limited:
@@ -509,20 +738,7 @@ def create_scan(request):
         scan.pages_analyzed = 0
         scan.scan_duration_seconds = 0
         scan.completed_at = timezone.now()
-        scan.results = {
-            "total_score": 0,
-            "grade": "Critical Issues Found",
-            "pages_crawled": 0,
-            "dimensions": {
-                "cannibalization": {"score": 0, "max": 25, "issues": []},
-                "schema": {"score": 0, "max": 25, "issues": []},
-                "meta_titles": {"score": 0, "max": 25, "issues": []},
-                "h_structure": {"score": 0, "max": 25, "issues": []},
-            },
-            "top_issues": ["Scan failed due to an internal error"],
-            "cta": "Siloq can fix these issues automatically. Start your free trial.",
-            "error": "Internal scan error",
-        }
+        scan.results = _build_error_result("Internal scan error")
 
     scan.save(update_fields=['status', 'score', 'pages_analyzed', 'scan_duration_seconds', 'completed_at', 'results'])
 
