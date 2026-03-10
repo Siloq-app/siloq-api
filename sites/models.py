@@ -98,6 +98,27 @@ class Site(models.Model):
         null=True,
         help_text="When GSC was connected"
     )
+    gsc_available_properties = models.TextField(
+        blank=True,
+        null=True,
+        help_text="JSON list of all GSC properties available on the user's Google account"
+    )
+    gsc_auto_matched = models.BooleanField(
+        default=False,
+        help_text="True if gsc_site_url was auto-matched by domain"
+    )
+
+    # Google Business Profile (GBP) Entity Profile
+    gbp_place_id = models.CharField(max_length=500, blank=True, null=True)
+    gbp_phone = models.CharField(max_length=50, blank=True, null=True)
+    gbp_name = models.CharField(max_length=255, blank=True, null=True)
+    gbp_address = models.TextField(blank=True, null=True)
+    gbp_website = models.URLField(blank=True, null=True)
+    gbp_url = models.URLField(max_length=1000, blank=True, null=True)
+    gbp_reviews = models.JSONField(default=list, blank=True)
+    gbp_rating = models.FloatField(blank=True, null=True)
+    gbp_review_count = models.IntegerField(blank=True, null=True)
+    gbp_last_synced_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         db_table = 'sites'

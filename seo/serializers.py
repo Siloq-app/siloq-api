@@ -35,8 +35,9 @@ class PageSerializer(serializers.ModelSerializer):
             'id', 'site', 'wp_post_id', 'url', 'title', 'slug',
             'content', 'excerpt', 'status', 'published_at', 'modified_at',
             'parent_id', 'menu_order', 'yoast_title', 'yoast_description',
-            'featured_image', 'siloq_page_id', 'is_money_page', 'last_synced_at',
-            'created_at', 'updated_at', 'seo_data'
+            'featured_image', 'siloq_page_id', 'is_money_page',
+            'page_type_classification', 'page_type_override',
+            'last_synced_at', 'created_at', 'updated_at', 'seo_data'
         )
         read_only_fields = ('id', 'created_at', 'updated_at', 'last_synced_at')
 
@@ -50,7 +51,8 @@ class PageListSerializer(serializers.ModelSerializer):
         model = Page
         fields = (
             'id', 'url', 'title', 'status', 'published_at',
-            'last_synced_at', 'seo_score', 'issue_count', 'is_money_page', 'is_noindex'
+            'last_synced_at', 'seo_score', 'issue_count', 'is_money_page', 'is_noindex',
+            'page_type_classification', 'page_type_override'
         )
 
     def get_seo_score(self, obj):
@@ -91,6 +93,7 @@ class PageSyncSerializer(serializers.Serializer):
     excerpt = serializers.CharField(required=False, allow_blank=True)
     status = serializers.CharField(default='publish')
     post_type = serializers.CharField(required=False, default='page')  # page, post, product, product_cat
+    type = serializers.CharField(required=False, allow_blank=True, default='')  # alias sent by older plugin versions; mapped to post_type below
     published_at = FlexibleDateTimeField(required=False, allow_null=True)
     modified_at = FlexibleDateTimeField(required=False, allow_null=True)
     slug = serializers.CharField(max_length=500, required=False, allow_blank=True)
@@ -101,6 +104,12 @@ class PageSyncSerializer(serializers.Serializer):
     featured_image = serializers.CharField(required=False, allow_blank=True, allow_null=True)  # Allow any string, not just URL
     is_noindex = serializers.BooleanField(required=False, default=False)
     is_homepage = serializers.BooleanField(required=False, default=False)
+    page_builder = serializers.CharField(required=False, allow_blank=True, default='unknown')
+    junk_action = serializers.CharField(required=False, allow_null=True, default=None)
+    junk_reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
+    faq_questions = serializers.ListField(
+        child=serializers.CharField(), required=False, default=list
+    )  # Elementor accordion/toggle/FAQ widget questions
 
     def to_internal_value(self, data):
         """Flatten nested meta fields if present (yoast_title, yoast_description, featured_image, is_noindex)."""

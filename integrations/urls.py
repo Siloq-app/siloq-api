@@ -5,7 +5,7 @@ Note: These URLs are included at /api/v1/ level, so paths here are relative to t
 from django.urls import path
 
 # Import views directly - DRF decorators properly applied
-from .sync import sync_page, sync_seo_data
+from .sync import sync_page, sync_seo_data, purge_deleted_pages
 from .scans import create_scan, get_scan, get_scan_report
 from .seo_analysis import (
     health_summary,
@@ -20,6 +20,7 @@ urlpatterns = [
     # WordPress page sync
     path('pages/sync/', sync_page, name='sync-page'),
     path('pages/<int:page_id>/seo-data/', sync_seo_data, name='sync-seo-data'),
+    path('pages/purge-deleted/', purge_deleted_pages, name='purge-deleted-pages'),
     # WordPress scanner endpoints
     path('scans/', create_scan, name='create-scan'),
     path('scans/<int:scan_id>/', get_scan, name='get-scan'),

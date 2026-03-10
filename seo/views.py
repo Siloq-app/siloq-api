@@ -100,3 +100,33 @@ class PageViewSet(viewsets.ModelViewSet):
             'is_money_page': page.is_money_page,
             'message': 'Money page status updated'
         })
+
+    @action(detail=True, methods=['patch'], url_path='page-type')
+    def set_page_type(self, request, pk=None):
+        """
+        PATCH /api/v1/pages/{id}/page-type/
+        Set a manual page type override. Send null to clear the override.
+        Body: { "page_type": "money" | "supporting" | "utility" | "conversion" | "archive" | "product" | null }
+        """
+        VALID_TYPES = {'money', 'supporting', 'utility', 'conversion', 'archive', 'product'}
+        page = self.get_object()
+        page_type = request.data.get('page_type')
+
+        if page_type is None:
+            # Clear override — revert to auto-classification
+            page.page_type_override = None
+        elif page_type not in VALID_TYPES:
+            return Response(
+                {'error': f'Invalid page_type. Must be one of: {", ".join(sorted(VALID_TYPES))}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        else:
+            page.page_type_override = page_type
+
+        page.save(update_fields=['page_type_override'])
+        return Response({
+            'id': page.id,
+            'page_type_override': page.page_type_override,
+            'page_type_classification': page.page_type_classification,
+            'effective_type': page.page_type_override or page.page_type_classification,
+        })
