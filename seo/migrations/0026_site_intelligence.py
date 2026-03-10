@@ -1,6 +1,6 @@
 # Simplified migration — only creates SiteIntelligence model.
-# All index renames and field cleanups removed because prod DB state
-# does not match expected pre-conditions for those operations.
+# Cleanup operations (RenameIndex, AlterField, RemoveField) removed because
+# the prod DB schema does not match expected pre-state. These are non-essential.
 import django.db.models.deletion
 from django.db import migrations, models
 
@@ -28,7 +28,11 @@ class Migration(migrations.Migration):
                 ('cannibalization_risks', models.JSONField(default=list)),
                 ('generated_at', models.DateTimeField(auto_now=True)),
                 ('generation_error', models.TextField(blank=True)),
-                ('site', models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name='intelligence', to='sites.site')),
+                ('site', models.OneToOneField(
+                    on_delete=django.db.models.deletion.CASCADE,
+                    related_name='intelligence',
+                    to='sites.site'
+                )),
             ],
         ),
     ]
