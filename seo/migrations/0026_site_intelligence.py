@@ -132,85 +132,69 @@ class Migration(migrations.Migration):
             model_name='slugchangelog',
             name='slug_change_changed_at_idx',
         ),
-        migrations.RenameIndex(
-            model_name='conflict',
-            new_name='conflicts_site_id_7a591e_idx',
-            old_name='seo_confli_site_id_6f3a2b_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'seo_confli_site_id_6f3a2b_idx') THEN ALTER INDEX \"seo_confli_site_id_6f3a2b_idx\" RENAME TO \"conflicts_site_id_7a591e_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='conflict',
-            new_name='conflicts_query_s_d87714_idx',
-            old_name='seo_confli_query_s_7d4e1c_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'seo_confli_query_s_7d4e1c_idx') THEN ALTER INDEX \"seo_confli_query_s_7d4e1c_idx\" RENAME TO \"conflicts_query_s_d87714_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='conflict',
-            new_name='conflicts_severit_9bd34b_idx',
-            old_name='seo_confli_severit_9a2f3d_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'seo_confli_severit_9a2f3d_idx') THEN ALTER INDEX \"seo_confli_severit_9a2f3d_idx\" RENAME TO \"conflicts_severit_9bd34b_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='contentjob',
-            new_name='content_job_site_id_9845b1_idx',
-            old_name='seo_conten_site_id_3e8b2a_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'seo_conten_site_id_3e8b2a_idx') THEN ALTER INDEX \"seo_conten_site_id_3e8b2a_idx\" RENAME TO \"content_job_site_id_9845b1_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='contentjob',
-            new_name='content_job_job_typ_8748c4_idx',
-            old_name='seo_conten_job_typ_7c4f1d_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'seo_conten_job_typ_7c4f1d_idx') THEN ALTER INDEX \"seo_conten_job_typ_7c4f1d_idx\" RENAME TO \"content_job_job_typ_8748c4_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='contentjob',
-            new_name='content_job_priorit_060323_idx',
-            old_name='seo_conten_priorit_9a2e3f_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'seo_conten_priorit_9a2e3f_idx') THEN ALTER INDEX \"seo_conten_priorit_9a2e3f_idx\" RENAME TO \"content_job_priorit_060323_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='contentjob',
-            new_name='content_job_created_869db2_idx',
-            old_name='seo_conten_create_8d5f4b_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'seo_conten_create_8d5f4b_idx') THEN ALTER INDEX \"seo_conten_create_8d5f4b_idx\" RENAME TO \"content_job_created_869db2_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='gscdata',
-            new_name='gsc_data_page_id_d311f5_idx',
-            old_name='seo_gscda_page_id_8c0f1a_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'seo_gscda_page_id_8c0f1a_idx') THEN ALTER INDEX \"seo_gscda_page_id_8c0f1a_idx\" RENAME TO \"gsc_data_page_id_d311f5_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='gscdata',
-            new_name='gsc_data_site_id_bb76e9_idx',
-            old_name='seo_gscda_site_id_5c3f2a_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'seo_gscda_site_id_5c3f2a_idx') THEN ALTER INDEX \"seo_gscda_site_id_5c3f2a_idx\" RENAME TO \"gsc_data_site_id_bb76e9_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='gscdata',
-            new_name='gsc_data_impress_f7d146_idx',
-            old_name='seo_gscda_impress_2859f3_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'seo_gscda_impress_2859f3_idx') THEN ALTER INDEX \"seo_gscda_impress_2859f3_idx\" RENAME TO \"gsc_data_impress_f7d146_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='gscdata',
-            new_name='gsc_data_positio_5e13be_idx',
-            old_name='seo_gscda_positio_4e7b1c_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'seo_gscda_positio_4e7b1c_idx') THEN ALTER INDEX \"seo_gscda_positio_4e7b1c_idx\" RENAME TO \"gsc_data_positio_5e13be_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='internallink',
-            new_name='internal_li_site_id_e1c924_idx',
-            old_name='internal_links_site_source_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'internal_links_site_source_idx') THEN ALTER INDEX \"internal_links_site_source_idx\" RENAME TO \"internal_li_site_id_e1c924_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='internallink',
-            new_name='internal_li_site_id_7e2254_idx',
-            old_name='internal_links_site_target_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'internal_links_site_target_idx') THEN ALTER INDEX \"internal_links_site_target_idx\" RENAME TO \"internal_li_site_id_7e2254_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='internallink',
-            new_name='internal_li_anchor__14ddb9_idx',
-            old_name='internal_links_anchor_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'internal_links_anchor_idx') THEN ALTER INDEX \"internal_links_anchor_idx\" RENAME TO \"internal_li_anchor__14ddb9_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='page',
-            new_name='pages_is_mone_525ba2_idx',
-            old_name='pages_is_mone_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'pages_is_mone_idx') THEN ALTER INDEX \"pages_is_mone_idx\" RENAME TO \"pages_is_mone_525ba2_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
-        migrations.RenameIndex(
-            model_name='page',
-            new_name='pages_is_home_afbfd5_idx',
-            old_name='pages_is_home_idx',
+        migrations.RunSQL(
+            sql="DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'pages_is_home_idx') THEN ALTER INDEX \"pages_is_home_idx\" RENAME TO \"pages_is_home_afbfd5_idx\"; END IF; END $$;",
+            reverse_sql=migrations.RunSQL.noop,
         ),
         migrations.RemoveField(
             model_name='page',
