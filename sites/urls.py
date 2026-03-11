@@ -148,6 +148,7 @@ urlpatterns = [
     path('<int:site_id>/pages/analysis/<int:analysis_id>/schema/', schema_inventory, name='page-schema-inventory'),
     # Schema Graph — GEO-first full entity graph endpoint (AI-crawler optimized)
     path('<int:site_id>/schema-graph/', schema_graph, name='site-schema-graph'),
+    path('<int:site_id>/schema/graph/', schema_graph, name='site-schema-graph-alias'),  # URL alias
     path('<int:site_id>/schema-graph/completeness/', schema_graph_completeness, name='site-schema-graph-completeness'),
     path('<int:site_id>/schema-graph/regenerate/', schema_graph_regenerate, name='site-schema-graph-regenerate'),
     # Internal Linking Context (Reverse Silo)
