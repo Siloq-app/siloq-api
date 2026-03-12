@@ -167,7 +167,7 @@ Return ONLY this JSON structure (no markdown):
     })
 
 
-@api_view(['POST'])
+@api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_site_intelligence(request, site_id):
     """Return cached site intelligence."""
