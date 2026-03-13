@@ -41,6 +41,8 @@ urlpatterns = [
     path('', include('integrations.urls')),
     # Page management (dashboard) - comes after integrations to avoid conflicts
     path('pages/', include('seo.urls')),
+    # Billing & credits
+    path('billing/', include('billing.urls')),
     # Content generation jobs (WordPress plugin compatibility)
     path('content-jobs/', content_jobs_create_view),
     path('content-jobs/<str:job_id>/', content_jobs_status_view),
