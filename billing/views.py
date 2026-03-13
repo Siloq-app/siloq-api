@@ -9,7 +9,8 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from .models import Subscription, Payment
+from .models import Subscription, Payment, SiteCredits
+from sites.models import Site
 from .serializers import (
     SubscriptionSerializer,
     PaymentSerializer,
@@ -209,6 +210,33 @@ def stripe_webhook(request):
         _handle_subscription_canceled(subscription)
     
     return Response({'status': 'success'})
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def site_credits_view(request, site_id):
+    """GET /api/v1/sites/{site_id}/credits/ — returns balance for plugin dashboard meter"""
+    try:
+        site = Site.objects.get(id=site_id, user=request.user)
+    except Site.DoesNotExist:
+        return Response({"detail": "Site not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    credits, _ = SiteCredits.objects.get_or_create(site=site, defaults={
+        "plan_tier": "free_trial",
+        "is_trial": True,
+        "trial_actions_remaining": 25,
+    })
+
+    return Response({
+        "site_id": site_id,
+        "plan_tier": credits.plan_tier,
+        "is_trial": credits.is_trial,
+        "balance": credits.effective_balance,
+        "monthly_allowance": credits.monthly_allowance if not credits.is_trial else 25,
+        "trial_actions_remaining": credits.trial_actions_remaining if credits.is_trial else None,
+        "reset_date": credits.reset_date.isoformat() if credits.reset_date else None,
+        "lifetime_used": credits.lifetime_used,
+    })
 
 
 def _handle_checkout_completed(session):

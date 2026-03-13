@@ -13,4 +13,5 @@ router.register(r'portal', views.CustomerPortalViewSet, basename='portal')
 urlpatterns = [
     path('', include(router.urls)),
     path('webhook/', views.stripe_webhook, name='stripe-webhook'),
+    path('sites/<int:site_id>/credits/', views.site_credits_view, name='site-credits'),
 ]
