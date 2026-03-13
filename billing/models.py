@@ -303,11 +303,18 @@ def update_site_credits_on_tier_change(sender, instance, **kwargs):
     is_trial = tier == "free_trial"
     allowance = PLAN_ALLOWANCES.get(tier, 0)
     for sc in SiteCredits.objects.filter(site__user=instance.user):
+        old_allowance = sc.monthly_allowance
         sc.plan_tier = tier
         sc.monthly_allowance = allowance
         sc.is_trial = is_trial
-        if not is_trial and sc.current_balance == 0:
-            # Give initial balance on upgrade
-            sc.current_balance = allowance
-            sc.reset_date = date.today() + relativedelta(months=1)
-        sc.save()
+        if not is_trial:
+            if allowance > old_allowance:
+                # Upgrade: immediately top up balance to new tier allowance if it's higher.
+                # Example: Pro (200) with 50 left upgrades to Builder (500) → balance becomes 500.
+                # Do NOT wait for next billing cycle — customer paid for Builder, gets Builder now.
+                sc.current_balance = max(sc.current_balance, allowance)
+            # If downgrading, cap existing balance at new allowance (don't take away already-earned rollover)
+            sc.current_balance = min(sc.current_balance, allowance * 2)  # max 1 month rollover cap
+            if not sc.reset_date:
+                sc.reset_date = date.today() + relativedelta(months=1)
+        sc.save(update_fields=["plan_tier", "monthly_allowance", "is_trial", "current_balance", "reset_date", "updated_at"])

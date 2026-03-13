@@ -13,6 +13,7 @@ from rest_framework import status
 
 from integrations.authentication import APIKeyAuthentication
 from integrations.permissions import IsAPIKeyAuthenticated
+from billing.decorators import requires_credits
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ _jobs = {}
 @api_view(['POST'])
 @authentication_classes([APIKeyAuthentication])
 @permission_classes([IsAPIKeyAuthenticated])
+@requires_credits("content_draft", site_id_kwarg=None)  # site resolved from request.auth inside decorator
 def create_content_job(request):
     """
     Create a content generation job.

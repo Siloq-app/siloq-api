@@ -24,6 +24,7 @@ from seo.models import Page, SEOData
 from integrations.models import Scan
 from integrations.permissions import IsAPIKeyAuthenticated
 from integrations.authentication import APIKeyAuthentication
+from billing.decorators import requires_credits
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +162,7 @@ def health_summary(request):
 @api_view(['GET'])
 @authentication_classes([APIKeyAuthentication])
 @permission_classes([IsAPIKeyAuthenticated])
+@requires_credits("cannibalization_analysis")
 def cannibalization_issues(request):
     """
     Get detailed keyword cannibalization analysis.
@@ -480,6 +482,7 @@ def link_opportunities(request):
 @api_view(['POST'])
 @authentication_classes([APIKeyAuthentication])
 @permission_classes([IsAPIKeyAuthenticated])
+@requires_credits("content_engine")
 def contextual_spoke_generation(request):
     """
     Generate contextual spoke content ideas from hub topics.

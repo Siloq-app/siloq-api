@@ -32,12 +32,23 @@ def requires_credits(action_type, site_id_kwarg="site_id"):
     def decorator(func):
         @wraps(func)
         def wrapper(request, *args, **kwargs):
-            site_id = kwargs.get(site_id_kwarg) or request.data.get("site_id") or request.query_params.get("site_id")
             cost = ACTION_COSTS.get(action_type, DEFAULT_COST)
 
             try:
                 from sites.models import Site
-                site = Site.objects.get(id=site_id, user=request.user)
+                # Support both JWT-authenticated (site_id in URL/body) and
+                # APIKey-authenticated (site resolved from request.auth dict)
+                site = None
+                if isinstance(request.auth, dict) and "site" in request.auth:
+                    site = request.auth["site"]
+                else:
+                    site_id = (
+                        kwargs.get(site_id_kwarg) if site_id_kwarg else None
+                    ) or request.data.get("site_id") or request.query_params.get("site_id")
+                    if site_id:
+                        site = Site.objects.get(id=site_id, user=request.user)
+                if not site:
+                    raise ValueError("Cannot resolve site for credits check")
                 credits, _ = SiteCredits.objects.get_or_create(site=site, defaults={
                     "plan_tier": "free_trial",
                     "is_trial": True,
