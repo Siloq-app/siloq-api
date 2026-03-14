@@ -1,8 +1,16 @@
 """
-Serializers for Page and SEOData models.
+Serializers for Page and SEOData models + Topical Depth Engine models.
 """
 from rest_framework import serializers
-from .models import Page, SEOData
+from .models import (
+    ContentDecayLog,
+    Page,
+    SEOData,
+    SemanticLinkRelationship,
+    SiloDepthScore,
+    SiloTopicBoundary,
+    SubtopicMap,
+)
 from sites.serializers import SiteSerializer
 
 
@@ -128,3 +136,75 @@ class PageSyncSerializer(serializers.Serializer):
                 if noindex_val:
                     data['is_noindex'] = noindex_val in [True, '1', 1, 'true', 'yes']
         return super().to_internal_value(data)
+
+
+# ─────────────────────────────────────────────────────────────
+# TOPICAL DEPTH ENGINE SERIALIZERS
+# ─────────────────────────────────────────────────────────────
+
+class SiloTopicBoundarySerializer(serializers.ModelSerializer):
+    effective_entity_type = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = SiloTopicBoundary
+        fields = (
+            'id', 'site', 'silo', 'core_topic',
+            'adjacent_topics', 'out_of_scope_topics',
+            'entity_type_override', 'effective_entity_type',
+            'defined_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'defined_at', 'updated_at')
+
+
+class SubtopicMapSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SubtopicMap
+        fields = (
+            'id', 'site', 'silo', 'subtopic_slug', 'subtopic_label',
+            'subtopic_type', 'coverage_status', 'mapped_page',
+            'priority_score', 'search_demand_signal',
+            'last_assessed', 'created_at',
+        )
+        read_only_fields = ('id', 'created_at')
+
+
+class SiloDepthScoreSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SiloDepthScore
+        fields = (
+            'id', 'site', 'silo',
+            'semantic_density_score', 'topical_closure_score',
+            'coverage_breadth_pct', 'coverage_depth_pct',
+            'thin_page_count', 'missing_subtopic_count', 'stale_page_count',
+            'scope_creep_flag', 'disconnected_page_count',
+            'freshness_score', 'depth_mistake_flags', 'scored_at',
+        )
+        read_only_fields = ('id', 'scored_at')
+
+
+class SemanticLinkRelationshipSerializer(serializers.ModelSerializer):
+    source_page_title = serializers.CharField(source='source_page.title', read_only=True)
+    target_page_title = serializers.CharField(source='target_page.title', read_only=True)
+
+    class Meta:
+        model = SemanticLinkRelationship
+        fields = (
+            'id', 'site', 'source_page', 'target_page',
+            'source_page_title', 'target_page_title',
+            'relationship_type', 'anchor_text', 'anchor_context',
+            'relationship_confidence', 'assessed_at',
+        )
+        read_only_fields = ('id', 'assessed_at')
+
+
+class ContentDecayLogSerializer(serializers.ModelSerializer):
+    page_title = serializers.CharField(source='page.title', read_only=True)
+
+    class Meta:
+        model = ContentDecayLog
+        fields = (
+            'id', 'site', 'page', 'page_title', 'silo',
+            'last_modified', 'days_since_update', 'decay_severity',
+            'flagged_at', 'resolved_at',
+        )
+        read_only_fields = ('id', 'flagged_at')

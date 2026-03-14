@@ -830,3 +830,176 @@ class SiteAudit(models.Model):
 
     def __str__(self):
         return f"Audit {self.id} — {self.site} — score {self.site_score}"
+
+
+# ─────────────────────────────────────────────────────────────
+# TOPICAL DEPTH & SEMANTIC CLOSURE ENGINE
+# ─────────────────────────────────────────────────────────────
+
+class SiloTopicBoundary(models.Model):
+    ENTITY_TYPE_CHOICES = [
+        ('local_business', 'Local Business'),
+        ('ecommerce', 'E-Commerce'),
+        ('publisher', 'Publisher'),
+        ('b2b', 'B2B / SaaS'),
+    ]
+
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='topic_boundaries')
+    silo = models.OneToOneField(SiloDefinition, on_delete=models.CASCADE, related_name='topic_boundary')
+    core_topic = models.CharField(max_length=255)
+    adjacent_topics = models.JSONField(default=list)
+    out_of_scope_topics = models.JSONField(default=list)
+    entity_type_override = models.CharField(
+        max_length=20, choices=ENTITY_TYPE_CHOICES, null=True, blank=True,
+    )
+    defined_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'silo_topic_boundaries'
+        unique_together = [('site', 'silo')]
+        indexes = [
+            models.Index(fields=['silo']),
+        ]
+
+    def __str__(self):
+        return f"Boundary: {self.core_topic} ({self.silo.name})"
+
+    @property
+    def effective_entity_type(self):
+        if self.entity_type_override:
+            return self.entity_type_override
+        from seo.depth_engine import get_entity_type
+        return get_entity_type(self.site)
+
+
+class SubtopicMap(models.Model):
+    SUBTOPIC_TYPES = [
+        ('core', 'Core'),
+        ('supporting', 'Supporting'),
+        ('adjacent', 'Adjacent'),
+        ('edge_case', 'Edge Case'),
+        ('comparative', 'Comparative'),
+        ('evidence', 'Evidence'),
+    ]
+    COVERAGE_STATUSES = [
+        ('covered', 'Covered'),
+        ('thin', 'Thin'),
+        ('missing', 'Missing'),
+        ('stale', 'Stale'),
+    ]
+
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='subtopic_maps')
+    silo = models.ForeignKey(SiloDefinition, on_delete=models.CASCADE, related_name='subtopic_maps')
+    subtopic_slug = models.CharField(max_length=255)
+    subtopic_label = models.CharField(max_length=255)
+    subtopic_type = models.CharField(max_length=20, choices=SUBTOPIC_TYPES, default='supporting')
+    coverage_status = models.CharField(max_length=10, choices=COVERAGE_STATUSES, default='missing')
+    mapped_page = models.ForeignKey(Page, on_delete=models.SET_NULL, null=True, blank=True, related_name='subtopic_mappings')
+    priority_score = models.IntegerField(default=50)
+    search_demand_signal = models.CharField(max_length=50, blank=True, null=True)
+    last_assessed = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'subtopic_map'
+        unique_together = [('silo', 'subtopic_slug')]
+        indexes = [
+            models.Index(fields=['silo']),
+            models.Index(fields=['silo', 'coverage_status']),
+            models.Index(fields=['silo', '-priority_score']),
+        ]
+
+    def __str__(self):
+        return f"{self.subtopic_label} ({self.coverage_status})"
+
+
+class SiloDepthScore(models.Model):
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='depth_scores')
+    silo = models.ForeignKey(SiloDefinition, on_delete=models.CASCADE, related_name='depth_scores')
+    semantic_density_score = models.IntegerField(default=0)
+    topical_closure_score = models.IntegerField(default=0)
+    coverage_breadth_pct = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    coverage_depth_pct = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+    thin_page_count = models.IntegerField(default=0)
+    missing_subtopic_count = models.IntegerField(default=0)
+    stale_page_count = models.IntegerField(default=0)
+    scope_creep_flag = models.BooleanField(default=False)
+    disconnected_page_count = models.IntegerField(default=0)
+    freshness_score = models.IntegerField(default=0)
+    depth_mistake_flags = models.JSONField(default=list)
+    scored_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'silo_depth_scores'
+        indexes = [
+            models.Index(fields=['silo']),
+            models.Index(fields=['silo', '-scored_at']),
+        ]
+
+    def __str__(self):
+        return f"Depth {self.silo_id}: density={self.semantic_density_score} closure={self.topical_closure_score}"
+
+
+class SemanticLinkRelationship(models.Model):
+    RELATIONSHIP_TYPES = [
+        ('hierarchical', 'Hierarchical'),
+        ('sequential', 'Sequential'),
+        ('comparative', 'Comparative'),
+        ('complementary', 'Complementary'),
+        ('prerequisite', 'Prerequisite'),
+        ('evidence', 'Evidence'),
+        ('unclassified', 'Unclassified'),
+    ]
+    CONFIDENCE_LEVELS = [
+        ('high', 'High'),
+        ('medium', 'Medium'),
+        ('low', 'Low'),
+    ]
+
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='semantic_link_relationships')
+    source_page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name='semantic_links_out')
+    target_page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name='semantic_links_in')
+    relationship_type = models.CharField(max_length=20, choices=RELATIONSHIP_TYPES, default='unclassified')
+    anchor_text = models.CharField(max_length=500, blank=True)
+    anchor_context = models.TextField(blank=True)
+    relationship_confidence = models.CharField(max_length=10, choices=CONFIDENCE_LEVELS, default='low')
+    assessed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'semantic_link_relationships'
+        unique_together = [('source_page', 'target_page')]
+        indexes = [
+            models.Index(fields=['site']),
+            models.Index(fields=['source_page']),
+            models.Index(fields=['site', 'relationship_type']),
+        ]
+
+    def __str__(self):
+        return f"{self.source_page_id} → {self.target_page_id} ({self.relationship_type})"
+
+
+class ContentDecayLog(models.Model):
+    SEVERITY_CHOICES = [
+        ('warning', 'Warning'),
+        ('critical', 'Critical'),
+    ]
+
+    site = models.ForeignKey('sites.Site', on_delete=models.CASCADE, related_name='decay_logs')
+    page = models.ForeignKey(Page, on_delete=models.CASCADE, related_name='decay_logs')
+    silo = models.ForeignKey(SiloDefinition, on_delete=models.CASCADE, related_name='decay_logs')
+    last_modified = models.DateField(null=True, blank=True)
+    days_since_update = models.IntegerField(null=True, blank=True)
+    decay_severity = models.CharField(max_length=10, choices=SEVERITY_CHOICES)
+    flagged_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'content_decay_log'
+        indexes = [
+            models.Index(fields=['site']),
+            models.Index(fields=['page']),
+        ]
+
+    def __str__(self):
+        return f"Decay: {self.page_id} ({self.decay_severity})"

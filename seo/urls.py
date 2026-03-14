@@ -9,6 +9,7 @@ from . import content_plan_views
 from . import dashboard_views
 from .content_recommendations import get_content_recommendations, generate_from_recommendation, approve_content
 from .views_intelligence import generate_site_intelligence, get_site_intelligence
+from . import depth_views
 
 router = DefaultRouter()
 router.register(r'', PageViewSet, basename='page')
@@ -30,6 +31,14 @@ urlpatterns = [
     # Intelligence endpoints
     path('sites/<int:site_id>/intelligence/generate', generate_site_intelligence, name='intelligence-generate'),
     path('sites/<int:site_id>/intelligence/', get_site_intelligence, name='intelligence-get'),
+    # Topical Depth Engine endpoints
+    path('sites/<int:site_id>/silos/<uuid:silo_id>/topic-boundary', depth_views.topic_boundary, name='topic-boundary'),
+    path('sites/<int:site_id>/silos/<uuid:silo_id>/generate-subtopic-map', depth_views.generate_subtopic_map_view, name='generate-subtopic-map'),
+    path('sites/<int:site_id>/silos/<uuid:silo_id>/depth-scores', depth_views.depth_scores, name='depth-scores'),
+    path('sites/<int:site_id>/silos/<uuid:silo_id>/gap-report', depth_views.gap_report, name='gap-report'),
+    path('sites/<int:site_id>/silos/<uuid:silo_id>/subtopic-map', depth_views.subtopic_map_view, name='subtopic-map'),
+    path('sites/<int:site_id>/silos/<uuid:silo_id>/subtopics/<int:subtopic_id>/add-to-plan', depth_views.add_subtopic_to_plan, name='add-subtopic-to-plan'),
+    path('sites/<int:site_id>/silos/<uuid:silo_id>/link-relationships', depth_views.link_relationships, name='link-relationships'),
 ]
 
 # Content Recommendations URLs (to be included from sites/ namespace)
